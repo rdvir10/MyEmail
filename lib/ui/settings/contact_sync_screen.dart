@@ -1978,12 +1978,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   DateTime? _saidWith;
 
   /// The people whose copies differ, in the order first shown, each as
-  /// last listed, and the answers given here: one the next sync carries
-  /// out stays where it was, shown as answered, until the screen is left,
-  /// so that nothing moves under the finger.
+  /// last listed: one answered that the next sync carries out stays where
+  /// it was, shown as answered, until the screen is left, so that nothing
+  /// moves under the finger.
   final List<String> _order = [];
   final Map<String, ContactSyncCopiesPerson> _seen = {};
-  final Map<String, String> _gaveHere = {};
+
+  /// The answers given here, with the differences each was given on: shown
+  /// at once, before the status says so, while the person is listed with
+  /// those differences still.
+  final Map<String, ({String answer, String version})> _gaveHere = {};
 
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
@@ -2012,7 +2016,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       _problem = null;
     });
     try {
-      final backup = await sync.backup();
+      // Hadco's file alone: Gmail is not read for it.
+      final backup = await sync.backup(only: ContactSide.graph);
       // No save dialog over whatever is in front now.
       if (!mounted) return;
       if (!_inFront()) {
@@ -2102,24 +2107,41 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     }
   }
 
-  /// An answer for one person, queued. Refused, the person or the copy no
-  /// longer listed: said, and read again, to be answered as it is now.
-  Future<void> _answer(String person, String? keep) => _act(
+  /// An answer for one person, on the differences shown, queued. Refused,
+  /// the person, the copy or those differences no longer listed: said, and
+  /// read again, to be answered as it is now.
+  Future<void> _answer(ContactSyncCopiesPerson p, String? keep) => _act(
         context,
         () async {
-          await _sync.answerCopies(person, keep);
-          _gaveHere[person] = keep ?? ContactSyncCopiesPerson.leave;
+          await _sync.answerCopies(p.key, keep, p.version);
+          if (!mounted) return;
+          setState(() => _gaveHere[p.key] = (
+                answer: keep ?? ContactSyncCopiesPerson.leave,
+                version: p.version,
+              ));
         },
         onFailure: _readAgain,
       );
+
+  /// [p]'s answer: the runner's, or one given here on the differences it
+  /// is listed with still.
+  String? _answerOf(ContactSyncCopiesPerson p) {
+    if (p.answer case final answer?) return answer;
+    final given = _gaveHere[p.key];
+    return given != null && given.version == p.version ? given.answer : null;
+  }
 
   void _readAgain() {
     if (mounted) ref.invalidate(contactSyncStatusProvider);
   }
 
-  /// The synced copy's details for everyone listed and not yet answered,
-  /// asked again first: the other copies go, with the values that differ.
-  Future<void> _keepSyncedForAll(int open) async {
+  /// The synced copy's details for the people shown with no answer, on
+  /// the differences shown: one listed since, or listed now with others, is
+  /// not answered by it. Asked again first: the other copies go, with the
+  /// values that differ.
+  Future<void> _keepSyncedForAll(List<ContactSyncCopiesPerson> shown) async {
+    final people = {for (final p in shown) p.key: p.version};
+    final open = people.length;
     final sure = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -2144,7 +2166,21 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       ),
     );
     if (sure != true || !mounted) return;
-    await _act(context, _sync.answerAllCopies, onFailure: _readAgain);
+    await _act(
+      context,
+      () async {
+        await _sync.answerAllCopies(people);
+        if (!mounted) return;
+        setState(() {
+          for (final p in shown) {
+            if (p.copies.firstWhereOrNull((c) => c.synced) case final c?) {
+              _gaveHere[p.key] = (answer: c.key, version: p.version);
+            }
+          }
+        });
+      },
+      onFailure: _readAgain,
+    );
   }
 
   /// The people whose copies differ as shown: those listed, each where it
@@ -2161,10 +2197,9 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     return [
       for (final key in _order)
         if (listed[key] case final p?)
-          (person: p, answer: p.answer)
-        else if (_seen[key] case final p?
-            when (p.answer ?? _gaveHere[key]) != null)
-          (person: p, answer: p.answer ?? _gaveHere[key]),
+          (person: p, answer: _answerOf(p))
+        else if (_seen[key] case final p? when _answerOf(p) != null)
+          (person: p, answer: _answerOf(p)),
     ];
   }
 
@@ -2181,7 +2216,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     }
     final differing = copies.differing;
     final shown = _shownDiffering(differing);
-    final open = differing.where((p) => p.answer == null).length;
+    final open = [
+      for (final s in shown)
+        if (s.answer == null) s.person,
+    ];
     // By name, to find someone among a few hundred.
     final people = [...?status?.duplicates]..sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
@@ -2244,7 +2282,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                   key: ValueKey('contact-sync-copies-person:${person.key}'),
                   person: person,
                   answer: answer,
-                  onAnswer: (keep) => _answer(person.key, keep),
+                  onAnswer: (keep) => _answer(person, keep),
                 );
               }
               if (i == peopleFrom) {
@@ -2429,7 +2467,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
 
   /// The heading of the copies that differ, what the answers do, and the
   /// answer for all of them, set apart from each person's own.
-  Widget _differingHead(int n, int open) => Column(
+  Widget _differingHead(int n, List<ContactSyncCopiesPerson> open) =>
+      Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _Heading('Copies that differ ($n)'),
@@ -2442,12 +2481,12 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
             'starts at once.',
             muted: true,
           ),
-          if (open > 1)
+          if (open.length > 1)
             _Buttons([
               FilledButton.tonal(
                 key: const ValueKey('contact-sync-copies-all'),
                 onPressed: () => _keepSyncedForAll(open),
-                child: Text("Keep the synced copy's for all $open"),
+                child: Text("Keep the synced copy's for all ${open.length}"),
               ),
             ]),
         ],

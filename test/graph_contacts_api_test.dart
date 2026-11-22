@@ -135,8 +135,14 @@ void main() {
     await client.delete(made['id']! as String);
     await client.writeClaim(main, device: 'phone', at: DateTime.utc(2026));
     await client.readClaim(main);
+    await client.getBatch([ann]);
+    await client.photos([ann]);
+    await client.putPhoto(ann, [1, 2, 3], 'image/jpeg');
+    await client.photoBytes(ann);
+    final cat = graph.idWithEmail('c@x.com')!;
+    await client.deleteBatch([cat]);
 
-    expect(graph.requestsTo(r'$batch'), hasLength(1));
+    expect(graph.requestsTo(r'$batch'), hasLength(4));
     expect(graph.requests.length, greaterThan(15));
     for (final r in graph.requests) {
       expect(
@@ -578,6 +584,136 @@ void main() {
         client.getBatch([ann]),
         throwsA(isA<ConnectionFailed>()),
       );
+    });
+  });
+
+  group('photos and deletes', () {
+    test('photos asks twenty to a batch which have a photo, each part with '
+        'the header; a throttled part is asked again after its wait',
+        () async {
+      final ids = [
+        for (var i = 0; i < 23; i++)
+          graph.seed(contact('P$i', 'F', 'p$i@x.com')),
+      ];
+      for (final i in [0, 5, 21]) {
+        graph.setPhotoFromOutlook(ids[i], [i, 1, 2]);
+      }
+      graph.throttleInBatch(1, retryAfter: 3);
+
+      final checked = await api().photos([...ids, ids[0]]);
+
+      expect(checked.have, {ids[0], ids[5], ids[21]});
+      expect(checked.none, {...ids}..removeAll([ids[0], ids[5], ids[21]]));
+      expect(checked.unknown, isEmpty);
+      expect(slept, [const Duration(seconds: 3)]);
+      final batches = graph.requestsTo(r'$batch');
+      expect(
+        batches.map(
+          (r) => ((jsonDecode(r.body) as Map)['requests'] as List).length,
+        ),
+        [20, 1, 3],
+      );
+      for (final b in batches) {
+        for (final part in (jsonDecode(b.body) as Map)['requests'] as List) {
+          expect(part['method'], 'GET');
+          expect(part['headers'], {'Prefer': GraphContactsApi.prefer});
+          expect('${part['url']}', matches(r'^/me/contacts/[^/]+/photo$'));
+        }
+      }
+
+      // One asking for longer than is worth waiting is not known.
+      graph.throttleInBatch(1, retryAfter: 60);
+      final again = await api().photos([ids[5], ids[6]]);
+      expect(again.unknown, {ids[5]});
+      expect(again.none, {ids[6]});
+    });
+
+    test('photoBytes reads the bytes and their type, null with none; '
+        'putPhoto gives a contact one', () async {
+      final ann = graph.seed(contact('Ann', 'Lee', 'ann@example.com'));
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+      graph.setPhotoFromOutlook(ann, [9, 8, 7, 6], type: 'image/png');
+      final client = api();
+
+      final photo = (await client.photoBytes(ann))!;
+      expect(photo.bytes, [9, 8, 7, 6]);
+      expect(photo.type, 'image/png');
+      expect(await client.photoBytes(bob), isNull);
+
+      final before = graph.contact(bob)!['changeKey'];
+      await client.putPhoto(bob, photo.bytes, photo.type);
+      expect(graph.photoOf(bob)!.bytes, [9, 8, 7, 6]);
+      expect(graph.photoOf(bob)!.type, 'image/png');
+      expect(graph.contact(bob)!['changeKey'], isNot(before));
+      final put = graph.requests.last;
+      expect(put.method, 'PUT');
+      expect(put.url.path, endsWith('/photo/\$value'));
+      expect(put.headers['Content-Type'], startsWith('image/png'));
+
+      graph.purgeFromOutlook(bob);
+      await expectLater(
+        client.putPhoto(bob, photo.bytes, photo.type),
+        throwsA(isA<ContactGone>()),
+      );
+    });
+
+    test('deleteBatch deletes twenty to a batch: deleted, gone, or failed; '
+        'a throttled part is asked again after its wait', () async {
+      final ids = [
+        for (var i = 0; i < 23; i++)
+          graph.seed(contact('P$i', 'F', 'p$i@x.com')),
+      ];
+      graph
+        ..purgeFromOutlook(ids[2])
+        ..throttleInBatch(1, retryAfter: 3);
+
+      final gone = await api().deleteBatch([...ids, ids[0]]);
+
+      expect(gone.deleted, {...ids}..remove(ids[2]));
+      expect(gone.gone, {ids[2]});
+      expect(gone.failed, isEmpty);
+      for (final id in ids) {
+        expect(graph.contact(id), isNull);
+      }
+      expect(slept, [const Duration(seconds: 3)]);
+      final batches = graph.requestsTo(r'$batch');
+      expect(
+        batches.map(
+          (r) => ((jsonDecode(r.body) as Map)['requests'] as List).length,
+        ),
+        [20, 1, 3],
+      );
+      for (final b in batches) {
+        for (final part in (jsonDecode(b.body) as Map)['requests'] as List) {
+          expect(part['method'], 'DELETE');
+          expect(part['headers'], {'Prefer': GraphContactsApi.prefer});
+          expect('${part['url']}', matches(r'^/me/contacts/[^/]+$'));
+        }
+      }
+
+      // One asking for longer than is worth waiting failed: still there.
+      final left = graph.seed(contact('Left', 'F', 'l@x.com'));
+      graph.throttleInBatch(1, retryAfter: 60);
+      final again = await api().deleteBatch([left]);
+      expect(again.failed, {left});
+      expect(graph.contact(left), isNotNull);
+    });
+
+    test('a batch of deletes that fails as a whole throws, as delete would',
+        () async {
+      final ann = graph.seed(contact('Ann', 'Lee', 'ann@example.com'));
+      final client = api(
+        client: MockClient((r) async {
+          if (r.url.path.endsWith(r'$batch')) return http.Response('{}', 500);
+          return graph.handle(r);
+        }),
+      );
+
+      await expectLater(
+        client.deleteBatch([ann]),
+        throwsA(isA<ConnectionFailed>()),
+      );
+      expect(graph.contact(ann), isNotNull);
     });
   });
 

@@ -48,8 +48,8 @@ class FakeContactSync implements ContactSyncService {
   /// merge; nothing when null, as with nothing to merge.
   void Function()? onMergeCopies;
 
-  /// What [answerCopies] throws, as the runner refuses an answer for a
-  /// person or a copy no longer listed.
+  /// What [answerCopies] and [answerAllCopies] throw, as the runner
+  /// refuses an answer for a person no longer listed as shown.
   Object? copiesFailure;
   List<ContactSyncBackupFile> backupFiles;
 
@@ -72,9 +72,16 @@ class FakeContactSync implements ContactSyncService {
   final List<ContactSyncChoice> allDiffering = [];
   final List<int> restored = [];
 
-  /// Each [answerCopies] call: the person, and the copy kept (null: leave
-  /// them).
-  final List<({String person, String? keep})> copiesAnswers = [];
+  /// Each [answerCopies] call: the person, the copy kept (null: leave
+  /// them), and the version shown.
+  final List<({String person, String? keep, String version})> copiesAnswers =
+      [];
+
+  /// Each [answerAllCopies] call: the people shown, key to version.
+  final List<Map<String, String>> allCopiesAnswers = [];
+
+  /// Each [backup] call's side asked for alone (null: both).
+  final List<ContactSide?> backupsOf = [];
   final List<DateTime> noticesSeen = [];
   final List<String> accessAsked = [];
 
@@ -130,11 +137,15 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<List<ContactSyncBackupFile>> backup() async {
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only}) async {
     calls.add('backup');
+    backupsOf.add(only);
     await backupGate?.future;
     if (backupFailure case final failure?) throw failure;
-    return backupFiles;
+    return [
+      for (final f in backupFiles)
+        if (only == null || f.side == only) f,
+    ];
   }
 
   @override
@@ -209,14 +220,18 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerCopies(String person, String? keep) async {
+  Future<void> answerCopies(String person, String? keep, String version) async {
     calls.add('answerCopies');
     if (copiesFailure case final failure?) throw failure;
-    copiesAnswers.add((person: person, keep: keep));
+    copiesAnswers.add((person: person, keep: keep, version: version));
   }
 
   @override
-  Future<void> answerAllCopies() async => calls.add('answerAllCopies');
+  Future<void> answerAllCopies(Map<String, String> people) async {
+    calls.add('answerAllCopies');
+    if (copiesFailure case final failure?) throw failure;
+    allCopiesAnswers.add(people);
+  }
 
   @override
   Future<void> noticeSeen(DateTime at) async {

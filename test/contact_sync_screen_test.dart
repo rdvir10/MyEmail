@@ -2665,6 +2665,7 @@ void main() {
       await tester.tap(button('contact-sync-copies-merge'));
       await tester.pumpAndSettle();
       expect(sync.count('backup'), 1);
+      expect(sync.backupsOf, [ContactSide.graph], reason: 'Gmail not read');
       expect(
         [
           for (final f in files.saved) (f.fileName, f.mimeType, f.dialogTitle),
@@ -2946,11 +2947,13 @@ void main() {
         String key,
         String title, {
         String? answer,
+        String? version,
       }) =>
           ContactSyncCopiesPerson(
             key: key,
             title: title,
             answer: answer,
+            version: version ?? 'v-$key',
             copies: [
               ContactSyncCopy(
                 key: '$key-s',
@@ -3027,6 +3030,36 @@ void main() {
       await tester.pumpAndSettle();
       expect(of('d'), findsNothing, reason: 'not answered: not kept');
       expect(top(tester, of('b')), b);
+
+      // Ben answered here: shown so at once, before the status says so,
+      // and kept once carried out.
+      await tester.tap(button('contact-sync-copies-keep:b:b-s'));
+      await tester.pumpAndSettle();
+      expect(
+        sync.copiesAnswers.last,
+        (person: 'b', keep: 'b-s', version: 'v-b'),
+      );
+      final benAnswered = find.descendant(
+        of: of('b'),
+        matching: find.text("You chose the synced copy's details; the next "
+            'sync carries it out.'),
+      );
+      expect(benAnswered, findsOneWidget);
+      final cNow = top(tester, of('c'));
+      sync.set(listing([person('c', 'Cy Fox'), person('e', 'Eve Ash')]));
+      await tester.pumpAndSettle();
+      expect(benAnswered, findsOneWidget);
+      expect(top(tester, of('c')), cNow, reason: 'nothing moved');
+
+      // Listed again with other differences: the answer is not his.
+      sync.set(listing([
+        person('b', 'Ben Day', version: 'v-b2'),
+        person('c', 'Cy Fox'),
+        person('e', 'Eve Ash'),
+      ]));
+      await tester.pumpAndSettle();
+      expect(benAnswered, findsNothing);
+      expect(button('contact-sync-copies-keep:b:b-s'), findsOneWidget);
 
       // Left and opened again: as listed now.
       Navigator.of(tester.element(find.text('Duplicates to merge'))).pop();
@@ -3155,6 +3188,7 @@ void main() {
     const annDiffers = ContactSyncCopiesPerson(
       key: 'p1',
       title: 'Ann Cole',
+      version: 'va',
       copies: [
         ContactSyncCopy(
           key: 'a1',
@@ -3179,6 +3213,7 @@ void main() {
     const benDiffers = ContactSyncCopiesPerson(
       key: 'p2',
       title: 'Ben Day',
+      version: 'vb',
       copies: [
         ContactSyncCopy(
           key: 'b1',
@@ -3342,10 +3377,14 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(button('contact-sync-copies-leave:p2'));
       await tester.pumpAndSettle();
-      expect(sync.copiesAnswers, [
-        (person: 'p1', keep: 'a2'),
-        (person: 'p2', keep: null),
-      ]);
+      expect(
+        sync.copiesAnswers,
+        [
+          (person: 'p1', keep: 'a2', version: 'va'),
+          (person: 'p2', keep: null, version: 'vb'),
+        ],
+        reason: 'each on the differences shown',
+      );
     });
 
     testWidgets('a person answered shows the answer, and no buttons',
@@ -3443,17 +3482,72 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text("Keep the synced copy's"));
       await tester.pumpAndSettle();
-      expect(sync.count('answerAllCopies'), 1);
+      expect(sync.allCopiesAnswers, [
+        {'p1': 'va', 'p2': 'vb'},
+      ]);
       expect(sync.copiesAnswers, isEmpty);
+      for (final key in ['p1', 'p2']) {
+        expect(
+          find.descendant(
+            of: button('contact-sync-copies-person:$key'),
+            matching: find.text("You chose the synced copy's details; the "
+                'next sync carries it out.'),
+          ),
+          findsOneWidget,
+          reason: '$key, before the status says so',
+        );
+      }
+
+      // Listed again with other differences, and one more found while the
+      // question is up: only those shown are answered, as shown.
+      ContactSyncCopiesPerson changed(
+        ContactSyncCopiesPerson p,
+        String version,
+      ) =>
+          ContactSyncCopiesPerson(
+            key: p.key,
+            title: p.title,
+            copies: p.copies,
+            version: version,
+          );
+      ContactSyncStatus listing(List<ContactSyncCopiesPerson> differing) =>
+          synced(
+            copies: ContactSyncCopies(differing: differing),
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 2),
+            ],
+          );
+      sync.set(listing([
+        changed(annDiffers, 'va2'),
+        changed(benDiffers, 'vb2'),
+      ]));
+      await tester.pumpAndSettle();
+      expect(find.text("Keep the synced copy's for all 2"), findsOneWidget,
+          reason: 'the answers given were on other differences');
+      await tester.tap(button('contact-sync-copies-all'));
+      await tester.pumpAndSettle();
+      sync.set(listing([
+        changed(annDiffers, 'va2'),
+        changed(benDiffers, 'vb2'),
+        const ContactSyncCopiesPerson(
+          key: 'p3',
+          title: 'Cy Fox',
+          version: 'vc',
+          copies: [
+            ContactSyncCopy(key: 'c1', synced: true),
+            ContactSyncCopy(key: 'c2'),
+          ],
+        ),
+      ]));
+      await tester.pump();
+      await tester.tap(find.text("Keep the synced copy's"));
+      await tester.pumpAndSettle();
+      expect(sync.allCopiesAnswers.last, {'p1': 'va2', 'p2': 'vb2'});
 
       // One left to answer: its own buttons are enough.
-      sync.set(synced(
-        copies: const ContactSyncCopies(differing: [annDiffers]),
-        duplicates: const [
-          ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 2),
-        ],
-      ));
+      sync.set(listing([changed(annDiffers, 'va3')]));
       await tester.pumpAndSettle();
+      expect(button('contact-sync-copies-keep:p1:a1'), findsOneWidget);
       expect(button('contact-sync-copies-all'), findsNothing);
     });
 

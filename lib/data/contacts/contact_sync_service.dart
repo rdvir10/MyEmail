@@ -64,8 +64,11 @@ abstract interface class ContactSyncService {
   /// Both address books of the pair chosen last, read in full, as the two
   /// backup files: exactly two, Google's first (a vCard Google Contacts
   /// imports), then Microsoft's (a CSV Outlook on the web imports), one
-  /// per [ContactSyncBackupFile.side]. Throws as [preview].
-  Future<List<ContactSyncBackupFile>> backup();
+  /// per [ContactSyncBackupFile.side]. With [only], that side's file
+  /// alone, the other side not read: the merge of Hadco's copies saves
+  /// Hadco's, with no Gmail read and none of Google's quota spent. Throws
+  /// as [preview].
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only});
 
   /// Start: the first sync, from Start only. Sets
   /// [ContactSyncStatus.firstStartedAt] before anything that can stop the
@@ -169,22 +172,29 @@ abstract interface class ContactSyncService {
   Future<void> mergeCopies();
 
   /// Ron's answer for a person whose copies differ
-  /// ([ContactSyncCopiesPerson.key]), queued for a run that starts at
-  /// once: [keep] a copy's key ([ContactSyncCopy.key]) to keep that
-  /// copy's details (the synced copy's, or another's, whose values win
-  /// where it has one; the details only some copy has are still added),
-  /// or null to leave them as they are: the person goes off the list, and
-  /// later merges pass it over until its copies change. The answer is
-  /// carried out only on the differences shown; if they have changed, the
-  /// person is listed again as it is, the answer dropped. Throws
-  /// [ContactSyncRefused] when the person or the copy is no longer
-  /// listed, for the screen to read the status again.
-  Future<void> answerCopies(String person, String? keep);
+  /// ([ContactSyncCopiesPerson.key]), given on the differences shown
+  /// ([version], the person's [ContactSyncCopiesPerson.version]) and
+  /// queued for a run that starts at once: [keep] a copy's key
+  /// ([ContactSyncCopy.key]) to keep that copy's details (the synced
+  /// copy's, or another's, whose values win where it has one; the details
+  /// only some copy has are still added), or null to leave them as they
+  /// are: the person goes off the list, and later merges pass it over
+  /// until its copies change. Throws [ContactSyncRefused] when the person
+  /// or the copy is no longer listed, or the person is listed with other
+  /// differences than [version], for the screen to read the status again:
+  /// an answer never lands on differences Ron did not see. Should the
+  /// copies change before a run carries it out, the person is listed
+  /// again as it is, the answer dropped.
+  Future<void> answerCopies(String person, String? keep, String version);
 
-  /// Keep the synced copy's details for every person listed
-  /// ([ContactSyncCopies.differing]) that has no answer yet, queued for a
-  /// run that starts at once.
-  Future<void> answerAllCopies();
+  /// Keep the synced copy's details for the people the screen showed
+  /// ([people]: each one's [ContactSyncCopiesPerson.key] to the
+  /// [ContactSyncCopiesPerson.version] shown), queued for a run that
+  /// starts at once: each still listed, with no answer yet, and at that
+  /// version. The others are left as they are, and a person listed since
+  /// the screen was drawn is never answered by it. Throws
+  /// [ContactSyncRefused] when none could be answered.
+  Future<void> answerAllCopies(Map<String, String> people);
 }
 
 /// A [ContactSyncService] that has nothing to sync: the browser preview's,
@@ -213,7 +223,7 @@ class NoContactSync implements ContactSyncService {
       throw const ContactSyncRefused(_unavailable);
 
   @override
-  Future<List<ContactSyncBackupFile>> backup() async =>
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only}) async =>
       throw const ContactSyncRefused(_unavailable);
 
   @override
@@ -258,10 +268,14 @@ class NoContactSync implements ContactSyncService {
   Future<void> mergeCopies() async {}
 
   @override
-  Future<void> answerCopies(String person, String? keep) async {}
+  Future<void> answerCopies(
+    String person,
+    String? keep,
+    String version,
+  ) async {}
 
   @override
-  Future<void> answerAllCopies() async {}
+  Future<void> answerAllCopies(Map<String, String> people) async {}
 
   static const _unavailable = 'Contact sync is not available here.';
 }
@@ -1007,10 +1021,13 @@ class ContactSyncCopiesResult {
   /// Details added to synced copies.
   final int added;
 
-  /// People whose copies differ, listed for Ron.
+  /// People whose copies differ, listed for Ron and not yet answered when
+  /// the pass ended.
   final int differing;
 
-  /// People whose merge failed: nothing of theirs was deleted.
+  /// People the pass could not finish: a write failed (nothing of theirs
+  /// deleted), or a delete failed (the copies left are as they were). The
+  /// next merge tries them again.
   final int failed;
 }
 
@@ -1022,6 +1039,7 @@ class ContactSyncCopiesPerson {
     required this.title,
     this.copies = const [],
     this.answer,
+    this.version = '',
   });
 
   /// [answer] when Ron chose to leave them as they are.
@@ -1039,6 +1057,11 @@ class ContactSyncCopiesPerson {
   /// Ron's answer, waiting for a run: the key of the copy whose details he
   /// keeps, or [leave]. Null when he has not answered.
   final String? answer;
+
+  /// The differences as listed, a short stable form of them: an answer
+  /// ([ContactSyncService.answerCopies], [ContactSyncService
+  /// .answerAllCopies]) counts only on these.
+  final String version;
 }
 
 /// One copy of a person whose copies differ.
