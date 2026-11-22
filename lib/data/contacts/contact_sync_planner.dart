@@ -2050,6 +2050,13 @@ class _Orphan {
   final String id;
   final ContactDeleteCause cause;
   bool rescued = false;
+
+  /// For a Gmail deletion taken as a merge: the Gmail contact it was
+  /// merged into (see `_Planner._guessMerges`).
+  String? mergedInto;
+
+  /// The held Outlook copies of its person, asked about with it.
+  final copies = <String>[];
 }
 
 /// Copies of one person: see `_Planner._copies`.
@@ -2093,6 +2100,11 @@ class _Planner {
   final graphStatus = <String, _Status>{};
 
   final orphans = <_Orphan>[];
+
+  /// Held Outlook copies of the person of a pair whose Gmail side was
+  /// taken as merged away, by id: that pair's orphan.
+  final mergedCopyOf = <String, _Orphan>{};
+
   final planned = <_Planned>[];
   final otherReviews = <ContactReviewItem>[];
   final brakes = <ContactBrake>[];
@@ -2127,6 +2139,7 @@ class _Planner {
     _answer();
     _restore();
     _rowsPass();
+    _guessMerges();
     _placeCopies();
     _newContacts(ContactSide.google);
     _newContacts(ContactSide.graph);
@@ -3375,7 +3388,7 @@ class _Planner {
   /// overwritten), and nothing is deleted on the other side. False when
   /// there is no such copy.
   bool _moveToCopy(ContactSide side, _Row row) {
-    final copy = _heldCopyOf(side, row);
+    final copy = _heldCopiesOf(side, row).firstOrNull;
     if (copy == null) return false;
     final copyRow = _rowOf(side, copy)!;
     copyRow.done = true;
@@ -3388,22 +3401,23 @@ class _Planner {
     return true;
   }
 
-  /// A copy held as a duplicate on [side] of the person [row] pairs: alive
-  /// and in Contacts, not yet planned this run, with the name of either
-  /// side of the pair and an email or mobile in common with either.
-  /// The most complete, ties by id.
-  String? _heldCopyOf(ContactSide side, _Row row) {
-    final gone = side == ContactSide.google
+  /// The copies held as duplicates on [side] of the person [row] pairs:
+  /// alive and in Contacts, not yet planned this run, with the name of
+  /// either side of the pair and an email or mobile in common with
+  /// either. The most complete first, ties by id.
+  List<String> _heldCopiesOf(ContactSide side, _Row row) {
+    final here = side == ContactSide.google
         ? row.input.googleDetails
         : row.input.graphDetails;
-    final kept = side == ContactSide.google ? _graphNow(row) : _googleNow(row);
-    // Either side's name: the copy left may still carry the gone copy's
-    // name though the other side has been renamed since (or the other
-    // way round).
-    final names = {?_personKey(kept), ?_personKey(gone)};
-    if (names.isEmpty) return null;
+    final there = side == ContactSide.google
+        ? _graphNow(row)
+        : _googleNow(row);
+    // Either side's name: a copy may still carry one side's name though
+    // the other side has been renamed since.
+    final names = {?_personKey(there), ?_personKey(here)};
+    if (names.isEmpty) return const [];
     Set<String> keys(SyncedContact d) => {..._emailKeys(d), ..._mobileKeys(d)};
-    final pairKeys = {...keys(gone), ...keys(kept)};
+    final pairKeys = {...keys(here), ...keys(there)};
     final copies = [
       for (final r in rows)
         if (r != row &&
@@ -3418,7 +3432,7 @@ class _Planner {
                   keys(_detailsOf(side, id)).any(pairKeys.contains))
             id,
     ];
-    return _mostComplete(side, copies).firstOrNull;
+    return _mostComplete(side, copies);
   }
 
   void _pairSync(
@@ -3794,7 +3808,9 @@ class _Planner {
   /// partner: moved out, held by the change brake), and, once its
   /// person's pair has gone (a member due to be deleted this run), or no
   /// contact of its name is synced, held as kept under a Needs a look
-  /// item of its own, like any kept contact.
+  /// item of its own, like any kept contact; an Outlook copy of a pair
+  /// whose Gmail side was merged away, under that pair's "Merged in
+  /// Gmail" item instead ([_unsyncedCopy]).
   void _placeCopies() {
     // A contact synced, for its copies: paired, or held with its partner
     // (moved out of Contacts, held by the change brake), whose pair stands.
@@ -3838,8 +3854,13 @@ class _Planner {
       }
 
       var paired = members.any((m) => synced(m.$1, m.$2));
-      // Its person's pair has just gone: a member is due to be deleted.
+      // Its person's pair has just gone: a member is due to be deleted, or
+      // its Gmail side was merged away ([merged]: no deletion, and the
+      // held Outlook copies are asked about with it).
       final gone = members.any((m) => _status(m.$1, m.$2) == _Status.orphan);
+      final merged = [
+        for (final (side, id) in members) ?_mergedOrphan(side, id),
+      ].firstOrNull;
       final waiting = [for (final m in members) if (open(m)) m];
       if (!paired) {
         // A copy due to be deleted (its partner gone) is paired first, so
@@ -3918,7 +3939,7 @@ class _Planner {
         if (!paired &&
             (gone ||
                 !syncedNames.contains(_personKey(_detailsOf(side, id))))) {
-          _keepCopy(side, id, row);
+          _unsyncedCopy(side, id, row, merged);
         } else if (row.reopened) {
           _hold(side, id, ContactHeldReason.duplicate, linkId: row.id);
           row.done = true;
@@ -3957,8 +3978,34 @@ class _Planner {
         }
         continue;
       }
-      _keepCopy(side, id, row);
+      _unsyncedCopy(side, id, row);
     }
+  }
+
+  /// A held copy whose person is no longer synced (D2). An Outlook copy of
+  /// a pair whose Gmail side was taken as merged away ([merged], else as
+  /// [mergedCopyOf] finds it) goes with that pair, asked about under the
+  /// same "Merged in Gmail" item ([_mergedLeft]): kept as the copy of a
+  /// gone contact, Copy it back would make a second Gmail copy of the
+  /// person just merged. Any other is kept ([_keepCopy]).
+  void _unsyncedCopy(
+    ContactSide side,
+    String id,
+    _Row row, [
+    _Orphan? merged,
+  ]) {
+    final orphan = side == ContactSide.graph
+        ? merged ?? mergedCopyOf[id]
+        : null;
+    if (orphan == null) {
+      _keepCopy(side, id, row);
+      return;
+    }
+    // Placed once it is known whether the pair is kept, and held till
+    // then, so that no new contact pairs with it.
+    row.done = true;
+    _setStatus(side, id, _Status.held);
+    orphan.copies.add(id);
   }
 
   /// A held copy of a person no longer synced (D2), never copied over
@@ -4448,16 +4495,14 @@ class _Planner {
 
   void _orphansLeft() {
     for (final orphan in orphans) {
+      if (orphan.mergedInto case final survivor?) {
+        _mergedLeft(orphan, survivor);
+        continue;
+      }
       if (orphan.rescued) continue;
       final row = orphan.row;
       final side = orphan.side;
       final id = orphan.id;
-      if (orphan.cause == ContactDeleteCause.deletedInGoogle) {
-        if (_mergedInto(row) case final survivor?) {
-          _heldAsMerged(row, id, survivor);
-          continue;
-        }
-      }
       final listedVersion = side == ContactSide.google
           ? googleListed[id]?.etag
           : graphListed[id]?.changeKey;
@@ -4509,6 +4554,67 @@ class _Planner {
         ),
       );
     }
+  }
+
+  /// The merge guess ([_mergedInto]) for each Gmail deletion, made before
+  /// copies are placed: a pair whose Gmail side was merged away is not
+  /// due to be deleted, and the held Outlook copies of its person
+  /// ([mergedCopyOf]) are not kept as copies of a gone contact, but
+  /// asked about with it ([_unsyncedCopy], [_mergedLeft]).
+  void _guessMerges() {
+    for (final orphan in orphans) {
+      if (orphan.cause != ContactDeleteCause.deletedInGoogle) continue;
+      final survivor = _mergedInto(orphan.row);
+      if (survivor == null) continue;
+      orphan.mergedInto = survivor;
+      for (final copy in _heldCopiesOf(ContactSide.graph, orphan.row)) {
+        mergedCopyOf.putIfAbsent(copy, () => orphan);
+      }
+    }
+  }
+
+  /// The orphan whose kept contact is [id] on [side], when its pair's
+  /// Gmail side was taken as merged away ([_guessMerges]).
+  _Orphan? _mergedOrphan(ContactSide side, String id) =>
+      orphans.firstWhereOrNull(
+        (o) => o.mergedInto != null && o.side == side && o.id == id,
+      );
+
+  /// A pair whose Gmail side was taken as merged into [survivor]: its
+  /// Outlook contact and the held Outlook copies of its person
+  /// ([_Orphan.copies]) held under the "Merged in Gmail" item naming
+  /// [survivor], unless it was paired again this run (rescued): then its
+  /// copies are copies of a synced person again, held as before.
+  void _mergedLeft(_Orphan orphan, String survivor) {
+    for (final copy in orphan.copies) {
+      final row = _rowOf(ContactSide.graph, copy)!;
+      if (orphan.rescued) {
+        if (row.reopened) {
+          _hold(
+            ContactSide.graph,
+            copy,
+            ContactHeldReason.duplicate,
+            linkId: row.id,
+          );
+        }
+        continue;
+      }
+      _hold(
+        ContactSide.graph,
+        copy,
+        ContactHeldReason.waiting,
+        linkId: row.id,
+        reviews: [
+          ContactReviewItem(
+            kind: ContactReviewKind.mergedInGoogle,
+            googleName: survivor,
+            graphId: copy,
+            title: _detailsOf(ContactSide.graph, copy).title,
+          ),
+        ],
+      );
+    }
+    if (!orphan.rescued) _heldAsMerged(orphan.row, orphan.id, survivor);
   }
 
   /// The Gmail contact [row]'s gone Gmail side was most likely merged

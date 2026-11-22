@@ -1496,6 +1496,215 @@ void main() {
       );
     });
 
+    test('a held Hadco copy of a contact merged away is asked about with it',
+        () {
+      // Bob Smith, with a held Hadco copy, merged into Robert Smith.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final merged = robert.withValue(ContactField.emails, [
+        'rob@y.example',
+        'bob@x.example',
+      ]);
+      final plan = run(
+        google: [gDeleted('people/bob'), g('people/rob', merged)],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      // Not kept as the copy of a gone contact: Copy it back would make a
+      // second Gmail Bob, of the one just merged.
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.kept),
+        isEmpty,
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/rob', 'H-bob2')},
+      );
+      final copy = byLink(plan, 2)!;
+      expect((copy.googleName, copy.graphId), (null, 'H-bob2'));
+      expect(copy.state, ContactLinkState.held);
+      expect(copy.reason, ContactHeldReason.waiting);
+      expect(copy.partnerId, isNull);
+      expect(byLink(plan, 1)!.reason, ContactHeldReason.waiting);
+      // Delete it in Hadco too, on the copy: deleted there, nothing made.
+      final deleted = run(
+        links: [
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+        answers: const [
+          ContactAnswer(ContactAnswerKind.deleteHereToo, graphId: 'H-bob2'),
+        ],
+      );
+      final delete = byLink(deleted, 2)!.delete!;
+      expect((delete.side, delete.contactId), (ContactSide.graph, 'H-bob2'));
+      expect(deleted.links.where((l) => l.create != null), isEmpty);
+    });
+
+    test('held Hadco copies of one person merged away go with it', () {
+      // Bob Smith merged into another Bob Smith Ron left out of the sync:
+      // Bob's Hadco copies are copies of one person, one of them joined
+      // only through the other (by a mobile), none sharing the pair's
+      // email.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final left = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@z.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/left',
+            left.withValue(ContactField.emails, [
+              'bob@z.example',
+              'bob@x.example',
+            ]),
+          ),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob.withValue(ContactField.mobile, '+1 212 555 0150'),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(
+            3,
+            null,
+            'H-bob3',
+            base: person(
+              given: 'Bob',
+              family: 'Smith',
+              emails: ['bob@w.example'],
+              mobile: '+1 212 555 0150',
+            ),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(
+            4,
+            'people/left',
+            null,
+            base: left,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.leftOut,
+          ),
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.kept),
+        isEmpty,
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {
+          ('people/left', 'H-bob'),
+          ('people/left', 'H-bob2'),
+          ('people/left', 'H-bob3'),
+        },
+      );
+      for (final id in [2, 3]) {
+        expect(byLink(plan, id)!.reason, ContactHeldReason.waiting);
+      }
+    });
+
+    test('a contact merged away but paired again keeps its copies held', () {
+      // Bob merged into Robert, then brought back in Gmail as a new
+      // contact carrying his Hadco contact's tag: paired with it again,
+      // so his held Hadco copy, read this run, is held again as a copy.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/rob',
+            robert.withValue(ContactField.emails, [
+              'rob@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g('people/back', bob, tag: 'H-bob'),
+        ],
+        graph: [h('H-bob2', bob, key: 'key-new')],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      final pair = byGraph(plan, 'H-bob')!;
+      expect(pair.state, ContactLinkState.paired);
+      expect(pair.googleName, 'people/back');
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.mergedInGoogle),
+        isEmpty,
+      );
+      final copy = byLink(plan, 2)!;
+      expect(copy.reason, ContactHeldReason.duplicate);
+      expect(copy.graphChangeKey, 'key-new');
+    });
+
     test('six merges at once make six questions and no deletion brake', () {
       SyncedContact gone(int i) =>
           person(given: 'P$i', family: 'Gone', emails: ['p$i@x.example']);
