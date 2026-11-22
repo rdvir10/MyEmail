@@ -510,6 +510,75 @@ void main() {
       expect(await api().findByEmail('home@lee.example'), hasLength(12));
       expect(graph.requests, hasLength(3));
     });
+
+    test('getBatch reads twenty to a batch, each part with the select and '
+        'the header: there wherever it is, not there, or not known',
+        () async {
+      final ids = [
+        for (var i = 0; i < 23; i++)
+          graph.seed(contact('P$i', 'F', 'p$i@x.com')),
+      ];
+      graph
+        ..deleteFromOutlook(ids[1])
+        ..purgeFromOutlook(ids[2])
+        // The first part is turned away, and asked again after its wait.
+        ..throttleInBatch(1, retryAfter: 3);
+
+      final read = await api().getBatch([...ids, ids[0]]);
+
+      expect(read.found.keys.toSet(), {...ids}..remove(ids[2]));
+      expect(read.notFound, {ids[2]});
+      expect(read.unknown, isEmpty);
+      expect(read.found[ids[0]]!['givenName'], 'P0');
+      expect(read.found[ids[0]]!.containsKey('fileAs'), isFalse);
+      expect(
+        read.found[ids[1]]!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+      expect(slept, [const Duration(seconds: 3)]);
+      final batches = graph.requestsTo(r'$batch');
+      expect(
+        batches.map(
+          (r) => ((jsonDecode(r.body) as Map)['requests'] as List).length,
+        ),
+        [20, 1, 3],
+      );
+      for (final b in batches) {
+        expect(b.headers['Prefer'], GraphContactsApi.prefer);
+        for (final part in (jsonDecode(b.body) as Map)['requests'] as List) {
+          expect(part['method'], 'GET');
+          expect(part['headers'], {'Prefer': GraphContactsApi.prefer});
+          final url = Uri.parse('${part['url']}');
+          expect(url.path, startsWith('/me/contacts/'));
+          expect(url.queryParameters[r'$select'], graphContactSelect);
+        }
+      }
+
+      // One asking for longer than is worth waiting is not waited for:
+      // nothing is known of it.
+      graph.throttleInBatch(1, retryAfter: 60);
+      final again = await api().getBatch([ids[0], ids[3]]);
+      expect(again.unknown, {ids[0]});
+      expect(again.found.keys, [ids[3]]);
+      expect(again.notFound, isEmpty);
+      expect(slept, [const Duration(seconds: 3)]);
+    });
+
+    test('getBatch throws when a batch fails as a whole, as get would',
+        () async {
+      final ann = graph.seed(contact('Ann', 'Lee', 'ann@example.com'));
+      final client = api(
+        client: MockClient((r) async {
+          if (r.url.path.endsWith(r'$batch')) return http.Response('{}', 500);
+          return graph.handle(r);
+        }),
+      );
+
+      await expectLater(
+        client.getBatch([ann]),
+        throwsA(isA<ConnectionFailed>()),
+      );
+    });
   });
 
   group('writing', () {
