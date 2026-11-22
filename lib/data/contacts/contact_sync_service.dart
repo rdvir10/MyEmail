@@ -682,8 +682,9 @@ class ContactSyncDetailChange {
 
   final ContactField field;
 
-  /// The value there now, as shown (a long note shortened). Null where
-  /// there is none.
+  /// The value there now, as shown. Null only for a value too long to
+  /// show here (a note of more than a line): then [after] is 'changed', or
+  /// null when it would be removed.
   final String? before;
 
   /// What it would become, as shown; null when it would be removed.

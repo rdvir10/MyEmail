@@ -1196,11 +1196,12 @@ class _QuestionCard extends StatelessWidget {
     final q = question;
     String side(ContactSide s) => _sideName(s, graphName);
     final n = q.items.length;
-    // The held contacts by their number, not the brakes' thresholds: a
-    // question stays until answered, and may by then hold fewer than the
-    // more than 5 (or 10) that raised it.
+    // No number, neither the brakes' thresholds (a question stays until
+    // answered, and may by then hold fewer than the more than 5 or 10 that
+    // raised it) nor a count the title, counting only those still waiting,
+    // would contradict.
     final (these, they) =
-        n == 1 ? ('this contact', 'it is') : ('these $n contacts', 'they are');
+        n == 1 ? ('this contact', 'it is') : ('these contacts', 'they are');
     // The side every contact's change (or deletion) is about, where they
     // share one: said once, rather than under every name.
     final sides = {for (final i in q.items) ..._sidesOf(i)};
@@ -1240,15 +1241,20 @@ class _QuestionCard extends StatelessWidget {
               'carries on. Under each name, each detail as it is '
               '${oneSide == null ? 'now on the side named' : 'in ${side(oneSide)} now'}'
               ', and what it would become.',
+          // Copy back puts back what the side would lose, from that
+          // side; but a detail changed on both sides keeps its newer
+          // edit, and a list only gains (a replaced address leaves both).
           oneSide == null
-              ? 'Apply makes each change on the side named. Copy back keeps '
-                  "that side's details as they are and copies them back to "
-                  'the other side. Either way each contact is read again '
-                  'first.'
+              ? 'Apply makes each change on the side named. Copy back '
+                  'keeps what that side has and puts it back on the other, '
+                  'except a detail changed on both sides; a list only '
+                  'gains, so a replaced address leaves both. Either way '
+                  'each contact is read again first.'
               : 'Apply makes these changes in ${side(oneSide)}. Copy back '
-                  "keeps ${side(oneSide)}'s details as they are and copies "
-                  'them back to ${side(oneSide.other)}. Either way each '
-                  'contact is read again first.',
+                  'keeps what ${side(oneSide)} has and puts it back in '
+                  '${side(oneSide.other)}, except a detail changed on both '
+                  'sides; a list only gains, so a replaced address leaves '
+                  'both. Either way each contact is read again first.',
         ),
       ContactSyncQuestionKind.emptyAnswer => (
           q.listed == null
@@ -1455,7 +1461,7 @@ class _QuestionItemTile extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Text(
-            'You chose ${_itemChoiceLabel(answer, graphName)}: the next '
+            'You chose ${_itemChoiceLabel(answer, graphName, i)}: the next '
             'sync carries it out.',
             style: TextStyle(color: theme.colorScheme.primary),
           ),
@@ -1475,7 +1481,7 @@ class _QuestionItemTile extends StatelessWidget {
                     minimumSize: const Size(0, 36),
                     visualDensity: VisualDensity.compact,
                   ),
-                  child: Text(_itemChoiceLabel(c, graphName)),
+                  child: Text(_itemChoiceLabel(c, graphName, i)),
                 ),
             ],
           );
@@ -1511,26 +1517,46 @@ class _QuestionItemTile extends StatelessWidget {
   }
 }
 
-/// A brake's answer for one contact: the question's own, said of one.
-String _itemChoiceLabel(ContactSyncChoice c, String graphName) => switch (c) {
+/// A brake's answer for one contact: the question's own, said of one. Its
+/// Delete names the side the copy is deleted from, the other from where
+/// the contact went, since the body names none.
+String _itemChoiceLabel(
+  ContactSyncChoice c,
+  String graphName,
+  ContactSyncQuestionItem i,
+) =>
+    switch (c) {
       ContactSyncChoice.applyThem => 'Apply',
       ContactSyncChoice.copyThemBack => 'Copy back',
-      ContactSyncChoice.deleteThem => 'Delete',
+      ContactSyncChoice.deleteThem =>
+        'Delete in ${_sideName(i.side.other, graphName)}',
       ContactSyncChoice.dontDelete => "Don't delete",
       _ => _choiceLabel(c, graphName),
     };
 
 /// One detail a held change would remove or replace: "Job title: Sales
 /// manager → Purchasing manager", "Mobile: +1 555 123 4567 → removed".
-/// A long value is shortened to one line. [inSide] names the side it
-/// lands on, for a contact whose changes land on both ("In Hadco,
-/// Company: …"); a detail changed on both sides says that Copy back
-/// leaves it.
-String contactSyncChangeLine(ContactSyncDetailChange c, {String? inSide}) =>
-    '${inSide == null ? '' : 'In $inSide, '}'
-    '${_fieldLabel(c.field)}: ${_shortValue(c.before)} \u2192 '
-    '${c.after == null ? 'removed' : _shortValue(c.after)}'
-    '${c.clash ? ' (changed on both sides; Copy back keeps the newer)' : ''}';
+/// A long value is shortened to one line; a note too long to show comes
+/// with no value at all, and is said to be changed or removed. [inSide]
+/// names the side it lands on, for a contact whose changes land on both
+/// ("In Hadco, Company: …"). A detail changed on both sides keeps its
+/// newer edit whichever answer is given, and says so.
+String contactSyncChangeLine(ContactSyncDetailChange c, {String? inSide}) {
+  final where = inSide == null ? '' : 'In $inSide, ';
+  final what = _fieldLabel(c.field);
+  final clash = c.clash
+      ? ' (changed on both sides: the newer edit stays whichever you '
+          'choose; the other value goes under Needs a look)'
+      : '';
+  // No value shown: never "(none)", which would read as nothing lost.
+  if (c.before == null) {
+    return '$where$what: '
+        '${c.after == null ? 'removed (too long to show here)' : 'changed'}'
+        '$clash';
+  }
+  return '$where$what: ${_shortValue(c.before)} \u2192 '
+      '${c.after == null ? 'removed' : _shortValue(c.after)}$clash';
+}
 
 /// The side a change lands on: its own, where the runner says, else its
 /// contact's. The one place that reads [ContactSyncDetailChange.side].

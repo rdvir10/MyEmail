@@ -1291,7 +1291,7 @@ void main() {
             findsOneWidget);
         expect(
           find.text('One sync would remove or replace details in Hadco on '
-              "these 11 contacts at once, as Google's Undo changes, a backup "
+              "these contacts at once, as Google's Undo changes, a backup "
               'imported again or a bulk edit can, so they are held for your '
               'OK, and everything else carries on. Under each name, each '
               'detail as it is in Hadco now, and what it would become.'),
@@ -1308,8 +1308,6 @@ void main() {
 
       testWidgets('changes: each contact says what it would lose, and can be '
           'answered alone', (tester) async {
-        const note = 'Met at the Atlanta trade show in March, buys flat '
-            'rolled\nfor the Smyrna plant; call before nine.';
         sync = FakeContactSync(status: synced(questions: const [
           ContactSyncQuestion(
             kind: ContactSyncQuestionKind.changes,
@@ -1328,10 +1326,10 @@ void main() {
                     field: ContactField.mobile,
                     before: '+1 555 123 4567',
                   ),
+                  // A note too long to show, as the planner sends it.
                   ContactSyncDetailChange(
                     field: ContactField.notes,
-                    before: note,
-                    after: 'Retired',
+                    after: 'changed',
                   ),
                 ],
               ),
@@ -1345,6 +1343,12 @@ void main() {
                     before: 'Hadco Metal',
                     after: 'Hadco Metals Inc',
                   ),
+                  ContactSyncDetailChange(
+                    field: ContactField.workAddress,
+                    before: '1200 Peachtree Industrial Boulevard, Suite 400, '
+                        'Building C, Atlanta GA 30341',
+                  ),
+                  ContactSyncDetailChange(field: ContactField.notes),
                 ],
               ),
               // Held before details were kept: shown after the next run.
@@ -1361,7 +1365,7 @@ void main() {
 
         expect(
           find.text('One sync would remove or replace details in Hadco on '
-              "these 3 contacts at once, as Google's Undo changes, a backup "
+              "these contacts at once, as Google's Undo changes, a backup "
               'imported again or a bulk edit can, so they are held for your '
               'OK, and everything else carries on. Under each name, each '
               'detail as it is in Hadco now, and what it would become.'),
@@ -1369,8 +1373,9 @@ void main() {
         );
         expect(
           find.text('Apply makes these changes in Hadco. Copy back keeps '
-              "Hadco's details as they are and copies them back to Gmail. "
-              'Either way each contact is read again first.'),
+              'what Hadco has and puts it back in Gmail, except a detail '
+              'changed on both sides; a list only gains, so a replaced address '
+              'leaves both. Either way each contact is read again first.'),
           findsOneWidget,
         );
         expect(find.text('For all 3 at once:'), findsOneWidget);
@@ -1386,15 +1391,20 @@ void main() {
         );
         expect(under('a', 'Mobile: +1 555 123 4567 → removed'),
             findsOneWidget);
+        expect(under('a', 'Notes: changed'), findsOneWidget,
+            reason: 'a note too long to show: changed, not "(none)"');
+        expect(under('b', 'Notes: removed (too long to show here)'),
+            findsOneWidget);
         expect(
           under(
-            'a',
-            'Notes: Met at the Atlanta trade show in March, buys flat '
-                'rolled fo… → Retired',
+            'b',
+            'Work address: 1200 Peachtree Industrial Boulevard, Suite 400, '
+                'Building C,… → removed',
           ),
           findsOneWidget,
           reason: 'a long value on one line, shortened',
         );
+        expect(find.textContaining('(none)'), findsNothing);
         expect(
           under('b', 'Company: Hadco Metal → Hadco Metals Inc'),
           findsOneWidget,
@@ -1546,6 +1556,20 @@ void main() {
           findsOneWidget,
         );
         expect(find.text('Ann Cole: deleted in Gmail'), findsNWidgets(2));
+        // Its own Delete says where: the body names no side.
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:a:deleteThem'),
+            matching: find.text('Delete in Hadco'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text('One sync would delete these contacts at once, so they '
+              'are held for your OK, and everything else carries on.'),
+          findsOneWidget,
+          reason: 'no count beside the title, which counts those waiting',
+        );
         expect(
           find.textContaining('Delete them deletes their copies in Hadco'),
           findsOneWidget,
@@ -1562,7 +1586,7 @@ void main() {
       });
 
       testWidgets('a contact with changes on both sides names the side on '
-          'each line, and a clash says Copy back keeps the newer',
+          'each line, and a clash says its newer edit stays',
           (tester) async {
         sync = FakeContactSync(status: synced(questions: const [
           ContactSyncQuestion(
@@ -1617,7 +1641,8 @@ void main() {
           under(
             'a',
             'In Gmail, Mobile: +1 555 0101 \u2192 removed (changed on both '
-                'sides; Copy back keeps the newer)',
+                'sides: the newer edit stays whichever you choose; the other '
+                'value goes under Needs a look)',
           ),
           findsOneWidget,
         );
@@ -1625,8 +1650,9 @@ void main() {
         expect(
           under(
             'b',
-            'Job title: Buyer \u2192 Senior buyer (changed on both sides; '
-                'Copy back keeps the newer)',
+            'Job title: Buyer \u2192 Senior buyer (changed on both sides: '
+                'the newer edit stays whichever you choose; the other value '
+                'goes under Needs a look)',
           ),
           findsOneWidget,
         );
@@ -1669,8 +1695,10 @@ void main() {
         );
         expect(
           find.text('Apply makes each change on the side named. Copy back '
-              "keeps that side's details as they are and copies them back to "
-              'the other side. Either way each contact is read again first.'),
+              'keeps what that side has and puts it back on the other, except '
+              'a detail changed on both sides; a list only gains, so a '
+              'replaced address leaves both. Either way each contact is read '
+              'again first.'),
           findsOneWidget,
         );
 
