@@ -1425,9 +1425,636 @@ void main() {
   });
 
   group('deletions', () {
-    test('a contact deleted in Gmail is deleted in Outlook', () {
+    test('a contact merged in Gmail into one of another name is asked about',
+        () {
+      // Ron merged Bob Roe into Robert Smith with Merge & fix: Google
+      // reports Bob as deleted, and Robert, paired with his own Hadco
+      // contact, now holds Bob's email.
+      final bob = person(
+        given: 'Bob',
+        family: 'Roe',
+        emails: ['bob@x.example'],
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@x.example'],
+      );
+      final merged = robert.withValue(ContactField.emails, [
+        'rob@x.example',
+        'bob@x.example',
+      ]);
+      final rows = [
+        link(1, 'people/c1', 'H1', base: robert),
+        link(2, 'people/c2', 'H2', base: bob),
+      ];
       final plan = run(
-        google: [gDeleted('people/c1')],
+        google: [gDeleted('people/c2'), g('people/c1', merged)],
+        links: rows,
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      final held = byLink(plan, 2)!;
+      expect(held.state, ContactLinkState.held);
+      expect(held.reason, ContactHeldReason.waiting);
+      expect((held.googleName, held.graphId), (null, 'H2'));
+      expect(held.partnerId, 'people/c2', reason: 'for the bin, if deleted');
+      expect(held.partnerBase, bob);
+      final item = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.mergedInGoogle,
+      );
+      expect((item.googleName, item.graphId), ('people/c1', 'H2'));
+      // Robert's Hadco contact takes the email merged in, as any change.
+      expect(byLink(plan, 1)!.graphWrite!.fields, {ContactField.emails});
+      expect(plan.brakes, isEmpty);
+      // The survivor known only from its row's base: the same.
+      final fromBase = run(
+        google: [gDeleted('people/c2')],
+        links: [link(1, 'people/c1', 'H1', base: merged), rows[1]],
+      );
+      expect(fromBase.links.where((l) => l.delete != null), isEmpty);
+      expect(byLink(fromBase, 2)!.reason, ContactHeldReason.waiting);
+      // A copy of the same person held beside it is still moved to first.
+      final copy = run(
+        google: [gDeleted('people/c2')],
+        links: [
+          link(2, 'people/c2', 'H2', base: bob),
+          link(
+            3,
+            'people/c3',
+            null,
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+        ],
+      );
+      final moved = byLink(copy, 2)!;
+      expect((moved.googleName, moved.graphId), ('people/c3', 'H2'));
+      expect(
+        copy.reviews.where((r) => r.kind == ContactReviewKind.mergedInGoogle),
+        isEmpty,
+      );
+    });
+
+    test('a held Hadco copy of a contact merged away is asked about with it',
+        () {
+      // Bob Smith, with a held Hadco copy, merged into Robert Smith.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final merged = robert.withValue(ContactField.emails, [
+        'rob@y.example',
+        'bob@x.example',
+      ]);
+      final plan = run(
+        google: [gDeleted('people/bob'), g('people/rob', merged)],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(plan.links.where((l) => l.create != null), isEmpty);
+      // Not kept as the copy of a gone contact: Copy it back would make a
+      // second Gmail Bob, of the one just merged.
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.kept),
+        isEmpty,
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/rob', 'H-bob2')},
+      );
+      final copy = byLink(plan, 2)!;
+      expect((copy.googleName, copy.graphId), (null, 'H-bob2'));
+      expect(copy.state, ContactLinkState.held);
+      expect(copy.reason, ContactHeldReason.waiting);
+      expect(copy.partnerId, isNull);
+      expect(byLink(plan, 1)!.reason, ContactHeldReason.waiting);
+      // Delete it in Hadco too, on the copy: deleted there, nothing made.
+      final deleted = run(
+        links: [
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.waiting,
+          ),
+        ],
+        answers: const [
+          ContactAnswer(ContactAnswerKind.deleteHereToo, graphId: 'H-bob2'),
+        ],
+      );
+      final delete = byLink(deleted, 2)!.delete!;
+      expect((delete.side, delete.contactId), (ContactSide.graph, 'H-bob2'));
+      expect(deleted.links.where((l) => l.create != null), isEmpty);
+    });
+
+    test('held Hadco copies of one person merged away go with it', () {
+      // Bob Smith merged into another Bob Smith Ron left out of the sync:
+      // Bob's Hadco copies are copies of one person, one of them joined
+      // only through the other (by a mobile), none sharing the pair's
+      // email.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final left = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@z.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/left',
+            left.withValue(ContactField.emails, [
+              'bob@z.example',
+              'bob@x.example',
+            ]),
+          ),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob.withValue(ContactField.mobile, '+1 212 555 0150'),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(
+            3,
+            null,
+            'H-bob3',
+            base: person(
+              given: 'Bob',
+              family: 'Smith',
+              emails: ['bob@w.example'],
+              mobile: '+1 212 555 0150',
+            ),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(
+            4,
+            'people/left',
+            null,
+            base: left,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.leftOut,
+          ),
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.kept),
+        isEmpty,
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {
+          ('people/left', 'H-bob'),
+          ('people/left', 'H-bob2'),
+          ('people/left', 'H-bob3'),
+        },
+      );
+      for (final id in [2, 3]) {
+        expect(byLink(plan, id)!.reason, ContactHeldReason.waiting);
+      }
+    });
+
+    test('a contact merged away but paired again keeps its copies held', () {
+      // Bob merged into Robert, then brought back in Gmail as a new
+      // contact carrying his Hadco contact's tag: paired with it again,
+      // so his held Hadco copy, read this run, is held again as a copy.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/rob',
+            robert.withValue(ContactField.emails, [
+              'rob@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g('people/back', bob, tag: 'H-bob'),
+        ],
+        graph: [h('H-bob2', bob, key: 'key-new')],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      final pair = byGraph(plan, 'H-bob')!;
+      expect(pair.state, ContactLinkState.paired);
+      expect(pair.googleName, 'people/back');
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.mergedInGoogle),
+        isEmpty,
+      );
+      final copy = byLink(plan, 2)!;
+      expect(copy.reason, ContactHeldReason.duplicate);
+      expect(copy.graphChangeKey, 'key-new');
+    });
+
+    test('six merges at once make six questions and no deletion brake', () {
+      SyncedContact gone(int i) =>
+          person(given: 'P$i', family: 'Gone', emails: ['p$i@x.example']);
+      SyncedContact survivor(int i) => person(
+        given: 'S$i',
+        family: 'Kept',
+        emails: ['s$i@x.example', 'p$i@x.example'],
+      );
+      final plan = run(
+        google: [
+          for (var i = 0; i < 6; i++) ...[
+            gDeleted('people/c$i'),
+            g('people/s$i', survivor(i)),
+          ],
+        ],
+        links: [
+          for (var i = 0; i < 6; i++) ...[
+            link(i, 'people/c$i', 'H$i', base: gone(i)),
+            link(10 + i, 'people/s$i', 'T$i', base: survivor(i)),
+          ],
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(plan.brakes, isEmpty);
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.mergedInGoogle),
+        hasLength(6),
+      );
+    });
+
+    test('a contact new this run is never the one merged into', () {
+      // Bob merged into Robert; the same run brings a new Gmail Bob, made
+      // again by hand with Bob's mobile, which Bob's held Hadco copy also
+      // has. Robert is the one merged into, and the new Bob is placed by
+      // the new-contact rules: asked about, his mobile on two contacts.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+        mobile: '+1 212 555 0100',
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/rob',
+            robert.withValue(ContactField.emails, [
+              'rob@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g(
+            'people/new',
+            person(given: 'Bob', family: 'Smith', mobile: '+1 212 555 0100'),
+          ),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/rob', 'H-bob2')},
+      );
+      final asked = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.newContact,
+      );
+      expect(asked.googleName, 'people/new');
+    });
+
+    test('a contact merged away sharing only a home or work phone is asked '
+        'about', () {
+      // Bob Roe's home phone, merged into Robert Smith; Cal Poe's work
+      // phone, on Carl Moe; both read this run. Dee Fox shares only a
+      // company: deleted.
+      final bob = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Bob', family: 'Roe'),
+        ContactField.homePhones: ['+1 212 555 0101'],
+        ContactField.company: 'Roe Ltd',
+      });
+      final cal = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Cal', family: 'Poe'),
+        ContactField.workPhones: ['+1 212 555 0202'],
+      });
+      final dee = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Dee', family: 'Fox'),
+        ContactField.company: 'Roe Ltd',
+      });
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+        more: {
+          ContactField.homePhones: ['+1 212 555 0101'],
+          ContactField.company: 'Roe Ltd',
+        },
+      );
+      final carl = person(
+        given: 'Carl',
+        family: 'Moe',
+        emails: ['carl@y.example'],
+        more: {
+          ContactField.workPhones: ['+1 212 555 0202'],
+        },
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          gDeleted('people/cal'),
+          gDeleted('people/dee'),
+          g('people/rob', robert, etag: 'etag-2'),
+          g('people/carl', carl, etag: 'etag-2'),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(2, 'people/cal', 'H-cal', base: cal),
+          link(3, 'people/dee', 'H-dee', base: dee),
+          link(
+            4,
+            'people/rob',
+            'H-rob',
+            base: robert.withValue(ContactField.homePhones, null),
+          ),
+          link(5, 'people/carl', 'H-carl', base: carl),
+        ],
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/carl', 'H-cal')},
+      );
+      expect(
+        [for (final l in plan.links) ?l.delete?.contactId],
+        ['H-dee'],
+      );
+    });
+
+    test('a contact deleted on a shared office line is deleted', () {
+      // Old Roe, Amy Roe and Ben Roe share the office's line; Old Roe is
+      // deleted, and neither of the others was changed.
+      SyncedContact at(String given, {String? mobile}) => SyncedContact({
+        ContactField.name: ContactName.of(given: given, family: 'Roe'),
+        ContactField.emails: ['${given.toLowerCase()}@roe.example'],
+        ContactField.mobile: mobile,
+        ContactField.workPhones: ['+1 312 555 0000'],
+        ContactField.company: 'Roe Steel',
+      });
+      final rows = [
+        link(1, 'people/old', 'H-old', base: at('Old')),
+        link(2, 'people/amy', 'H-amy', base: at('Amy')),
+        link(3, 'people/ben', 'H-ben', base: at('Ben')),
+      ];
+      final plan = run(google: [gDeleted('people/old')], links: rows);
+      expect(byLink(plan, 1)!.delete!.contactId, 'H-old');
+      expect(plan.reviews, isEmpty);
+      // Amy changed this run: the line is a sign of a merge into her.
+      final changed = run(
+        google: [
+          gDeleted('people/old'),
+          g('people/amy', at('Amy'), etag: 'etag-2'),
+        ],
+        links: rows,
+      );
+      expect(byLink(changed, 1)!.delete, isNull);
+      expect(changed.reviews.single.googleName, 'people/amy');
+      // A mobile is no shared line: on Ben, unchanged, it is a sign.
+      final mobile = run(
+        google: [gDeleted('people/old')],
+        links: [
+          link(
+            1,
+            'people/old',
+            'H-old',
+            base: at('Old', mobile: '+1 312 555 0101'),
+          ),
+          rows[1],
+          link(
+            3,
+            'people/ben',
+            'H-ben',
+            base: at('Ben', mobile: '+1 312 555 0101'),
+          ),
+        ],
+      );
+      expect(byLink(mobile, 1)!.delete, isNull);
+      expect(mobile.reviews.single.googleName, 'people/ben');
+    });
+
+    test('a number on two of a contact\'s lists counts once', () {
+      // Bob's email went to Rob Ames, his mobile to Rob Zee, both read
+      // this run: one each (the mobile is a phone too), so by id.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+        mobile: '+1 212 555 0100',
+      );
+      final ames = person(
+        given: 'Rob',
+        family: 'Ames',
+        emails: ['ames@y.example'],
+      );
+      final zee = person(
+        given: 'Rob',
+        family: 'Zee',
+        emails: ['zee@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/a',
+            ames.withValue(ContactField.emails, [
+              'ames@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g('people/z', zee.withValue(ContactField.mobile, '+1 212 555 0100')),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(2, 'people/a', 'H-a', base: ames),
+          link(3, 'people/z', 'H-z', base: zee),
+        ],
+      );
+      expect(
+        plan.reviews
+            .singleWhere((r) => r.kind == ContactReviewKind.mergedInGoogle)
+            .googleName,
+        'people/a',
+      );
+    });
+
+    test('a contact merged into one of its full name read this run is asked '
+        'about', () {
+      // Bob Smith shares nothing with the other Bob Smith but the name.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+      );
+      final other = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@y.example'],
+      );
+      List<ContactLinkInput> rows() => [
+        link(1, 'people/bob', 'H-bob', base: bob),
+        link(2, 'people/other', 'H-other', base: other),
+      ];
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/other',
+            other.withValue(ContactField.jobTitle, 'Buyer'),
+            etag: 'etag-2',
+          ),
+        ],
+        links: rows(),
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      final item = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.mergedInGoogle,
+      );
+      expect((item.googleName, item.graphId), ('people/other', 'H-bob'));
+      // Not read this run, it is no sign: deleted.
+      final unread = run(google: [gDeleted('people/bob')], links: rows());
+      expect(byLink(unread, 1)!.delete!.contactId, 'H-bob');
+      // Of two read this run that share his email, the one of his name.
+      final two = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/a',
+            person(
+              given: 'Robert',
+              family: 'Smith',
+              emails: ['rob@y.example', 'bob@x.example'],
+            ),
+          ),
+          g(
+            'people/z',
+            person(
+              given: 'Bob',
+              family: 'Smith',
+              emails: ['bob@z.example', 'bob@x.example'],
+            ),
+          ),
+        ],
+        links: [
+          rows().first,
+          link(
+            2,
+            'people/a',
+            'H-a',
+            base: person(
+              given: 'Robert',
+              family: 'Smith',
+              emails: ['rob@y.example'],
+            ),
+          ),
+          link(
+            3,
+            'people/z',
+            'H-z',
+            base: person(
+              given: 'Bob',
+              family: 'Smith',
+              emails: ['bob@z.example'],
+            ),
+          ),
+        ],
+      );
+      expect(
+        two.reviews
+            .singleWhere((r) => r.kind == ContactReviewKind.mergedInGoogle)
+            .googleName,
+        'people/z',
+      );
+    });
+
+    test('a contact deleted in Gmail is deleted in Outlook', () {
+      // Its email is on no other Gmail contact: a deletion, not a merge.
+      final plan = run(
+        google: [
+          gDeleted('people/c1'),
+          g('people/c9', person(given: 'Ann', family: 'Lee', emails: ['l@x'])),
+        ],
         links: [link(1, 'people/c1', 'H1', base: ann, key: 'key-1')],
       );
       final pair = byLink(plan, 1)!;
@@ -1586,6 +2213,7 @@ void main() {
         ],
       );
       expect(byGoogle(plan, 'people/c2')!.create!.side, ContactSide.graph);
+      // Nor the one it was merged into, new this run: deleted.
       expect(byLink(plan, 1)!.delete!.contactId, 'H1');
       expect(plan.reviews, isEmpty);
     });
@@ -1936,6 +2564,30 @@ void main() {
         link(i, 'people/c$i', 'H$i', base: person(given: 'P$i', family: 'X')),
     ];
 
+    test('each item tells its contact apart by its email, else mobile', () {
+      SyncedContact who(int i) => person(
+        given: 'P$i',
+        family: 'X',
+        emails: i == 0 ? null : ['p$i@x.example', 'other$i@x.example'],
+        mobile: '+1 212 555 010$i',
+      );
+      final plan = run(
+        google: [for (var i = 0; i < 6; i++) g('people/c$i', who(i))],
+        graphGone: {for (var i = 0; i < 6; i++) 'H$i'},
+        links: [
+          for (var i = 0; i < 6; i++)
+            link(i, 'people/c$i', 'H$i', base: who(i)),
+        ],
+      );
+      final items = plan.brakes.single.items;
+      expect(items.first.hint, '+1 212 555 0100', reason: 'no email');
+      expect(items[1].hint, 'p1@x.example');
+      expect(items.every((i) => i.changes.isEmpty), isTrue);
+      final back = ContactBrakeItem.fromJson(items[1].toJson())!;
+      expect(back.hint, 'p1@x.example');
+      expect(back.googleName, 'people/c1');
+    });
+
     test('Delete them keeps the partner for the bin, and Restore makes both',
         () {
       // Run one: Ron deleted six Outlook contacts; the brake holds their
@@ -2137,6 +2789,376 @@ void main() {
       family: 'X',
       more: {ContactField.company: 'Old'},
     );
+
+    test('each item says what Apply them would do, detail by detail', () {
+      final note = ContactNotes('Met at the trade fair.\nKeeps two dogs.');
+      final address = ContactAddress.of(
+        street: '1200 Industrial Parkway, Building 7, Loading Dock Entrance B',
+        city: 'Springfield',
+      );
+      final full = person(
+        given: 'P',
+        family: 'X',
+        emails: ['a@x.example', 'b@x.example'],
+        mobile: '+1 212 555 0100',
+        more: {
+          ContactField.company: 'Old',
+          ContactField.jobTitle: 'Sales manager',
+          ContactField.notes: note,
+          ContactField.workAddress: address,
+          ContactField.birthday: const ContactBirthday(month: 7, day: 4),
+        },
+      );
+      // Gmail lost, or changed, many of them at once (an Undo changes).
+      final changed = SyncedContact({
+        ...full.values,
+        ContactField.emails: ['a@x.example', 'c@x.example'],
+        ContactField.mobile: null,
+        ContactField.jobTitle: 'Purchasing manager',
+        ContactField.company: 'New',
+        ContactField.notes: ContactNotes('Moved to Ohio.\nStill two dogs.'),
+        ContactField.workAddress: ContactAddress.of(city: 'Springfield'),
+        ContactField.birthday: const ContactBirthday(
+          year: 1980,
+          month: 7,
+          day: 4,
+        ),
+      });
+      final plan = run(
+        google: [
+          g('people/c0', changed),
+          // An email only added is no loss.
+          g(
+            'people/c1',
+            full
+                .withValue(ContactField.company, 'New')
+                .withValue(ContactField.emails, [
+                  'a@x.example',
+                  'b@x.example',
+                  'c@x.example',
+                ]),
+          ),
+          for (var i = 2; i < 11; i++)
+            g('people/c$i', full.withValue(ContactField.company, 'New')),
+        ],
+        links: [
+          for (var i = 0; i < 11; i++) link(i, 'people/c$i', 'H$i', base: full),
+        ],
+      );
+      final item = plan.brakes.single.items.first;
+      expect(item.side, ContactSide.graph, reason: 'Hadco would lose them');
+      expect(item.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.graph,
+          before: 'b@x.example',
+        ),
+        const ContactDetailChange(
+          field: ContactField.mobile,
+          side: ContactSide.graph,
+          before: '+1 212 555 0100',
+        ),
+        const ContactDetailChange(
+          field: ContactField.workAddress,
+          side: ContactSide.graph,
+          before:
+              '1200 Industrial Parkway, Building 7, Loading Dock '
+              'Entrance\u2026',
+          after: 'Springfield',
+        ),
+        const ContactDetailChange(
+          field: ContactField.company,
+          side: ContactSide.graph,
+          before: 'Old',
+          after: 'New',
+        ),
+        const ContactDetailChange(
+          field: ContactField.jobTitle,
+          side: ContactSide.graph,
+          before: 'Sales manager',
+          after: 'Purchasing manager',
+        ),
+        const ContactDetailChange(
+          field: ContactField.notes,
+          side: ContactSide.graph,
+          after: 'changed',
+        ),
+      ], reason: 'a year added to the birthday is no loss');
+      // Kept with the question, and never in a log.
+      final back = ContactBrakeItem.fromJson(item.toJson())!;
+      expect(back.changes, item.changes);
+      expect(back.side, ContactSide.graph);
+      expect('${item.changes[3]}', 'ContactDetailChange(graph company)');
+      expect(
+        plan.brakes.single.items[1].changes,
+        [
+          const ContactDetailChange(
+            field: ContactField.company,
+            side: ContactSide.graph,
+            before: 'Old',
+            after: 'New',
+          ),
+        ],
+      );
+    });
+
+    test('a list shows only the values it would lose, each on its own', () {
+      const long =
+          'ann.cole.purchasing.department.second.floor.office@hadcometals'
+          '.example';
+      final emails = SyncedContact({
+        ContactField.name: ContactName.of(given: 'Ann', family: 'Cole'),
+        ContactField.emails: [
+          'ann.cole@hadcometals.example',
+          'ann.cole.personal@gmail.example',
+          long,
+        ],
+        ContactField.homePhones: ['+1 212 555 0101', '+1 212 555 0102'],
+      });
+      // Hadco lost its last email, and changed its second home phone in
+      // its slot: Gmail's is changed in place.
+      final hadco = emails
+          .withValue(ContactField.emails, [
+            'ann.cole@hadcometals.example',
+            'ann.cole.personal@gmail.example',
+          ])
+          .withValue(ContactField.homePhones, [
+            '+1 212 555 0101',
+            '+1 212 555 0199',
+          ]);
+      final plan = run(
+        google: [for (var i = 0; i < 11; i++) g('people/c$i', emails)],
+        graph: [for (var i = 0; i < 11; i++) h('H$i', hadco)],
+        links: [
+          for (var i = 0; i < 11; i++)
+            link(
+              i,
+              'people/c$i',
+              'H$i',
+              base: emails,
+              state: ContactLinkState.held,
+              reason: ContactHeldReason.changeBrake,
+            ),
+        ],
+      );
+      expect(plan.heldBrakes.single.items.first.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before:
+              'ann.cole.purchasing.department.second.floor.office@hadcomet'
+              '\u2026',
+        ),
+        const ContactDetailChange(
+          field: ContactField.homePhones,
+          side: ContactSide.google,
+          before: '+1 212 555 0102',
+          after: '+1 212 555 0199',
+        ),
+      ]);
+    });
+
+    test('a value is shown replaced only by the one put in its place', () {
+      // Hadco put d in b's slot and removed a, c moving up into a's slot:
+      // Apply them removes a from Gmail and changes b to d there, though
+      // d stands where a stood.
+      final base = person(
+        given: 'Ann',
+        family: 'Cole',
+        emails: ['a@x.example', 'b@x.example', 'c@x.example'],
+      );
+      final hadco = base.withValue(ContactField.emails, [
+        'c@x.example',
+        'd@x.example',
+      ]);
+      final row = link(
+        1,
+        'people/c1',
+        'H1',
+        base: base,
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.changeBrake,
+      );
+      final plan = run(
+        google: [g('people/c1', base)],
+        graph: [h('H1', hadco)],
+        links: [row],
+      );
+      final item = plan.heldBrakes.single.items.single;
+      expect(item.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before: 'a@x.example',
+        ),
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before: 'b@x.example',
+          after: 'd@x.example',
+        ),
+      ]);
+      final applied = run(
+        google: [g('people/c1', base)],
+        graph: [h('H1', hadco)],
+        links: [row],
+        answers: [
+          ContactAnswer(ContactAnswerKind.applyHeld, held: [item]),
+        ],
+      );
+      final write = byLink(applied, 1)!.googleWrite!;
+      expect(write.replaced[ContactField.emails], {
+        'b@x.example': 'd@x.example',
+      });
+      expect(write.target.list(ContactField.emails), [
+        'd@x.example',
+        'c@x.example',
+      ]);
+    });
+
+    test('a detail changed on both sides is flagged as a clash', () {
+      // Both sides changed the job title, Gmail's the newer edit; Gmail
+      // alone changed the company.
+      final start = person(
+        given: 'Ann',
+        family: 'Cole',
+        more: {ContactField.company: 'Acme', ContactField.jobTitle: 'Buyer'},
+      );
+      final gmail = start
+          .withValue(ContactField.jobTitle, 'Manager')
+          .withValue(ContactField.company, 'Acme Corp');
+      final hadco = start.withValue(ContactField.jobTitle, 'Lead buyer');
+      List<ContactLinkInput> rows({required bool held}) => [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: start,
+            state: held ? ContactLinkState.held : ContactLinkState.paired,
+            reason: held ? ContactHeldReason.changeBrake : null,
+          ),
+      ];
+      final expected = [
+        const ContactDetailChange(
+          field: ContactField.company,
+          side: ContactSide.graph,
+          before: 'Acme',
+          after: 'Acme Corp',
+        ),
+        const ContactDetailChange(
+          field: ContactField.jobTitle,
+          side: ContactSide.graph,
+          before: 'Lead buyer',
+          after: 'Manager',
+          clash: true,
+        ),
+      ];
+      // Raised this run, and rebuilt for a question held before.
+      for (final held in [false, true]) {
+        final plan = run(
+          google: [
+            for (var i = 0; i < 11; i++) g('people/c$i', gmail, at: later),
+          ],
+          graph: [for (var i = 0; i < 11; i++) h('H$i', hadco, at: earlier)],
+          links: rows(held: held),
+        );
+        final item = plan.heldBrakes.single.items.first;
+        expect(item.changes, expected, reason: held ? 'held' : 'raised');
+        expect(ContactBrakeItem.fromJson(item.toJson())!.changes, expected);
+      }
+      // Copy them back puts the company back, but not the job title.
+      final back = run(
+        google: [g('people/c0', gmail, at: later)],
+        graph: [h('H0', hadco, at: earlier)],
+        links: [rows(held: true).first],
+        answers: const [ContactAnswer(ContactAnswerKind.copyHeldBack)],
+      );
+      final pair = byLink(back, 0)!;
+      expect(pair.googleWrite!.target.text(ContactField.company), 'Acme');
+      expect(pair.graphWrite!.target.text(ContactField.jobTitle), 'Manager');
+    });
+
+    test('an item lists the details lost on both sides', () {
+      // Gmail changed the company (Hadco would lose Acme); Hadco removed
+      // the mobile and an email (Gmail would lose them).
+      final both = person(
+        given: 'Ann',
+        family: 'Cole',
+        emails: ['ann@x.example', 'a2@x.example'],
+        mobile: '+1 212 555 0100',
+        more: {ContactField.company: 'Acme'},
+      );
+      final rows = [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: both,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final gmail = both.withValue(ContactField.company, 'Acme Corp');
+      final hadco = both
+          .withValue(ContactField.mobile, null)
+          .withValue(ContactField.emails, ['ann@x.example']);
+      final plan = run(
+        google: [for (var i = 0; i < 11; i++) g('people/c$i', gmail)],
+        graph: [for (var i = 0; i < 11; i++) h('H$i', hadco)],
+        links: rows,
+      );
+      final item = plan.heldBrakes.single.items.first;
+      expect(item.side, ContactSide.google, reason: 'Gmail loses more');
+      expect(
+        {for (final c in item.changes) (c.side, c.field)},
+        {
+          (ContactSide.google, ContactField.emails),
+          (ContactSide.google, ContactField.mobile),
+          (ContactSide.graph, ContactField.company),
+        },
+      );
+      expect(
+        item.changes.singleWhere((c) => c.side == ContactSide.graph),
+        const ContactDetailChange(
+          field: ContactField.company,
+          side: ContactSide.graph,
+          before: 'Acme',
+          after: 'Acme Corp',
+        ),
+      );
+      // Exactly what Apply them would write.
+      final applied = run(
+        google: [g('people/c0', gmail)],
+        graph: [h('H0', hadco)],
+        links: [rows.first],
+        answers: [
+          ContactAnswer(ContactAnswerKind.applyHeld, held: [item]),
+        ],
+      );
+      final pair = byLink(applied, 0)!;
+      expect(
+        {
+          for (final f in pair.googleWrite!.fields) (ContactSide.google, f),
+          for (final f in pair.graphWrite!.fields) (ContactSide.graph, f),
+        },
+        {for (final c in item.changes) (c.side, c.field)},
+      );
+      // Each change keeps its side through toJson/fromJson; one kept
+      // without a side takes its item's.
+      final back = ContactBrakeItem.fromJson(item.toJson())!;
+      expect(back.changes, item.changes);
+      final older = ContactBrakeItem.fromJson({
+        'title': 'Ann Cole',
+        'side': 'graph',
+        'changes': [
+          {'field': 'company', 'before': 'Acme', 'after': 'Acme Corp'},
+        ],
+      })!;
+      expect(older.changes.single.side, ContactSide.graph);
+    });
+
     List<ContactLinkInput> pairs(int n) => [
       for (var i = 0; i < n; i++) link(i, 'people/c$i', 'H$i', base: base),
     ];
@@ -2239,6 +3261,69 @@ void main() {
       expect(plan.links.where((l) => l.graphWrite != null), hasLength(10));
     });
 
+    test('a change held before shows its details at the next run', () {
+      // Held before details were kept (the tablet's 58): every run the
+      // question's items are rebuilt from the pairs' reads.
+      final heldRows = [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final reads = contactsToRead(links: heldRows);
+      expect(reads.google, hasLength(11), reason: 'read every run');
+      expect(reads.graph, hasLength(11));
+      final plan = run(
+        // Pair 10 read on its Gmail side only: left out.
+        google: renamed(11),
+        graph: unchanged(10),
+        links: heldRows,
+      );
+      expect(plan.brakes, isEmpty, reason: 'nothing raised anew');
+      expect(plan.links, isEmpty, reason: 'still held');
+      final items = plan.heldBrakes.single.items;
+      expect(plan.heldBrakes.single.kind, ContactBrakeKind.changes);
+      expect(items, hasLength(10));
+      expect(items.first.googleName, 'people/c0');
+      expect(items.first.side, ContactSide.graph);
+      expect(items.first.changes, [
+        const ContactDetailChange(
+          field: ContactField.company,
+          side: ContactSide.graph,
+          before: 'Old',
+          after: 'New',
+        ),
+      ]);
+      // A deletion held before keeps its hint, read or not.
+      final deletion = run(
+        links: [
+          link(
+            20,
+            'people/c20',
+            null,
+            base: person(given: 'P', family: 'X', emails: ['p@x.example']),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ),
+        ],
+      );
+      final held = deletion.heldBrakes.single;
+      expect(held.kind, ContactBrakeKind.deletions);
+      expect(held.items.single.hint, 'p@x.example');
+      expect(held.items.single.side, ContactSide.graph);
+      // A question raised this run is there too.
+      final raised = run(google: renamed(11), links: pairs(11));
+      expect(
+        raised.heldBrakes.single.items.map((i) => i.googleName),
+        raised.brakes.single.items.map((i) => i.googleName),
+      );
+    });
+
     test('Copy them back writes the other side\'s values back', () {
       final plan = run(
         google: renamed(11),
@@ -2259,6 +3344,101 @@ void main() {
       final first = byLink(plan, 0)!;
       expect(first.graphWrite, isNull);
       expect(first.googleWrite!.target.text(ContactField.company), 'Old');
+    });
+
+    test('each of the four answers given to one item acts on it alone', () {
+      ContactBrakeItem one(int i) => ContactBrakeItem(
+        title: 'P X',
+        side: ContactSide.graph,
+        googleName: 'people/c$i',
+        graphId: 'H$i',
+      );
+      final changeRows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      for (final kind in [
+        ContactAnswerKind.applyHeld,
+        ContactAnswerKind.copyHeldBack,
+      ]) {
+        final plan = run(
+          google: renamed(3),
+          graph: unchanged(3),
+          links: changeRows,
+          answers: [
+            ContactAnswer(kind, held: [one(1)]),
+          ],
+        );
+        expect(plan.answers, [ContactAnswerOutcome.applied], reason: '$kind');
+        final answered = byLink(plan, 1)!;
+        expect(answered.state, ContactLinkState.paired, reason: '$kind');
+        expect(
+          kind == ContactAnswerKind.applyHeld
+              ? answered.graphWrite?.target.text(ContactField.company)
+              : answered.googleWrite?.target.text(ContactField.company),
+          kind == ContactAnswerKind.applyHeld ? 'New' : 'Old',
+        );
+        expect(byLink(plan, 0), isNull, reason: '$kind: still held');
+        expect(byLink(plan, 2), isNull, reason: '$kind: still held');
+        // The rest of the question stands, with its details.
+        expect(
+          plan.heldBrakes.single.items.map((i) => i.googleName),
+          ['people/c0', 'people/c2'],
+        );
+      }
+      final deletionRows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            null,
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ),
+      ];
+      for (final kind in [
+        ContactAnswerKind.deleteHeld,
+        ContactAnswerKind.keepHeld,
+      ]) {
+        final plan = run(
+          google: renamed(3),
+          graphGone: {'H0', 'H1', 'H2'},
+          links: deletionRows,
+          answers: [
+            ContactAnswer(
+              kind,
+              held: [
+                const ContactBrakeItem(
+                  title: 'P X',
+                  side: ContactSide.graph,
+                  googleName: 'people/c1',
+                ),
+              ],
+            ),
+          ],
+        );
+        expect(plan.answers, [ContactAnswerOutcome.applied], reason: '$kind');
+        final answered = byLink(plan, 1)!;
+        if (kind == ContactAnswerKind.deleteHeld) {
+          expect(answered.delete!.contactId, 'people/c1');
+        } else {
+          expect(answered.reason, ContactHeldReason.kept);
+        }
+        expect(byLink(plan, 0), isNull, reason: '$kind: still held');
+        expect(byLink(plan, 2), isNull, reason: '$kind: still held');
+        expect(
+          plan.heldBrakes.single.items.map((i) => i.googleName),
+          ['people/c0', 'people/c2'],
+        );
+      }
     });
 
     test('an answer acts only on the rows its question listed', () {

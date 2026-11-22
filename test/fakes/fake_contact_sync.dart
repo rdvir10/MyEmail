@@ -30,6 +30,10 @@ class FakeContactSync implements ContactSyncService {
   /// What [choose] throws, as the runner refuses a pair while a run is
   /// going or for an account that cannot sync.
   Object? chooseFailure;
+
+  /// What [answerQuestion] throws, as the runner refuses an answer to a
+  /// question that has changed since it was drawn.
+  Object? answerFailure;
   List<ContactSyncBackupFile> backupFiles;
 
   /// The clock [startIfDue] judges by.
@@ -42,6 +46,10 @@ class FakeContactSync implements ContactSyncService {
   final List<({String google, String graph})> chosen = [];
   final List<(ContactSyncQuestionKind, ContactSyncChoice)> questionAnswers =
       [];
+
+  /// The items each answer to a question named, in step with
+  /// [questionAnswers]: null for the whole question.
+  final List<Set<String>?> questionItems = [];
   final List<({int id, ContactSyncChoice choice, String? candidateId})>
       lookAnswers = [];
   final List<ContactSyncChoice> allDiffering = [];
@@ -136,10 +144,13 @@ class FakeContactSync implements ContactSyncService {
   @override
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
-    ContactSyncChoice choice,
-  ) async {
+    ContactSyncChoice choice, {
+    Set<String>? items,
+  }) async {
     calls.add('answerQuestion');
+    if (answerFailure case final failure?) throw failure;
     questionAnswers.add((kind, choice));
+    questionItems.add(items);
   }
 
   @override
