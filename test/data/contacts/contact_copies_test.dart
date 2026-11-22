@@ -8,13 +8,21 @@ import 'package:myemail/domain/synced_contact.dart';
 void main() {
   final norm = ContactNormaliser(region: 'US');
 
+  // Copies of one person, joined by the mobile they share unless a test
+  // gives them another, or none.
   OutlookCopy copy(
     String id, [
     Map<String, Object?> json = const {},
     String? photo,
   ]) => OutlookCopy(
     id: id,
-    json: {'id': id, 'givenName': 'Ann', 'surname': 'Cole', ...json},
+    json: {
+      'id': id,
+      'givenName': 'Ann',
+      'surname': 'Cole',
+      'mobilePhone': '+1 212 555 0100',
+      ...json,
+    },
     photo: photo,
   );
 
@@ -210,6 +218,29 @@ void main() {
       expect(none.patch, {'personalNotes': 'Two dogs. A cat.'});
     });
 
+    test('held only as a run of whole words', () {
+      // "art" is in "Martin's partner", but not as a word.
+      final inside = merge(copy('A', {'personalNotes': "Martin's partner"}), [
+        copy('B', {'personalNotes': 'art'}),
+      ]);
+      expect(inside.outcome, CopiesOutcome.differs);
+      expect(inside.differences.single.label, 'Notes');
+      // Nor, the other way, is the longer taken.
+      final outside = merge(copy('A', {'personalNotes': 'art'}), [
+        copy('B', {'personalNotes': "Martin's partner"}),
+      ]);
+      expect(outside.outcome, CopiesOutcome.differs);
+      // Words in a row, punctuation aside: held.
+      final run = merge(copy('A', {'personalNotes': 'Met at the fair.'}), [
+        copy('B', {'personalNotes': 'THE FAIR'}),
+      ]);
+      expect(run.outcome, CopiesOutcome.same);
+      final apart = merge(copy('A', {'personalNotes': 'Met at the fair.'}), [
+        copy('B', {'personalNotes': 'met the fair'}),
+      ]);
+      expect(apart.outcome, CopiesOutcome.differs);
+    });
+
     test('notes neither holds: a difference, a long note not shown', () {
       final merged = merge(copy('A', {'personalNotes': 'Two dogs.'}), [
         copy('B', {'personalNotes': 'A cat.'}),
@@ -277,15 +308,22 @@ void main() {
         copy('B', {'mobilePhone': '+1 212 555 0100'}),
       ]);
       expect(same.outcome, CopiesOutcome.same);
-      final taken = merge(copy('A'), [
-        copy('B', {'mobilePhone': '+1 212 555 0100'}),
+      // Joined by an email, the synced copy having none: taken from a copy
+      // whose mobile another copy has too.
+      final joined = {
+        'emailAddresses': [email('ann@x.example')],
+      };
+      final taken = merge(copy('A', {...joined, 'mobilePhone': null}), [
+        copy('B', {...joined, 'mobilePhone': '+1 212 555 0199'}),
+        copy('C', {'mobilePhone': '(212) 555-0199'}),
       ]);
-      expect(taken.patch, {'mobilePhone': '+1 212 555 0100'});
+      expect(taken.outcome, CopiesOutcome.adds);
+      expect(taken.patch, {'mobilePhone': '+1 212 555 0199'});
       expect(taken.adds, [
-        const CopiesDetail(label: 'Mobile', value: '+1 212 555 0100'),
+        const CopiesDetail(label: 'Mobile', value: '+1 212 555 0199'),
       ]);
-      final differs = merge(copy('A', {'mobilePhone': '+1 212 555 0100'}), [
-        copy('B', {'mobilePhone': '+1 212 555 0199'}),
+      final differs = merge(copy('A', joined), [
+        copy('B', {...joined, 'mobilePhone': '+1 212 555 0199'}),
       ]);
       expect(differs.differences, [
         const CopiesDifference(
@@ -398,6 +436,46 @@ void main() {
       ]);
       expect(over.outcome, CopiesOutcome.differs);
       expect(over.differences.single.label, 'IM names');
+    });
+
+    test('an answer fills the room: the chosen copy\'s first, then the '
+        'synced copy\'s, then the others\'', () {
+      final kept = copy('A', {
+        'emailAddresses': [email('a@x.example'), email('b@x.example')],
+      });
+      final other = copy('B', {
+        'emailAddresses': [email('c@x.example'), email('d@x.example')],
+      });
+      final third = copy('C', {
+        'emailAddresses': [email('e@x.example')],
+      });
+      expect(merge(kept, [other, third]).outcome, CopiesOutcome.differs);
+      final mine = merge(kept, [other, third], keep: 'A');
+      expect(mine.patch, {
+        'emailAddresses': [
+          email('a@x.example'),
+          email('b@x.example'),
+          email('c@x.example'),
+        ],
+      });
+      expect(mine.adds, [
+        const CopiesDetail(label: 'Emails', value: 'c@x.example'),
+      ]);
+      final theirs = merge(kept, [other, third], keep: 'C');
+      expect(theirs.patch, {
+        'emailAddresses': [
+          email('e@x.example'),
+          email('a@x.example'),
+          email('b@x.example'),
+        ],
+      });
+      expect(merge(kept, [other, third], keep: 'B').patch, {
+        'emailAddresses': [
+          email('c@x.example'),
+          email('d@x.example'),
+          email('a@x.example'),
+        ],
+      });
     });
 
     test('children and categories have no room: never a difference', () {
@@ -531,6 +609,38 @@ void main() {
     }
   });
 
+  group('the country in an address', () {
+    test('only in its own part, or as the last words', () {
+      Map<String, Object?> at(Map<String, Object?> a) => {
+        'businessAddress': a,
+      };
+      final plaza = merge(copy('A', at(address(street: '1 Plaza'))), [
+        copy('B', at(address(street: '1 America Plaza'))),
+      ]);
+      expect(plaza.outcome, CopiesOutcome.differs);
+      final route = merge(copy('A', at(address(street: '100 Route 1'))), [
+        copy('B', at(address(street: '100 US Route 1'))),
+      ]);
+      expect(route.outcome, CopiesOutcome.differs);
+      final last = merge(
+        copy(
+          'A',
+          at(
+            address(
+              street: '1 Main St\nSpringfield IL 62701',
+              country: 'United States of America',
+            ),
+          ),
+        ),
+        [
+          copy('B', at(address(street: '1 Main St, Springfield IL 62701 USA'))),
+          copy('C', at(address(street: '1 Main St\nSpringfield IL 62701 US'))),
+        ],
+      );
+      expect(last.outcome, CopiesOutcome.same);
+    });
+  });
+
   group('photo', () {
     test('none, or the same, on the others: the same', () {
       final merged = merge(copy('A', const {}, 'p1'), [
@@ -643,6 +753,277 @@ void main() {
     });
   });
 
+  group('the email slots of a whole read', () {
+    // A whole read repeats the first three emails, Outlook's names and
+    // all, as primary, secondary and tertiaryEmailAddress.
+    Map<String, Object?> read(List<Map<String, Object?>> emails) => {
+      'emailAddresses': emails,
+      'primaryEmailAddress': emails.isNotEmpty ? emails[0] : null,
+      'secondaryEmailAddress': emails.length > 1 ? emails[1] : null,
+      'tertiaryEmailAddress': emails.length > 2 ? emails[2] : null,
+    };
+
+    test('they are the copy\'s emails, never written', () {
+      final added = merge(copy('A', read([email('ann@x.example')])), [
+        copy('B', read([email('ann@x.example'), email('ann@work.example')])),
+      ]);
+      expect(added.outcome, CopiesOutcome.adds);
+      expect(added.patch, {
+        'emailAddresses': [email('ann@x.example'), email('ann@work.example')],
+      });
+      // Outlook's names for them aside, the same.
+      final names = merge(
+        copy('A', read([email('ann@x.example', 'Ann Cole')])),
+        [
+          copy('B', read([email('ann@x.example', 'ann@x.example')])),
+        ],
+      );
+      expect(names.outcome, CopiesOutcome.same);
+      // In another order, the same.
+      final order = merge(
+        copy('A', read([email('a@x.example'), email('b@x.example')])),
+        [
+          copy('B', read([email('b@x.example'), email('a@x.example')])),
+        ],
+      );
+      expect(order.outcome, CopiesOutcome.same);
+    });
+
+    test('an address only in a slot is an email, never lost', () {
+      final merged = merge(
+        copy('A', {
+          'emailAddresses': [email('ann@x.example')],
+        }),
+        [
+          copy('B', {
+            'emailAddresses': [email('ann@x.example')],
+            'secondaryEmailAddress': email('ann@slot.example'),
+          }),
+        ],
+      );
+      expect(merged.outcome, CopiesOutcome.adds);
+      expect(merged.patch, {
+        'emailAddresses': [email('ann@x.example'), email('ann@slot.example')],
+      });
+    });
+
+    test('another copy\'s answer leaves the synced copy\'s first email', () {
+      final merged = merge(
+        copy('A', {
+          ...read([email('a@x.example'), email('b@x.example')]),
+          'jobTitle': 'Buyer',
+        }),
+        [
+          copy('B', {
+            ...read([email('c@x.example')]),
+            'jobTitle': 'Manager',
+          }),
+        ],
+        keep: 'B',
+      );
+      expect(merged.patch, {
+        'emailAddresses': [
+          email('a@x.example'),
+          email('b@x.example'),
+          email('c@x.example'),
+        ],
+        'jobTitle': 'Manager',
+      });
+    });
+
+    test('a slot that is not an email is a difference', () {
+      final merged = merge(copy('A', read([email('ann@x.example')])), [
+        copy('B', {
+          ...read([email('ann@x.example')]),
+          'secondaryEmailAddress': 'ann@slot.example',
+        }),
+      ]);
+      expect(merged.outcome, CopiesOutcome.differs);
+      expect(merged.differences.single.label, 'Emails');
+    });
+  });
+
+  group('copies joined by an email or a mobile', () {
+    test('another of the name, sharing neither: Same name only', () {
+      final ann = copy('A', {
+        'mobilePhone': null,
+        'emailAddresses': [email('ann@x.example')],
+      });
+      final other = copy('B', {
+        'mobilePhone': null,
+        'emailAddresses': [email('ann.cole@other.example')],
+        'homeAddress': address(street: '9 Elm St', city: 'Oakland'),
+      });
+      final copyOfAnn = copy('C', {
+        'mobilePhone': null,
+        'emailAddresses': [email('ANN@x.example')],
+      });
+      final merged = merge(ann, [other, copyOfAnn]);
+      expect(merged.outcome, CopiesOutcome.differs);
+      expect(merged.differences, [
+        const CopiesDifference(
+          label: 'Same name only',
+          others: {'B': 'no email or mobile in common', 'C': null},
+        ),
+      ]);
+      // Merged on Ron's answer only.
+      expect(merge(ann, [other, copyOfAnn], keep: 'A').patch, {
+        'emailAddresses': [
+          email('ann@x.example'),
+          email('ann.cole@other.example'),
+        ],
+        'homeAddress': address(street: '9 Elm St', city: 'Oakland'),
+      });
+    });
+
+    test('joined through another copy that is', () {
+      // A and B share an email, B and C a mobile.
+      final merged = merge(
+        copy('A', {
+          'mobilePhone': null,
+          'emailAddresses': [email('ann@x.example')],
+        }),
+        [
+          copy('C', {'mobilePhone': '+1 212 555 0199', 'jobTitle': 'Buyer'}),
+          copy('B', {
+            'mobilePhone': '212-555-0199',
+            'emailAddresses': [email('ann@x.example')],
+          }),
+        ],
+      );
+      expect(merged.outcome, CopiesOutcome.adds);
+      expect(merged.patch['jobTitle'], 'Buyer');
+    });
+
+    test('a synced copy with no email or mobile joins none', () {
+      final merged = merge(copy('A', {'mobilePhone': null}), [
+        copy('B', {'mobilePhone': null, 'jobTitle': 'Buyer'}),
+      ]);
+      expect(merged.outcome, CopiesOutcome.differs);
+      expect(merged.differences.first.label, 'Same name only');
+    });
+  });
+
+  group('a mobile or birthday from a copy joined only by an email', () {
+    test('a difference, not taken', () {
+      // A mother and her daughter of one name, on the family's email.
+      OutlookCopy maria(String id, Map<String, Object?> json) => OutlookCopy(
+        id: id,
+        json: {
+          'id': id,
+          'givenName': 'Maria',
+          'surname': 'Lopez',
+          'emailAddresses': [email('lopez@fam.example')],
+          ...json,
+        },
+      );
+      final merged = merge(maria('M', const {}), [
+        maria('D', {
+          'mobilePhone': '+1 212 555 0199',
+          'birthday': '2001-03-02T11:59:00Z',
+        }),
+      ]);
+      expect(merged.outcome, CopiesOutcome.differs);
+      expect(merged.differences, [
+        const CopiesDifference(
+          label: 'Mobile',
+          others: {'D': '+1 212 555 0199'},
+        ),
+        const CopiesDifference(label: 'Birthday', others: {'D': '2001-03-02'}),
+      ]);
+      expect(merged.patch, isEmpty);
+    });
+
+    test('taken from a copy whose mobile another copy has', () {
+      final joined = {
+        'emailAddresses': [email('ann@x.example')],
+      };
+      final merged = merge(copy('A', {...joined, 'mobilePhone': null}), [
+        copy('B', {
+          ...joined,
+          'mobilePhone': '+1 212 555 0199',
+          'birthday': '1980-07-04T11:59:00Z',
+        }),
+        copy('C', {'mobilePhone': '(212) 555-0199'}),
+      ]);
+      expect(merged.outcome, CopiesOutcome.adds);
+      expect(merged.patch, {
+        'mobilePhone': '+1 212 555 0199',
+        'birthday': '1980-07-04T11:59:00Z',
+      });
+    });
+  });
+
+  group('a value a rule cannot read', () {
+    test('on another copy: a difference, never dropped', () {
+      for (final (json, label, shown)
+          in <(Map<String, Object?>, String, String)>[
+        ({'jobTitle': 42}, 'Job title', '42'),
+        ({'children': 'Tom'}, 'Children', 'Tom'),
+        (
+          {
+            'emailAddresses': ['ann@work.example'],
+          },
+          'Emails',
+          'ann@work.example',
+        ),
+        (
+          {
+            'businessAddress': {'street': '1 Main St', 'postalCode': 62704},
+          },
+          'Work address',
+          '62704, 1 Main St',
+        ),
+        ({'birthday': 'May 4'}, 'Birthday', 'May 4'),
+        ({'personalNotes': ['a list']}, 'Notes', 'a list'),
+      ]) {
+        final merged = merge(copy('A'), [copy('B', json)]);
+        expect(merged.outcome, CopiesOutcome.differs, reason: label);
+        expect(merged.differences, [
+          CopiesDifference(label: label, others: {'B': shown}),
+        ], reason: label);
+      }
+    });
+
+    test('the synced copy\'s own again: the same', () {
+      final odd = {'jobTitle': 42, 'birthday': 'May 4', 'children': 'Tom'};
+      final merged = merge(copy('A', odd), [copy('B', odd), copy('C')]);
+      expect(merged.outcome, CopiesOutcome.same);
+    });
+
+    test('on the synced copy, another value elsewhere: a difference', () {
+      final merged = merge(copy('A', {'jobTitle': 42}), [
+        copy('B', {'jobTitle': 'Buyer'}),
+      ]);
+      expect(merged.differences, [
+        const CopiesDifference(
+          label: 'Job title',
+          kept: '42',
+          others: {'B': 'Buyer'},
+        ),
+      ]);
+      // Nothing elsewhere: left as it is.
+      expect(merge(copy('A', {'jobTitle': 42}), [copy('B')]).outcome,
+          CopiesOutcome.same);
+      // A list of its own not read whole: the others' values not added.
+      final list = merge(copy('A', {'children': ['Tom', 7]}), [
+        copy('B', {'children': ['Sue']}),
+      ]);
+      expect(list.outcome, CopiesOutcome.differs);
+      expect(list.differences.single.kept, 'Tom, 7');
+    });
+
+    test('Ron\'s answer takes it as it is', () {
+      final merged = merge(copy('A'), [
+        copy('B', {'jobTitle': 42}),
+      ], keep: 'B');
+      expect(merged.patch, {'jobTitle': 42});
+      expect(merged.adds, [
+        const CopiesDetail(label: 'Job title', value: '42'),
+      ]);
+    });
+  });
+
   test('every property of a Graph contact (v1.0) has its rule', () {
     // A value on another copy where the synced copy has none: none of
     // them is "Other details".
@@ -679,6 +1060,9 @@ void main() {
       'businessPhones': ['+1 212 555 0101'],
       'homePhones': ['+1 212 555 0102'],
       'emailAddresses': [email('ann@x.example')],
+      'primaryEmailAddress': email('ann@x.example'),
+      'secondaryEmailAddress': email('ann@y.example'),
+      'tertiaryEmailAddress': email('ann@z.example'),
       'imAddresses': ['ann@chat.example'],
       'children': ['Tom'],
       'categories': ['Customers'],
@@ -686,12 +1070,14 @@ void main() {
       'homeAddress': address(city: 'Peoria'),
       'otherAddress': address(city: 'Joliet'),
     };
-    expect(values, hasLength(38));
+    expect(values, hasLength(41));
+    // Joined by the mobile they share.
+    const mobile = {'mobilePhone': '+1 212 555 0100'};
     for (final MapEntry(:key, :value) in values.entries) {
       final merged = merge(
-        OutlookCopy(id: 'A', json: const {'id': 'A'}),
+        const OutlookCopy(id: 'A', json: {'id': 'A', ...mobile}),
         [
-          OutlookCopy(id: 'B', json: {key: value}),
+          OutlookCopy(id: 'B', json: {...mobile, key: value}),
         ],
       );
       expect(merged.differences, isEmpty, reason: key);
@@ -765,7 +1151,7 @@ void main() {
       expect(merged.patch, {
         'emailAddresses': [email('ann@x.example'), email('ann@y.example')],
         'department': 'Purchasing',
-        'homePhones': ['+1 212 555 0103'],
+        'homePhones': ['+1 212 555 0103', '+1 212 555 0101'],
         'jobTitle': 'Purchasing manager',
         'personalNotes': 'A cat.',
         'weddingAnniversary': '2001-05-05',
@@ -833,6 +1219,7 @@ void main() {
           id: 'A',
           json: {
             'homePhones': ['(212) 555-0102', '(212) 555-0101'],
+            'mobilePhone': '(212) 555-0100',
             'surname': 'Cole',
             'jobTitle': ' buyer ',
             'givenName': 'Ann',
@@ -846,6 +1233,7 @@ void main() {
             json: {
               'officeLocation': 'B2',
               'homePhones': ['212-555-0103'],
+              'mobilePhone': '212.555.0100',
               'jobTitle': 'manager',
             },
           ),
