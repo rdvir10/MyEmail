@@ -969,6 +969,7 @@ class ContactSyncCopies {
     this.extras = 0,
     this.notSynced = 0,
     this.asked = false,
+    this.shortStops = 0,
     this.last,
     this.differing = const [],
   });
@@ -989,6 +990,12 @@ class ContactSyncCopies {
   /// until one pass has dealt with every person.
   final bool asked;
 
+  /// How many passes in a row stopped short because Hadco could not be
+  /// read, while the merge is asked. After one, the next pass waits the
+  /// usual hour; after three, the merge is given up
+  /// ([ContactSyncCopiesResult.stoppedShort]).
+  final int shortStops;
+
   /// What the last merge did, if one has run.
   final ContactSyncCopiesResult? last;
 
@@ -1007,6 +1014,8 @@ class ContactSyncCopiesResult {
     this.added = 0,
     this.differing = 0,
     this.failed = 0,
+    this.passedOver = 0,
+    this.stoppedShort = false,
   });
 
   /// When it ended.
@@ -1029,6 +1038,16 @@ class ContactSyncCopiesResult {
   /// deleted), or a delete failed (the copies left are as they were). The
   /// next merge tries them again.
   final int failed;
+
+  /// People the pass left for the next merge without trying them: a copy
+  /// changed in Outlook while the merge went, a photo that could not be
+  /// read, or a contact no longer in Contacts. Nothing of theirs was
+  /// written or deleted.
+  final int passedOver;
+
+  /// The merge was given up: three passes in a row stopped short because
+  /// Hadco could not be read. Merging again starts afresh.
+  final bool stoppedShort;
 }
 
 /// A person whose copies on the Microsoft side differ.

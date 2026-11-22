@@ -4584,6 +4584,7 @@ void main() {
       copiesOf('Ann', 'Cole');
       await h.later();
       var given = false;
+      ContactSyncStatus? between;
       h.before = (r) async {
         if (!given &&
             r.url.path.endsWith(r'$batch') &&
@@ -4594,12 +4595,23 @@ void main() {
             c.others.single,
             await versionOf(c.synced),
           );
+        } else if (given &&
+            between == null &&
+            r.method == 'PATCH' &&
+            r.url.path.contains('contactFolders')) {
+          // The pass is done (its claim goes last); the run it starts for
+          // the answer has not begun.
+          between = await h.sync.status();
         }
       };
       await h.sync.mergeCopies();
       await h.sync.syncNow();
       h.before = null;
       expect(given, isTrue);
+      // Cat, answered, is not among those the pass left differing.
+      expect(between!.copies.last!.people, 1);
+      expect(between!.copies.last!.differing, 0);
+      expect(between!.copies.differing.single.answer, c.others.single);
       final status = await h.status();
       expect(status.copies.differing, isEmpty);
       expect(h.graph.contact(c.synced)!['jobTitle'], 'Manager');
@@ -4767,6 +4779,96 @@ void main() {
       );
     });
 
+    test("Keep the synced copy's for all answers only the people shown, at "
+        'the differences shown, with no answer yet', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      final dan = copiesOf('Dan', 'Lee', jobTitle: 'Buyer');
+      final eve = copiesOf('Eve', 'Moss', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      final d = await hadcoOf(dan);
+      final e = await hadcoOf(eve);
+      for (final x in [c, d, e]) {
+        h.graph.editFromOutlook(x.others.single, {'jobTitle': 'Manager'});
+      }
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final shown = (await h.status()).copies.differing;
+      expect(shown, hasLength(3));
+      String v(String key) => shown.firstWhere((p) => p.key == key).version;
+      // Runs cannot carry the answers out meanwhile.
+      h.refusing.add(Harness.hadco.id);
+      // Dan answered on his own; Eve not on the screen the tap came from.
+      await h.sync.answerCopies(d.synced, d.others.single, v(d.synced));
+      await h.sync.answerAllCopies({
+        c.synced: v(c.synced),
+        d.synced: v(d.synced),
+      });
+      await h.sync.syncNow();
+      expect(
+        {for (final p in (await h.status()).copies.differing) p.key: p.answer},
+        {c.synced: c.synced, d.synced: d.others.single, e.synced: null},
+      );
+      // Nothing left to answer among those shown, or a version not the one
+      // listed: refused, and nothing answered.
+      await expectLater(
+        h.sync.answerAllCopies({
+          c.synced: v(c.synced),
+          d.synced: v(d.synced),
+        }),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      await expectLater(
+        h.sync.answerAllCopies({e.synced: 'not this one'}),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      expect(
+        (await h.status()).copies.differing
+            .firstWhere((p) => p.key == e.synced)
+            .answer,
+        isNull,
+      );
+    });
+
+    test('a merge asked makes a run due, within the hour too', () async {
+      copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      // The merge's run cannot reach Hadco: the ask waits.
+      h.refusing.add(Harness.hadco.id);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      expect((await h.status()).copies.asked, isTrue);
+      h.refusing.clear();
+      h.pass(const Duration(minutes: 10));
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.asked, isFalse);
+      expect(status.copies.last!.people, 1);
+      // Nothing waiting: not due within the hour.
+      h.pass(const Duration(minutes: 10));
+      expect(await h.sync.startIfDue(), isFalse);
+    });
+
+    test("Hadco's backup alone reads nothing of Gmail", () async {
+      copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      h.requests.clear();
+      final files = await h.sync.backup(only: ContactSide.graph);
+      expect(files.single.side, ContactSide.graph);
+      expect(files.single.count, 2);
+      expect(
+        h.requests.where((r) => r.url.host == 'people.googleapis.com'),
+        isEmpty,
+      );
+      // Both, as before, without it.
+      expect(
+        [for (final f in await h.sync.backup()) f.side],
+        [ContactSide.google, ContactSide.graph],
+      );
+    });
+
     test('a person no longer listed, or a copy not its own, is refused',
         () async {
       final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
@@ -4786,6 +4888,13 @@ void main() {
           'no-such-copy',
           await versionOf(c.synced),
         ),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      // Differences other than those listed: refused, so an answer never
+      // lands on what Ron did not see.
+      expect(await versionOf(c.synced), isNotEmpty);
+      await expectLater(
+        h.sync.answerCopies(c.synced, c.others.single, 'not this one'),
         throwsA(isA<ContactSyncRefused>()),
       );
       expect((await h.status()).copies.differing.single.answer, isNull);

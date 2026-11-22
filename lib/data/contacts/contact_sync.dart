@@ -236,7 +236,10 @@ class ContactSync implements ContactSyncService {
       }
       final done = pair.lastDoneAt;
       final firstUnfinished = pair.firstDoneAt == null;
+      // A merge of Hadco's copies asked, or an answer to one waiting, is
+      // carried on the next time MyEmail is open, as a first sync is.
       if (!firstUnfinished &&
+          !held.copies.waiting &&
           done != null &&
           now.difference(done) < ContactSyncStatus.dueAfter) {
         return false;
@@ -551,6 +554,7 @@ class ContactSync implements ContactSyncService {
       final held = _Held.parse(p.held);
       final listed = held.copies.listed(person);
       if (listed == null ||
+          _Copies.versionOf(listed) != version ||
           (keep != null && !_Copies.copyKeys(listed).contains(keep))) {
         throw const ContactSyncRefused(
           "That person's copies have changed since they were shown. Look "
@@ -568,18 +572,30 @@ class ContactSync implements ContactSyncService {
   Future<void> answerAllCopies(Map<String, String> people) async {
     final pair = await _attachedPair();
     if (pair == null) return;
-    var any = false;
     await store.updatePair(pair.pairId, (p) {
       final held = _Held.parse(p.held);
+      var any = false;
       for (final listed in held.copies.differing) {
-        if (listed['answer'] != null) continue;
+        // Only one shown, at the differences shown, with no answer yet: a
+        // person listed since the screen was drawn is never answered by
+        // it, nor one whose copies have changed.
+        final key = listed['key']! as String;
+        if (listed['answer'] != null ||
+            people[key] != _Copies.versionOf(listed)) {
+          continue;
+        }
         // The person is named by its synced copy.
-        listed['answer'] = listed['key'];
+        listed['answer'] = key;
         any = true;
       }
-      return any ? p.copyWith(held: held.encode()) : p;
+      if (!any) {
+        throw const ContactSyncRefused(
+          "Those people's copies have changed since they were shown. Look "
+          'at them again.',
+        );
+      }
+      return p.copyWith(held: held.encode());
     });
-    if (!any) return;
     _changed();
     unawaited(_go(again: true));
   }
@@ -872,31 +888,46 @@ class ContactSync implements ContactSyncService {
     final run = _Run(this, pair, preview: true);
     try {
       final watch = Stopwatch()..start();
-      final people = await run.google((a) => a.listAll(everyField: true));
-      final labels = await run.google((a) => a.labels());
-      final folder =
-          pair.graphFolderId ?? await run.graph((a) => a.mainFolderId());
-      final contacts = await run.graph(
-        (a) => a.listAll(folderId: folder, whole: true),
-      );
+      final google = only == null || only == ContactSide.google
+          ? (
+              people: (await run.google(
+                (a) => a.listAll(everyField: true),
+              )).people,
+              labels: await run.google((a) => a.labels()),
+            )
+          : null;
+      List<Map<String, Object?>>? contacts;
+      if (only == null || only == ContactSide.graph) {
+        final folder =
+            pair.graphFolderId ?? await run.graph((a) => a.mainFolderId());
+        contacts = await run.graph(
+          (a) => a.listAll(folderId: folder, whole: true),
+        );
+      }
       final at = _now();
-      debugPrint('[myemail] contacts: backup of ${people.people.length} + '
-          '${contacts.length} contacts, ${watch.elapsedMilliseconds} ms');
+      debugPrint('[myemail] contacts: backup of '
+          '${google?.people.length ?? '-'} + ${contacts?.length ?? '-'} '
+          'contacts, ${watch.elapsedMilliseconds} ms');
       return [
-        ContactSyncBackupFile(
-          side: ContactSide.google,
-          fileName: ContactBackup.vCardName(at),
-          mimeType: ContactBackup.vCardType,
-          contents: ContactBackup.vCard(people.people, labelNames: labels),
-          count: people.people.length,
-        ),
-        ContactSyncBackupFile(
-          side: ContactSide.graph,
-          fileName: ContactBackup.csvName(at),
-          mimeType: ContactBackup.csvType,
-          contents: ContactBackup.outlookCsv(contacts),
-          count: contacts.length,
-        ),
+        if (google != null)
+          ContactSyncBackupFile(
+            side: ContactSide.google,
+            fileName: ContactBackup.vCardName(at),
+            mimeType: ContactBackup.vCardType,
+            contents: ContactBackup.vCard(
+              google.people,
+              labelNames: google.labels,
+            ),
+            count: google.people.length,
+          ),
+        if (contacts != null)
+          ContactSyncBackupFile(
+            side: ContactSide.graph,
+            fileName: ContactBackup.csvName(at),
+            mimeType: ContactBackup.csvType,
+            contents: ContactBackup.outlookCsv(contacts),
+            count: contacts.length,
+          ),
       ];
     } catch (e) {
       throw run.readable(e);
@@ -3849,6 +3880,23 @@ class _Copies {
   Map<String, Object?>? listed(String key) =>
       differing.firstWhereOrNull((d) => d['key'] == key);
 
+  /// A merge asked, or an answer waiting for a run.
+  bool get waiting =>
+      asked != null || differing.any((d) => d['answer'] != null);
+
+  /// The people listed that Ron has not answered.
+  int get unanswered => differing.where((d) => d['answer'] == null).length;
+
+  /// [listed]'s version, as the screen is given it: a short stable form of
+  /// the fingerprint of its differences.
+  static String versionOf(Map<String, Object?> listed) {
+    final fingerprint = listed['fingerprint'];
+    if (fingerprint is! String) return '';
+    return fingerprint.length > 16
+        ? fingerprint.substring(0, 16)
+        : fingerprint;
+  }
+
   /// The keys of [listed]'s copies.
   static List<String> copyKeys(Map<String, Object?> listed) => [
     for (final c in listed['copies'] is List
@@ -4015,6 +4063,7 @@ class _Copies {
             ),
       ],
       answer: d['answer'] is String ? d['answer']! as String : null,
+      version: versionOf(d),
     );
   }
 }
@@ -4178,14 +4227,14 @@ class _CopiesStep {
       for (final c in await run.graph(
         (a) => a.listAll(folderId: folder, whole: true),
       )) {
-        if (c['id'] case final String id) read[id] = _compared(c);
+        if (c['id'] case final String id) read[id] = c;
       }
     } else {
       for (final g in groups) {
         for (final id in [g.graphSynced!, ...g.graphCopies]) {
           run._checkStop();
           final c = await run.graph((a) => a.get(id, whole: true));
-          if (c != null && run._inContacts(c)) read[id] = _compared(c);
+          if (c != null && run._inContacts(c)) read[id] = c;
         }
       }
     }
@@ -4246,24 +4295,6 @@ class _CopiesStep {
     }
     await _flush();
   }
-
-  /// The emails a whole read gives twice: `emailAddresses`, and its first
-  /// three again, one to a property.
-  static const _emailMirrors = {
-    'primaryEmailAddress',
-    'secondaryEmailAddress',
-    'tertiaryEmailAddress',
-  };
-
-  /// [contact], read whole, as the merge rules compare it: without the
-  /// mirrors of its emails ([_emailMirrors]), which would read as other
-  /// details wherever an email's own name or case differs, though the
-  /// rules compare `emailAddresses` itself as they should. Nor is any
-  /// written back from here: a patch carries `emailAddresses` whole.
-  static Map<String, Object?> _compared(Map<String, Object?> contact) => {
-    for (final MapEntry(:key, :value) in contact.entries)
-      if (!_emailMirrors.contains(key)) key: value,
-  };
 
   /// One person: its copies read whole in [read], those with a photo
   /// among [photo]; [pair] its synced copy's row.
@@ -4525,7 +4556,7 @@ class _CopiesStep {
             if (c.asked == asked) {
               c
                 ..asked = null
-                ..last = (c.pass..differing = c.differing.length)
+                ..last = (c.pass..differing = c.unanswered)
                 ..lastAt = at
                 ..pass = _CopiesCounts();
             }
@@ -4533,7 +4564,7 @@ class _CopiesStep {
             c
               ..last = ((c.last ?? _CopiesCounts())
                 ..add(c.pass)
-                ..differing = c.differing.length)
+                ..differing = c.unanswered)
               ..lastAt = at
               ..pass = _CopiesCounts();
           }
