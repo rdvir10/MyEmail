@@ -1425,9 +1425,114 @@ void main() {
   });
 
   group('deletions', () {
-    test('a contact deleted in Gmail is deleted in Outlook', () {
+    test('a contact merged in Gmail into one of another name is asked about',
+        () {
+      // Ron merged Bob Roe into Robert Smith with Merge & fix: Google
+      // reports Bob as deleted, and Robert, paired with his own Hadco
+      // contact, now holds Bob's email.
+      final bob = person(
+        given: 'Bob',
+        family: 'Roe',
+        emails: ['bob@x.example'],
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@x.example'],
+      );
+      final merged = robert.withValue(ContactField.emails, [
+        'rob@x.example',
+        'bob@x.example',
+      ]);
+      final rows = [
+        link(1, 'people/c1', 'H1', base: robert),
+        link(2, 'people/c2', 'H2', base: bob),
+      ];
       final plan = run(
-        google: [gDeleted('people/c1')],
+        google: [gDeleted('people/c2'), g('people/c1', merged)],
+        links: rows,
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      final held = byLink(plan, 2)!;
+      expect(held.state, ContactLinkState.held);
+      expect(held.reason, ContactHeldReason.waiting);
+      expect((held.googleName, held.graphId), (null, 'H2'));
+      expect(held.partnerId, 'people/c2', reason: 'for the bin, if deleted');
+      expect(held.partnerBase, bob);
+      final item = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.mergedInGoogle,
+      );
+      expect((item.googleName, item.graphId), ('people/c1', 'H2'));
+      // Robert's Hadco contact takes the email merged in, as any change.
+      expect(byLink(plan, 1)!.graphWrite!.fields, {ContactField.emails});
+      expect(plan.brakes, isEmpty);
+      // The survivor known only from its row's base: the same.
+      final fromBase = run(
+        google: [gDeleted('people/c2')],
+        links: [link(1, 'people/c1', 'H1', base: merged), rows[1]],
+      );
+      expect(fromBase.links.where((l) => l.delete != null), isEmpty);
+      expect(byLink(fromBase, 2)!.reason, ContactHeldReason.waiting);
+      // A copy of the same person held beside it is still moved to first.
+      final copy = run(
+        google: [gDeleted('people/c2')],
+        links: [
+          link(2, 'people/c2', 'H2', base: bob),
+          link(
+            3,
+            'people/c3',
+            null,
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+        ],
+      );
+      final moved = byLink(copy, 2)!;
+      expect((moved.googleName, moved.graphId), ('people/c3', 'H2'));
+      expect(
+        copy.reviews.where((r) => r.kind == ContactReviewKind.mergedInGoogle),
+        isEmpty,
+      );
+    });
+
+    test('six merges at once make six questions and no deletion brake', () {
+      SyncedContact gone(int i) =>
+          person(given: 'P$i', family: 'Gone', emails: ['p$i@x.example']);
+      SyncedContact survivor(int i) => person(
+        given: 'S$i',
+        family: 'Kept',
+        emails: ['s$i@x.example', 'p$i@x.example'],
+      );
+      final plan = run(
+        google: [
+          for (var i = 0; i < 6; i++) ...[
+            gDeleted('people/c$i'),
+            g('people/s$i', survivor(i)),
+          ],
+        ],
+        links: [
+          for (var i = 0; i < 6; i++) ...[
+            link(i, 'people/c$i', 'H$i', base: gone(i)),
+            link(10 + i, 'people/s$i', 'T$i', base: survivor(i)),
+          ],
+        ],
+      );
+      expect(plan.links.where((l) => l.delete != null), isEmpty);
+      expect(plan.brakes, isEmpty);
+      expect(
+        plan.reviews.where((r) => r.kind == ContactReviewKind.mergedInGoogle),
+        hasLength(6),
+      );
+    });
+
+    test('a contact deleted in Gmail is deleted in Outlook', () {
+      // Its email is on no other Gmail contact: a deletion, not a merge.
+      final plan = run(
+        google: [
+          gDeleted('people/c1'),
+          g('people/c9', person(given: 'Ann', family: 'Lee', emails: ['l@x'])),
+        ],
         links: [link(1, 'people/c1', 'H1', base: ann, key: 'key-1')],
       );
       final pair = byLink(plan, 1)!;
