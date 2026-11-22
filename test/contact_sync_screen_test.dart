@@ -206,6 +206,40 @@ void main() {
         'Gmail and Hadco, synced at 10:42',
         reason: 'an answered question is no longer waiting',
       );
+      ContactSyncQuestionItem item(String key, {ContactSyncChoice? answer}) =>
+          ContactSyncQuestionItem(
+            title: 'Person $key',
+            side: ContactSide.graph,
+            key: key,
+            answer: answer,
+          );
+      expect(
+        say(synced(questions: [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              item('a', answer: ContactSyncChoice.copyThemBack),
+              item('b'),
+              item('c'),
+            ],
+          ),
+        ])),
+        'Changes to 2 contacts need your OK',
+        reason: 'one answered on its own waits for the sync, not for Ron',
+      );
+      expect(
+        say(synced(questions: [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.deletions,
+            items: [
+              item('a', answer: ContactSyncChoice.deleteThem),
+              item('b', answer: ContactSyncChoice.dontDelete),
+            ],
+          ),
+        ])),
+        'Gmail and Hadco, synced at 10:42',
+        reason: 'every contact answered on its own',
+      );
     });
 
     test('why it stopped', () {
@@ -1429,6 +1463,8 @@ void main() {
         expect(button('contact-sync-item:a:applyThem'), findsNothing);
         expect(button('contact-sync-item:b:applyThem'), findsOneWidget);
         expect(find.text('For the 2 not yet answered:'), findsOneWidget);
+        expect(find.text('Changes to 2 contacts need your OK'), findsOneWidget,
+            reason: 'only those still waiting for Ron');
 
         await tester.tap(find.text('Apply them'));
         await tester.pumpAndSettle();
@@ -1462,6 +1498,8 @@ void main() {
               'carries it out.'),
           findsOneWidget,
         );
+        expect(find.text('Changes to 3 contacts, all answered'),
+            findsOneWidget);
         expect(button('contact-sync-item:b:applyThem'), findsNothing);
         expect(
           find.text('You chose Copy back: the next sync carries it out.'),

@@ -1205,9 +1205,19 @@ class _QuestionCard extends StatelessWidget {
     // share one: said once, rather than under every name.
     final sides = {for (final i in q.items) i.side};
     final oneSide = sides.length == 1 ? sides.single : null;
+    // Counted as the Settings row and the one-line message count them:
+    // only the contacts still waiting for Ron.
+    final waiting = _waiting(q);
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
-          _count(n, 'deletion needs your OK', 'deletions need your OK'),
+          waiting > 0
+              ? _count(
+                  waiting,
+                  'deletion needs your OK',
+                  'deletions need your OK',
+                )
+              : '${_count(n, 'deletion', 'deletions')}, '
+                  '${n == 1 ? 'answered' : 'all answered'}',
           'One sync would delete $these at once, so $they held for your '
               'OK, and everything else carries on.',
           'Delete them deletes '
@@ -1218,7 +1228,11 @@ class _QuestionCard extends StatelessWidget {
               'can still be copied back.',
         ),
       ContactSyncQuestionKind.changes => (
-          'Changes to ${_count(n, 'contact', 'contacts')} need your OK',
+          waiting > 0
+              ? 'Changes to ${_count(waiting, 'contact', 'contacts')} need '
+                  'your OK'
+              : 'Changes to ${_count(n, 'contact', 'contacts')}, '
+                  '${n == 1 ? 'answered' : 'all answered'}',
           'One sync would remove or replace details '
               '${oneSide == null ? '' : 'in ${side(oneSide)} '}on $these at '
               "once, as Google's Undo changes, a backup imported again or a "
@@ -1959,16 +1973,22 @@ String contactSyncSubtitle({
   final pair = 'Gmail and $graphName';
   for (final q in s.questions) {
     if (q.answer != null) continue;
+    // Only the contacts still waiting for Ron: one answered on its own
+    // waits for the next sync, not for him.
+    final waiting = _waiting(q);
     switch (q.kind) {
-      case ContactSyncQuestionKind.deletions:
+      case ContactSyncQuestionKind.deletions when waiting > 0:
         return _count(
-          q.items.length,
+          waiting,
           'deletion needs your OK',
           'deletions need your OK',
         );
-      case ContactSyncQuestionKind.changes:
-        return 'Changes to ${_count(q.items.length, 'contact', 'contacts')} '
+      case ContactSyncQuestionKind.changes when waiting > 0:
+        return 'Changes to ${_count(waiting, 'contact', 'contacts')} '
             'need your OK';
+      case ContactSyncQuestionKind.deletions:
+      case ContactSyncQuestionKind.changes:
+        continue;
       case ContactSyncQuestionKind.emptyAnswer:
         return 'Stopped: ${_bookOrNot(q.side, graphName)} listed too few '
             'contacts';
@@ -2045,6 +2065,11 @@ String contactSyncAccountName(Account? account) {
   final name = account.displayName.trim();
   return name.isEmpty ? account.emailAddress : name;
 }
+
+/// The contacts of a brake's question still waiting for Ron: none once
+/// the whole question is answered, else those with no answer of their own.
+int _waiting(ContactSyncQuestion q) =>
+    q.answer != null ? 0 : q.items.where((i) => i.answer == null).length;
 
 String _sideName(ContactSide side, String graphName) =>
     side == ContactSide.google ? 'Gmail' : graphName;
