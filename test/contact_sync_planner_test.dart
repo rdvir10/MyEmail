@@ -2435,6 +2435,69 @@ void main() {
       ]);
     });
 
+    test('a detail changed on both sides is flagged as a clash', () {
+      // Both sides changed the job title, Gmail's the newer edit; Gmail
+      // alone changed the company.
+      final start = person(
+        given: 'Ann',
+        family: 'Cole',
+        more: {ContactField.company: 'Acme', ContactField.jobTitle: 'Buyer'},
+      );
+      final gmail = start
+          .withValue(ContactField.jobTitle, 'Manager')
+          .withValue(ContactField.company, 'Acme Corp');
+      final hadco = start.withValue(ContactField.jobTitle, 'Lead buyer');
+      List<ContactLinkInput> rows({required bool held}) => [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: start,
+            state: held ? ContactLinkState.held : ContactLinkState.paired,
+            reason: held ? ContactHeldReason.changeBrake : null,
+          ),
+      ];
+      final expected = [
+        const ContactDetailChange(
+          field: ContactField.company,
+          side: ContactSide.graph,
+          before: 'Acme',
+          after: 'Acme Corp',
+        ),
+        const ContactDetailChange(
+          field: ContactField.jobTitle,
+          side: ContactSide.graph,
+          before: 'Lead buyer',
+          after: 'Manager',
+          clash: true,
+        ),
+      ];
+      // Raised this run, and rebuilt for a question held before.
+      for (final held in [false, true]) {
+        final plan = run(
+          google: [
+            for (var i = 0; i < 11; i++) g('people/c$i', gmail, at: later),
+          ],
+          graph: [for (var i = 0; i < 11; i++) h('H$i', hadco, at: earlier)],
+          links: rows(held: held),
+        );
+        final item = plan.heldBrakes.single.items.first;
+        expect(item.changes, expected, reason: held ? 'held' : 'raised');
+        expect(ContactBrakeItem.fromJson(item.toJson())!.changes, expected);
+      }
+      // Copy them back puts the company back, but not the job title.
+      final back = run(
+        google: [g('people/c0', gmail, at: later)],
+        graph: [h('H0', hadco, at: earlier)],
+        links: [rows(held: true).first],
+        answers: const [ContactAnswer(ContactAnswerKind.copyHeldBack)],
+      );
+      final pair = byLink(back, 0)!;
+      expect(pair.googleWrite!.target.text(ContactField.company), 'Acme');
+      expect(pair.graphWrite!.target.text(ContactField.jobTitle), 'Manager');
+    });
+
     test('an item lists the details lost on both sides', () {
       // Gmail changed the company (Hadco would lose Acme); Hadco removed
       // the mobile and an email (Gmail would lose them).

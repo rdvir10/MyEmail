@@ -997,6 +997,7 @@ class ContactDetailChange {
     required this.side,
     this.before,
     this.after,
+    this.clash = false,
   });
 
   final ContactField field;
@@ -1010,11 +1011,17 @@ class ContactDetailChange {
   /// What it would become; null when it would be removed.
   final String? after;
 
+  /// The detail was changed on both sides since the last sync, and the
+  /// newer edit wins: Apply them writes it, and so does Copy them back,
+  /// which puts back only what one side changed.
+  final bool clash;
+
   Map<String, Object?> toJson() => {
     'field': field.name,
     'side': side.name,
     'before': ?before,
     'after': ?after,
+    if (clash) 'clash': true,
   };
 
   /// A change as [toJson] wrote it; null for anything else. [side] stands
@@ -1034,6 +1041,7 @@ class ContactDetailChange {
       side: losing,
       before: s('before'),
       after: s('after'),
+      clash: json['clash'] == true,
     );
   }
 
@@ -1043,10 +1051,11 @@ class ContactDetailChange {
       other.field == field &&
       other.side == side &&
       other.before == before &&
-      other.after == after;
+      other.after == after &&
+      other.clash == clash;
 
   @override
-  int get hashCode => Object.hash(field, side, before, after);
+  int get hashCode => Object.hash(field, side, before, after, clash);
 
   // The side and the field only: the values are contact data.
   @override
@@ -4623,7 +4632,15 @@ class _Planner {
       for (final p in changes) {
         final plan = p.plan;
         final row = byId[plan.linkId]!;
-        items.add(_changeItem(plan));
+        items.add(
+          _changeItem(
+            plan,
+            clashes: {
+              for (final r in p.reviews)
+                if (r.kind == ContactReviewKind.clash) ...r.fields,
+            },
+          ),
+        );
         p.plan = ContactLinkPlan(
           linkId: plan.linkId,
           googleName: plan.googleName,
@@ -4695,7 +4712,12 @@ class _Planner {
             googleEtag: gc.etag,
             graphChangeKey: hc.changeKey,
           );
-          changes.add(_changeItem(made.plan));
+          changes.add(
+            _changeItem(
+              made.plan,
+              clashes: {for (final c in made.pair.clashes) c.field},
+            ),
+          );
         default:
           break;
       }
@@ -4709,10 +4731,14 @@ class _Planner {
 
   /// A change brake's item for [plan], a pair's writes: each detail lost
   /// on either side, and as its side the one losing more (Gmail on a tie;
-  /// with none lost, the side written, Gmail first).
-  ContactBrakeItem _changeItem(ContactLinkPlan plan) {
-    final google = _losses(plan.googleWrite, plan.googleNow);
-    final graph = _losses(plan.graphWrite, plan.graphNow);
+  /// with none lost, the side written, Gmail first). [clashes] are the
+  /// details changed on both sides ([ContactDetailChange.clash]).
+  ContactBrakeItem _changeItem(
+    ContactLinkPlan plan, {
+    Set<ContactField> clashes = const {},
+  }) {
+    final google = _losses(plan.googleWrite, plan.googleNow, clashes);
+    final graph = _losses(plan.graphWrite, plan.graphNow, clashes);
     final onGoogle = google.isEmpty && graph.isEmpty
         ? plan.googleWrite != null
         : google.length >= graph.length;
@@ -4729,7 +4755,11 @@ class _Planner {
   /// as [now]: not one added where there was none, a list only joined, or
   /// a year given to a birthday on the same day. A list gives each value
   /// it would lose on its own, with the value new in its place, if any.
-  List<ContactDetailChange> _losses(ContactWrite? write, SyncedContact? now) {
+  List<ContactDetailChange> _losses(
+    ContactWrite? write,
+    SyncedContact? now,
+    Set<ContactField> clashes,
+  ) {
     if (write == null || now == null) return const [];
     final side = write.side;
     final lost = <ContactDetailChange>[];
@@ -4754,7 +4784,7 @@ class _Planner {
             final there = norm.itemKey(f, afterList[i]);
             if (there != null && !had.contains(there)) instead = afterList[i];
           }
-          lost.add(_detailChange(f, side, v, instead));
+          lost.add(_detailChange(f, side, v, instead, clashes.contains(f)));
         }
         continue;
       }
@@ -4764,7 +4794,7 @@ class _Planner {
           before.sameDay(after)) {
         continue;
       }
-      lost.add(_detailChange(f, side, before, after));
+      lost.add(_detailChange(f, side, before, after, clashes.contains(f)));
     }
     return lost;
   }
@@ -4776,6 +4806,7 @@ class _Planner {
     ContactSide side,
     Object before,
     Object? after,
+    bool clash,
   ) {
     String? shown(Object? value) {
       if (value == null) return null;
@@ -4796,6 +4827,7 @@ class _Planner {
         field: field,
         side: side,
         after: after == null ? null : 'changed',
+        clash: clash,
       );
     }
     return ContactDetailChange(
@@ -4803,6 +4835,7 @@ class _Planner {
       side: side,
       before: shown(before),
       after: shown(after),
+      clash: clash,
     );
   }
 
