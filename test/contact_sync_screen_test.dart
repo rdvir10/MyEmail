@@ -3026,7 +3026,10 @@ void main() {
         expect(find.descendant(of: person, matching: find.text(said)),
             findsOneWidget, reason: key);
         expect(
-          find.descendant(of: person, matching: find.byType(OutlinedButton)),
+          find.descendant(
+            of: person,
+            matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+          ),
           findsNothing,
           reason: key,
         );

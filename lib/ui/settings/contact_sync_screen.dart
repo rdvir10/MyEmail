@@ -2347,24 +2347,34 @@ class _CopiesPerson extends StatelessWidget {
             children: [
               Text(_title(p.title), style: theme.textTheme.titleSmall),
               for (final (j, c) in p.copies.indexed) ...[
-                const SizedBox(height: 8),
-                Text(
-                  contactSyncCopyName(p, j),
-                  style: theme.textTheme.labelMedium,
+                const SizedBox(height: 6),
+                // Keep these beside the copy's name, over the values it
+                // keeps: Leave them, under them all, is the person's.
+                Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      contactSyncCopyName(p, j),
+                      style: theme.textTheme.labelMedium,
+                    ),
+                    if (answer == null)
+                      TextButton(
+                        key: ValueKey(
+                          'contact-sync-copies-keep:${p.key}:${c.key}',
+                        ),
+                        onPressed: () => onAnswer(c.key),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          minimumSize: const Size(0, 36),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        child: const Text('Keep these'),
+                      ),
+                  ],
                 ),
                 for (final d in c.details)
                   Text('${d.label}: ${_LookTile._valueOf(d.value)}'),
-                if (answer == null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: OutlinedButton(
-                      key: ValueKey(
-                        'contact-sync-copies-keep:${p.key}:${c.key}',
-                      ),
-                      onPressed: () => onAnswer(c.key),
-                      child: const Text('Keep these'),
-                    ),
-                  ),
               ],
               const SizedBox(height: 10),
               if (answer != null)
