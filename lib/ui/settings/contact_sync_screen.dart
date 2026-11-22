@@ -2721,10 +2721,13 @@ String contactSyncMergedLine(
       '${_count(r.failed, 'person', 'people')} could not be merged in full: '
           'what is left of their copies is as it was, and the next merge '
           'tries again.',
+    // Nothing of theirs deleted, but what was added may be on the synced
+    // copy already: nothing said of what was written.
     if (r.passedOver > 0)
       '${_count(r.passedOver, 'person was', 'people were')} left for the '
-          'next merge: a copy changed meanwhile, a photo could not be read, '
-          'or a copy is no longer in Contacts.',
+          'next merge: a copy changed meanwhile, $graphName could not be '
+          'read just then, a photo could not be read, or a copy is no longer '
+          'in Contacts.',
     if (r.stoppedShort && tryAgain) 'Save backup and merge to try again.',
   ].join(' ');
 }
