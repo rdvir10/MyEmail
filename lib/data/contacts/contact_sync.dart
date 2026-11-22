@@ -18,7 +18,6 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 import '../ui_state_store.dart';
 import 'account_people.dart' show AccountPeople;
 import 'contact_backup.dart';
-import 'contact_details_stub.dart';
 import 'contact_mapping.dart';
 import 'contact_sync_planner.dart';
 import 'contact_sync_service.dart';
@@ -1432,15 +1431,30 @@ class _Run {
     _checkStop();
     final r = await google((a) => a.getBatch(asked));
     for (final MapEntry(key: name, value: person) in r.found.entries) {
-      final now = person['resourceName'];
-      if (now is String && now != name) {
-        googleReKeys[name] = now;
-        googleRead[now] = person;
-      } else {
-        googleRead[name] = person;
-      }
+      _placeGoogle(name, person);
     }
     googleGone.addAll(r.notFound);
+  }
+
+  /// A Gmail contact read alone by name: there (perhaps re-keyed), or gone.
+  Future<void> _readGoogleAlone(String name) async {
+    final person = await google((a) => a.get(name));
+    if (person == null) {
+      googleGone.add(name);
+      return;
+    }
+    _placeGoogle(name, person);
+  }
+
+  /// [person], read by [name]: under the name Google gives it now.
+  void _placeGoogle(String name, Map<String, Object?> person) {
+    final now = person['resourceName'];
+    if (now is String && now != name) {
+      googleReKeys[name] = now;
+      googleRead[now] = person;
+    } else {
+      googleRead[name] = person;
+    }
   }
 
   /// An Outlook contact asked about by id: there, gone (not found, or in
@@ -1454,6 +1468,20 @@ class _Run {
       return;
     }
     await _placeGraph(id, c);
+  }
+
+  /// Why the answer given to [item], a held change, waits: its Outlook
+  /// contact is out of Contacts, or a contact of its pair was not read
+  /// this run. Null when both were read.
+  String? _waitsOn(Map<String, Object?> item) {
+    final g = item['googleName'];
+    final h = item['graphId'];
+    if (h is String && graphMovedOut.contains(h)) return 'movedOut';
+    if ((g is String && !googleRead.containsKey(g)) ||
+        (h is String && !graphRead.containsKey(h))) {
+      return 'unread';
+    }
+    return null;
   }
 
   /// [c], the Outlook contact [id] as read by id: in Contacts, read; in
@@ -1477,16 +1505,37 @@ class _Run {
   /// ([ContactSyncPlan.heldBrakes]): reads that never stop a run. One
   /// that fails leaves its contacts unread, so the plan leaves their item
   /// out and it stays as it was: held, with the details it showed, and any
-  /// answer given to it waiting for a run that reads them. Gmail's go in
-  /// one request (Google's batch read), Hadco's
-  /// [GraphContactsApi.batchLimit] to a `$batch`, each batch failing on
+  /// answer given to it waiting for a run that reads them (the item says
+  /// so: [_Held.waits]). Gmail's go in one request (Google's batch read),
+  /// Hadco's [GraphContactsApi.batchLimit] to a `$batch`, each batch
+  /// failing on its own; a batch refused as a whole (one bad name spoils
+  /// Google's for all) is read again a contact at a time, each failing on
   /// its own. A failure every request would meet (a sign-in, Google's
   /// daily quota) is the run's as anywhere, and so is a stop.
   Future<void> _readHeldPairs(List<String> names, List<String> ids) async {
     var unread = 0;
+    var alone = 0;
+    Future<void> eachAlone(
+      List<String> asking,
+      Future<void> Function(String) read,
+    ) async {
+      alone += asking.length;
+      for (final id in asking) {
+        _checkStop();
+        try {
+          await read(id);
+        } on Exception catch (e) {
+          if (!_failsAlone(e)) rethrow;
+          unread++;
+        }
+      }
+    }
+
     if (names.isNotEmpty) {
       try {
         await _confirmGoogle(names);
+      } on ContactRefused {
+        await eachAlone(names, _readGoogleAlone);
       } on Exception catch (e) {
         if (!_failsAlone(e)) rethrow;
         unread += names.length;
@@ -1506,10 +1555,16 @@ class _Run {
           await _placeGraph(id, c);
         }
         unread += r.unknown.length;
+      } on ContactRefused {
+        await eachAlone(asking, _confirmGraph);
       } on Exception catch (e) {
         if (!_failsAlone(e)) rethrow;
         unread += asking.length;
       }
+    }
+    if (alone > 0) {
+      debugPrint('[myemail] contacts: a batch read refused, $alone held '
+          'contacts read one at a time');
     }
     if (unread > 0) {
       debugPrint('[myemail] contacts: $unread contacts of held changes not '
@@ -2974,6 +3029,24 @@ class _Run {
     bool carriedWhole(int question, ContactSyncChoice choice) => carried.any(
       (s) => s.questionId == question && s.questionChoice == choice && s.whole,
     );
+    // Those it planned and could not carry out, a contact of theirs not
+    // read: each of their items says why, kept answered, until a run
+    // carries it out. Not one answered while this run went, which no run
+    // has tried yet.
+    final waited = [
+      for (final (i, source) in answerSources.indexed)
+        if (source.questionId != null &&
+            i < outcomes.length &&
+            outcomes[i] == ContactAnswerOutcome.waiting)
+          source,
+    ];
+    bool waitedOn(int question, ContactSyncChoice choice, String key) =>
+        waited.any(
+          (s) =>
+              s.questionId == question &&
+              s.questionChoice == choice &&
+              s.questionItems.contains(key),
+        );
     final binIds = {for (final b in await store.bin(pairId)) b.binId};
     final tallyNow = tally.toTally(at, complete: true);
     await store.transaction(() async {
@@ -3001,6 +3074,15 @@ class _Run {
           }
           if (q.answer case final choice? when carriedWhole(q.id, choice)) {
             q.answer = null;
+          }
+          for (final item in q.items) {
+            item.remove(_Held.waits);
+            final choice = _Question.answerOf(item) ?? q.answer;
+            if (choice == null ||
+                !waitedOn(q.id, choice, _Question.keyOf(item))) {
+              continue;
+            }
+            if (_waitsOn(item) case final why?) item[_Held.waits] = why;
           }
         }
         h.prune(rows);
@@ -3358,6 +3440,12 @@ class _Held {
   /// The last item key minted ([raise]).
   int lastKey = 0;
 
+  /// Under this key in an item, why its answer was not carried out at the
+  /// last run: `unread` (a contact of its pair could not be read) or
+  /// `movedOut` (its Outlook contact is out of Contacts). Set and cleared
+  /// at the end of each run.
+  static const waits = 'waits';
+
   /// A brake raised this run: added to its kind's open question, or asked
   /// anew where that one already has an answer queued. An item already
   /// asked about (the same contacts) is not asked about twice: it stays
@@ -3668,13 +3756,22 @@ class _Question {
             field: c.field,
             before: c.before,
             after: c.after,
-            // Always set: the change's own side, else its item's.
-            side: c.side ?? side,
+            // Always set: the planner's, its item's for a change kept
+            // without one.
+            side: c.side,
             clash: c.clash,
           ),
       ],
       hint: item?.hint,
       answer: answerOf(json),
+      answerProblem: switch (json[_Held.waits]) {
+        'unread' =>
+          'Could not be read just now: it is carried out when it can be.',
+        'movedOut' =>
+          'Its Outlook contact is not in Contacts: it is carried out once '
+              'it is back.',
+        _ => null,
+      },
     );
   }
 }

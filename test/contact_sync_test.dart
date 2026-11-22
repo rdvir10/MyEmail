@@ -3345,6 +3345,44 @@ void main() {
       expect(mobileOf(h.google.person(b.google)), isNotNull);
     });
 
+    test('an answer given while a run goes is not said to wait before a '
+        'run has tried it', () async {
+      final pairs = seedPairs(h, 8);
+      await h.firstSync();
+      for (var i = 0; i < 6; i++) {
+        h.google.deleteFromGmail(pairs[i].google);
+      }
+      final q = (await h.later()).questions.single;
+      final key = q.items.first.key;
+      var given = false;
+      ContactSyncQuestionItem? between;
+      h.before = (r) async {
+        if (!given && r.url.path.endsWith('/delta')) {
+          given = true;
+          await h.sync.answerQuestion(
+            ContactSyncQuestionKind.deletions,
+            ContactSyncChoice.deleteThem,
+            items: {key},
+          );
+        } else if (given &&
+            between == null &&
+            r.method == 'PATCH' &&
+            r.url.path.contains('contactFolders')) {
+          // That run is done (its claim goes last), and the one it starts
+          // for the answer has not begun.
+          between = (await h.sync.status()).questions.single.items
+              .firstWhere((i) => i.key == key);
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.syncNow();
+      h.before = null;
+      expect(between!.answer, ContactSyncChoice.deleteThem);
+      expect(between!.answerProblem, isNull);
+      // The run it started carried it out.
+      expect((await h.status()).questions.single.items, hasLength(5));
+    });
+
     test('deletions one by one: Delete one, keep another, the rest wait',
         () async {
       final pairs = seedPairs(h, 8);
@@ -3665,12 +3703,139 @@ void main() {
       expect(q.items, hasLength(11));
       final waiting = q.items.firstWhere((i) => i.key == first.key);
       expect(waiting.answer, ContactSyncChoice.copyThemBack);
+      expect(
+        waiting.answerProblem,
+        'Its Outlook contact is not in Contacts: it is carried out once it '
+        'is back.',
+      );
+      expect(
+        q.items.where((i) => i != waiting).every((i) => i.answerProblem == null),
+        isTrue,
+      );
       expect(waiting.changes.map((c) => c.field), had.map((c) => c.field));
       expect(
         q.items.where((i) => i.key != first.key).every(
           (i) => i.changes.length == 2 && i.answer == null,
         ),
         isTrue,
+      );
+    });
+
+    test("an answer changed while a run goes loses the old one's reason "
+        'until a run has tried it', () async {
+      final pairs = await heldChanges();
+      var q = (await h.status()).questions.single;
+      final first = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      // Copy them back waits for P0's Outlook contact, moved out.
+      h.graph.moveFromOutlook(pairs[0].graph, h.graph.addFolder());
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {first.key},
+      );
+      await h.sync.syncNow();
+      q = (await h.status()).questions.single;
+      expect(
+        q.items.firstWhere((i) => i.key == first.key).answerProblem,
+        isNotNull,
+      );
+      // At the next run Ron makes it Apply them, as the run goes.
+      var given = false;
+      ContactSyncQuestionItem? between;
+      h.before = (r) async {
+        if (!given && r.url.path.endsWith('/delta')) {
+          given = true;
+          await h.sync.answerQuestion(
+            ContactSyncQuestionKind.changes,
+            ContactSyncChoice.applyThem,
+            items: {first.key},
+          );
+        } else if (given &&
+            between == null &&
+            r.method == 'PATCH' &&
+            r.url.path.contains('contactFolders')) {
+          between = (await h.sync.status()).questions.single.items
+              .firstWhere((i) => i.key == first.key);
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.syncNow();
+      h.before = null;
+      expect(between!.answer, ContactSyncChoice.applyThem);
+      expect(between!.answerProblem, isNull);
+    });
+
+    test('a held change lists what it would take on both sides, each '
+        'with its side, and flags a detail changed on both', () async {
+      final pairs = [
+        for (var i = 0; i < 11; i++)
+          (
+            google: h.google.seed({
+              ...person(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+              ),
+              'organizations': [
+                {'name': 'Acme', 'title': 'Buyer'},
+              ],
+            }),
+            graph: h.graph.seed({
+              ...outlook(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+                company: 'Acme',
+              ),
+              'jobTitle': 'Buyer',
+            }),
+          ),
+      ];
+      await h.firstSync();
+      // Hadco takes each mobile out and gives another title; later, Gmail
+      // renames the company and gives a title of its own.
+      for (final p in pairs) {
+        h.graph.editFromOutlook(p.graph, {
+          'mobilePhone': null,
+          'jobTitle': 'Lead buyer',
+        });
+      }
+      h.pass(const Duration(minutes: 10));
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'organizations': [
+            {'name': 'Acme Corp', 'title': 'Manager'},
+          ],
+        });
+      }
+      final q = (await h.later()).questions.single;
+      expect(q.items, hasLength(11));
+      final item = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      expect(item.side, ContactSide.graph, reason: 'Hadco loses more');
+      expect(
+        [
+          for (final c in item.changes)
+            (c.side, c.field, c.before, c.after, c.clash),
+        ],
+        [
+          (
+            ContactSide.google,
+            ContactField.mobile,
+            '+1 202 555 0110',
+            null,
+            false,
+          ),
+          (ContactSide.graph, ContactField.company, 'Acme', 'Acme Corp', false),
+          (
+            ContactSide.graph,
+            ContactField.jobTitle,
+            'Lead buyer',
+            'Manager',
+            true,
+          ),
+        ],
       );
     });
 
@@ -3836,6 +4001,156 @@ void main() {
         q.items.every((i) => titleAfter(i) == 'Purchasing manager'),
         isTrue,
       );
+    });
+  });
+
+  group('reads of the held pairs refused', () {
+    /// Eleven pairs whose Gmail mobiles Ron removed and whose Gmail job
+    /// titles he changed: a change brake of eleven.
+    Future<List<({String google, String graph})>> heldChanges() async {
+      final pairs = [
+        for (var i = 0; i < 11; i++)
+          (
+            google: h.google.seed({
+              ...person(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+              ),
+              'organizations': [
+                {'name': 'Acme', 'title': 'Sales manager'},
+              ],
+            }),
+            graph: h.graph.seed({
+              ...outlook(
+                'P$i',
+                'Fam$i',
+                email: 'p$i@example.com',
+                mobile: '+1 202 555 01${10 + i}',
+                company: 'Acme',
+              ),
+              'jobTitle': 'Sales manager',
+            }),
+          ),
+      ];
+      await h.firstSync();
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {
+          'phoneNumbers': null,
+          'organizations': [
+            {'name': 'Acme', 'title': 'Purchasing manager'},
+          ],
+        });
+      }
+      expect((await h.later()).questions.single.items, hasLength(11));
+      return pairs;
+    }
+
+    http.Response refusal(String code) => http.Response(
+      '{"error":{"code":$code,"message":"x"}}',
+      400,
+      headers: {'content-type': 'application/json'},
+    );
+
+    test('a batch read Graph refuses is read a contact at a time: an answer '
+        'is carried out all the same', () async {
+      final pairs = await heldChanges();
+      var refused = 0;
+      h.answer = (r) {
+        if (!r.url.path.endsWith(r'$batch') ||
+            !r.body.contains('"method":"GET"')) {
+          return null;
+        }
+        refused++;
+        return refusal('"BadRequest"');
+      };
+      var q = (await h.status()).questions.single;
+      final one = q.items.firstWhere((i) => i.title == 'P0 Fam0');
+      h.requests.clear();
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {one.key},
+      );
+      await h.sync.syncNow();
+      h.answer = null;
+      final status = await h.status();
+      expect(refused, greaterThan(0));
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      expect(q.items, hasLength(10));
+      expect(q.items.map((i) => i.key), isNot(contains(one.key)));
+      expect(q.items.every((i) => i.answerProblem == null), isTrue);
+      // Applied: Hadco lost the mobile and took Gmail's title.
+      final hadco = h.graph.contact(pairs[0].graph)!;
+      expect(mobileOf(hadco), isNull);
+      expect(hadco['jobTitle'], 'Purchasing manager');
+      // Each held contact asked for with a GET of its own.
+      for (final p in pairs) {
+        expect(
+          h.requests.any(
+            (r) => r.method == 'GET' && r.url.pathSegments.last == p.graph,
+          ),
+          isTrue,
+        );
+      }
+    });
+
+    test("a Gmail name that spoils Google's batch read: the others are read "
+        'alone, and the answer waiting on it says why', () async {
+      final pairs = await heldChanges();
+      final bad = pairs[0].google;
+      h.answer = (r) {
+        if (r.url.host != 'people.googleapis.com' || r.method != 'GET') {
+          return null;
+        }
+        final inBatch =
+            r.url.path.endsWith('people:batchGet') &&
+            r.url.queryParametersAll['resourceNames']!.contains(bad);
+        if (!inBatch && !r.url.path.endsWith('/$bad')) return null;
+        return refusal('400,"status":"INVALID_ARGUMENT"');
+      };
+      var q = (await h.status()).questions.single;
+      String keyOf(int i) =>
+          q.items.firstWhere((x) => x.title == 'P$i Fam$i').key;
+      final waiting = keyOf(0);
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {waiting, keyOf(1)},
+      );
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      q = status.questions.single;
+      // P1, read alone, was copied back; P0 waits, answered, and says why.
+      expect(q.items, hasLength(10));
+      expect(mobileOf(h.google.person(pairs[1].google)), isNotNull);
+      expect(mobileOf(h.google.person(bad)), isNull);
+      final item = q.items.singleWhere((i) => i.key == waiting);
+      expect(item.answer, ContactSyncChoice.copyThemBack);
+      expect(
+        item.answerProblem,
+        'Could not be read just now: it is carried out when it can be.',
+      );
+      expect(
+        q.items
+            .where((i) => i.key != waiting)
+            .every((i) => i.answerProblem == null),
+        isTrue,
+      );
+
+      // Read again: carried out, and nothing more to say.
+      h.answer = null;
+      status = await h.later();
+      q = status.questions.single;
+      expect(q.items, hasLength(9));
+      expect(
+        q.items.every((i) => i.answer == null && i.answerProblem == null),
+        isTrue,
+      );
+      expect(mobileOf(h.google.person(bad)), isNotNull);
     });
   });
 

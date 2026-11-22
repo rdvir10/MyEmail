@@ -646,6 +646,7 @@ class ContactSyncQuestionItem {
     this.changes = const [],
     this.hint,
     this.answer,
+    this.answerProblem,
   });
 
   final String title;
@@ -660,10 +661,12 @@ class ContactSyncQuestionItem {
   /// ids (a Gmail re-key). The runner always sets it.
   final String key;
 
-  /// For changes: each detail that would be removed or replaced on
-  /// [side], with what is there now and what it would become, in the
-  /// order of the contact's details. Empty for deletions, and for an item
-  /// whose contacts no run has read since it was held.
+  /// For changes: each detail that would be removed or replaced, with
+  /// what is there now and what it would become. They can be on both
+  /// sides, each saying its own ([ContactSyncDetailChange.side]): Gmail's
+  /// first, then Hadco's, each in the order of the contact's details, one
+  /// change for each value of a list. Empty for deletions, and for an
+  /// item whose contacts no run has read since it was held.
   final List<ContactSyncDetailChange> changes;
 
   /// For deletions: enough to tell the contact apart, its first email,
@@ -674,6 +677,13 @@ class ContactSyncQuestionItem {
   /// carries it out; null when it has none (the question's answer, if
   /// any, covers it).
   final ContactSyncChoice? answer;
+
+  /// Why the answer given to this item (its own, or the question's) was
+  /// not carried out at the last run, a sentence to show as it is under
+  /// it: "Could not be read just now: it is carried out when it can be."
+  /// The answer stays given, and a later run carries it out. Null when
+  /// nothing held it up.
+  final String? answerProblem;
 }
 
 /// One detail a held change would remove or replace, on the side that
