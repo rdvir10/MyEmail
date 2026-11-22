@@ -1203,7 +1203,7 @@ class _QuestionCard extends StatelessWidget {
         n == 1 ? ('this contact', 'it is') : ('these $n contacts', 'they are');
     // The side every contact's change (or deletion) is about, where they
     // share one: said once, rather than under every name.
-    final sides = {for (final i in q.items) i.side};
+    final sides = {for (final i in q.items) ..._sidesOf(i)};
     final oneSide = sides.length == 1 ? sides.single : null;
     // Counted as the Settings row and the one-line message count them:
     // only the contacts still waiting for Ron.
@@ -1410,11 +1410,16 @@ class _QuestionItemTile extends StatelessWidget {
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final i = item;
     final answer = i.answer;
+    // Where its changes land: one side, said once (or by the question),
+    // or both, said on each line.
+    final itsSides = _sidesOf(i);
+    final eachLine = itsSides.length > 1;
     final after = switch (kind) {
       ContactSyncQuestionKind.deletions =>
         ': ${_goneFrom(i.side, graphName, lower: true)}',
-      ContactSyncQuestionKind.changes =>
-        namesSide ? ': in ${_sideName(i.side, graphName)}' : '',
+      ContactSyncQuestionKind.changes => namesSide && !eachLine
+          ? ': in ${_sideName(itsSides.single, graphName)}'
+          : '',
       ContactSyncQuestionKind.emptyAnswer => '',
     };
     final about = [
@@ -1428,7 +1433,10 @@ class _QuestionItemTile extends StatelessWidget {
       for (final c in i.changes)
         Padding(
           padding: const EdgeInsets.only(left: 12, top: 2),
-          child: Text(contactSyncChangeLine(c)),
+          child: Text(contactSyncChangeLine(
+            c,
+            inSide: eachLine ? _sideName(_landsOn(c, i), graphName) : null,
+          )),
         ),
       if (kind == ContactSyncQuestionKind.changes && i.changes.isEmpty)
         Padding(
@@ -1514,10 +1522,26 @@ String _itemChoiceLabel(ContactSyncChoice c, String graphName) => switch (c) {
 
 /// One detail a held change would remove or replace: "Job title: Sales
 /// manager → Purchasing manager", "Mobile: +1 555 123 4567 → removed".
-/// A long value is shortened to one line.
-String contactSyncChangeLine(ContactSyncDetailChange c) =>
-    '${_fieldLabel(c.field)}: ${_shortValue(c.before)} → '
-    '${c.after == null ? 'removed' : _shortValue(c.after)}';
+/// A long value is shortened to one line. [inSide] names the side it
+/// lands on, for a contact whose changes land on both ("In Hadco,
+/// Company: …"); a detail changed on both sides says that Copy back
+/// leaves it.
+String contactSyncChangeLine(ContactSyncDetailChange c, {String? inSide}) =>
+    '${inSide == null ? '' : 'In $inSide, '}'
+    '${_fieldLabel(c.field)}: ${_shortValue(c.before)} \u2192 '
+    '${c.after == null ? 'removed' : _shortValue(c.after)}'
+    '${c.clash ? ' (changed on both sides; Copy back keeps the newer)' : ''}';
+
+/// The side a change lands on: its own, where the runner says, else its
+/// contact's. The one place that reads [ContactSyncDetailChange.side].
+ContactSide _landsOn(ContactSyncDetailChange c, ContactSyncQuestionItem i) =>
+    c.side ?? i.side;
+
+/// The sides a contact's held changes land on: its own side where it
+/// lists none.
+Set<ContactSide> _sidesOf(ContactSyncQuestionItem i) => i.changes.isEmpty
+    ? {i.side}
+    : {for (final c in i.changes) _landsOn(c, i)};
 
 /// A value on one line, and no longer than about half a phone's width.
 String _shortValue(String? value) {

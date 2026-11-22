@@ -1561,6 +1561,83 @@ void main() {
         ]);
       });
 
+      testWidgets('a contact with changes on both sides names the side on '
+          'each line, and a clash says Copy back keeps the newer',
+          (tester) async {
+        sync = FakeContactSync(status: synced(questions: const [
+          ContactSyncQuestion(
+            kind: ContactSyncQuestionKind.changes,
+            items: [
+              ContactSyncQuestionItem(
+                title: 'Ann Cole',
+                side: ContactSide.graph,
+                key: 'a',
+                changes: [
+                  ContactSyncDetailChange(
+                    field: ContactField.company,
+                    before: 'Acme',
+                    after: 'Acme Corp',
+                  ),
+                  ContactSyncDetailChange(
+                    field: ContactField.mobile,
+                    before: '+1 555 0101',
+                    side: ContactSide.google,
+                    clash: true,
+                  ),
+                ],
+              ),
+              ContactSyncQuestionItem(
+                title: 'Ben Day',
+                side: ContactSide.graph,
+                key: 'b',
+                changes: [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Buyer',
+                    after: 'Senior buyer',
+                    clash: true,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        Finder under(String key, String text) => find.descendant(
+              of: button('contact-sync-item:$key'),
+              matching: find.text(text),
+            );
+        expect(under('a', 'Ann Cole'), findsOneWidget,
+            reason: 'its lines name their sides');
+        expect(under('a', 'In Hadco, Company: Acme \u2192 Acme Corp'),
+            findsOneWidget);
+        expect(
+          under(
+            'a',
+            'In Gmail, Mobile: +1 555 0101 \u2192 removed (changed on both '
+                'sides; Copy back keeps the newer)',
+          ),
+          findsOneWidget,
+        );
+        expect(under('b', 'Ben Day: in Hadco'), findsOneWidget);
+        expect(
+          under(
+            'b',
+            'Job title: Buyer \u2192 Senior buyer (changed on both sides; '
+                'Copy back keeps the newer)',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('Under each name, each detail as it is now on '
+              'the side named, and what it would become.'),
+          findsOneWidget,
+          reason: 'changes land on both sides',
+        );
+      });
+
       testWidgets('contacts of both sides each name theirs, and one alone has '
           'only the buttons for all', (tester) async {
         sync = FakeContactSync(status: synced(questions: const [

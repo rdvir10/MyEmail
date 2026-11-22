@@ -672,7 +672,13 @@ class ContactSyncQuestionItem {
 /// never written to a log.
 @immutable
 class ContactSyncDetailChange {
-  const ContactSyncDetailChange({required this.field, this.before, this.after});
+  const ContactSyncDetailChange({
+    required this.field,
+    this.before,
+    this.after,
+    this.side,
+    this.clash = false,
+  });
 
   final ContactField field;
 
@@ -682,6 +688,14 @@ class ContactSyncDetailChange {
 
   /// What it would become, as shown; null when it would be removed.
   final String? after;
+
+  /// The side this change lands on; null means its contact's side, the
+  /// item's.
+  final ContactSide? side;
+
+  /// A detail changed on both sides: Copy back does not undo it, the newer
+  /// edit stays.
+  final bool clash;
 }
 
 /// One Needs a look item.
