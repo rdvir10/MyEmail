@@ -578,10 +578,12 @@ class ContactSync implements ContactSyncService {
           continue;
         }
         for (final item in q.items) {
-          if (items.contains(_Question.keyOf(item))) {
-            item['answer'] = choice.name;
-            item.remove(_Held.waits);
-          }
+          if (!items.contains(_Question.keyOf(item))) continue;
+          // Named with others (the screen's "for all"), one answered on its
+          // own meanwhile keeps its answer; named alone, it takes this one.
+          if (items.length > 1 && _Question.answerOf(item) != null) continue;
+          item['answer'] = choice.name;
+          item.remove(_Held.waits);
         }
       }
       return p.copyWith(held: held.encode());

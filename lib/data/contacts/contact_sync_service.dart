@@ -108,14 +108,16 @@ abstract interface class ContactSyncService {
   /// rest of the question stays open. The screen names the items it
   /// shows, for one contact and for its "for all" buttons alike, so an
   /// item raised after it last read the status is never answered unseen.
-  /// Should a key name no item of the question any more (its contact
-  /// gone, or answered meanwhile), nothing is answered and
-  /// [ContactSyncRefused] says so ("That question has changed since it
-  /// was shown. Look at it again."), for the screen to read the status
-  /// again. Without [items] (for a caller that cannot name them), every
-  /// item not answered on its own, those raised since included. The
-  /// choices are the question's own ([ContactSyncQuestion.choices]), for
-  /// one contact as for all.
+  /// Named with others, an item that already has an answer of its own
+  /// keeps it (a "for all" tapped before the screen showed that answer);
+  /// named alone, it takes the new one. Should a key name no item of the
+  /// question any more (its contact gone, or its answer carried out),
+  /// nothing is answered and [ContactSyncRefused] says so ("That question
+  /// has changed since it was shown. Look at it again."), for the screen
+  /// to read the status again. Without [items] (for a caller that cannot
+  /// name them), every item not answered on its own, those raised since
+  /// included. The choices are the question's own
+  /// ([ContactSyncQuestion.choices]), for one contact as for all.
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
     ContactSyncChoice choice, {
