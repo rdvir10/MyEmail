@@ -980,46 +980,68 @@ enum ContactBrakeKind { deletions, changes }
 /// with an ellipsis.
 const contactDetailShownLength = 60;
 
-/// One detail a held change would remove or replace, on the side that
-/// would lose it: what is there now, and what it would become, each as
-/// one line as the screen shows it ([SyncedContact.describe], lists
+/// One detail a held change would remove or replace, on [side], the side
+/// that would lose it: what is there now, and what it would become, each
+/// as one line as the screen shows it ([SyncedContact.describe], lists
 /// joined, line breaks as ", ", cut to [contactDetailShownLength]).
 ///
 /// [after] is null when the detail would be removed. A note longer than a
 /// line is not shown: [before] null, and [after] the word 'changed', or
 /// null when it would be removed. The values are contact data: kept with
 /// the question like a Needs a look item's, never logged ([toString]
-/// names the field only).
+/// names the side and the field only).
 @immutable
 class ContactDetailChange {
-  const ContactDetailChange({required this.field, this.before, this.after});
+  const ContactDetailChange({
+    required this.field,
+    required this.side,
+    this.before,
+    this.after,
+    this.clash = false,
+  });
 
   final ContactField field;
 
-  /// On the side that would lose it, as shown.
+  /// The side that would lose it.
+  final ContactSide side;
+
+  /// On [side], as shown.
   final String? before;
 
   /// What it would become; null when it would be removed.
   final String? after;
 
+  /// The detail was changed on both sides since the last sync, and the
+  /// newer edit wins: Apply them writes it, and so does Copy them back,
+  /// which puts back only what one side changed.
+  final bool clash;
+
   Map<String, Object?> toJson() => {
     'field': field.name,
+    'side': side.name,
     'before': ?before,
     'after': ?after,
+    if (clash) 'clash': true,
   };
 
-  /// A change as [toJson] wrote it; null for anything else.
-  static ContactDetailChange? fromJson(Object? json) {
+  /// A change as [toJson] wrote it; null for anything else. [side] stands
+  /// in for a side the JSON does not name.
+  static ContactDetailChange? fromJson(Object? json, {ContactSide? side}) {
     if (json is! Map) return null;
     final field = json['field'] is String
         ? ContactField.byName(json['field'] as String)
         : null;
-    if (field == null) return null;
+    final losing =
+        ContactSide.values.firstWhereOrNull((s) => s.name == json['side']) ??
+        side;
+    if (field == null || losing == null) return null;
     String? s(String key) => json[key] is String ? json[key] as String : null;
     return ContactDetailChange(
       field: field,
+      side: losing,
       before: s('before'),
       after: s('after'),
+      clash: json['clash'] == true,
     );
   }
 
@@ -1027,15 +1049,17 @@ class ContactDetailChange {
   bool operator ==(Object other) =>
       other is ContactDetailChange &&
       other.field == field &&
+      other.side == side &&
       other.before == before &&
-      other.after == after;
+      other.after == after &&
+      other.clash == clash;
 
   @override
-  int get hashCode => Object.hash(field, before, after);
+  int get hashCode => Object.hash(field, side, before, after, clash);
 
-  // The field only: the values are contact data.
+  // The side and the field only: the values are contact data.
   @override
-  String toString() => 'ContactDetailChange(${field.name})';
+  String toString() => 'ContactDetailChange(${side.name} ${field.name})';
 }
 
 /// One contact a brake holds: its name, and where it went or changed.
@@ -1053,13 +1077,14 @@ class ContactBrakeItem {
   final String title;
 
   /// For deletions, the side it was deleted from; for changes, the side
-  /// whose details would be removed or replaced.
+  /// that would lose more details (each of [changes] names its own).
   final ContactSide side;
   final String? googleName;
   final String? graphId;
 
-  /// For a change: every detail Apply them would remove or replace on
-  /// [side], in the order of [ContactField].
+  /// For a change: every detail Apply them would remove or replace, on
+  /// either side ([ContactDetailChange.side]): Gmail's first, then
+  /// Hadco's, each in the order of [ContactField].
   final List<ContactDetailChange> changes;
 
   /// For a deletion: enough to tell the contact apart, its first email,
@@ -1091,7 +1116,7 @@ class ContactBrakeItem {
       graphId: s('graphId'),
       changes: [
         for (final c in changes is List ? changes : const [])
-          ?ContactDetailChange.fromJson(c),
+          ?ContactDetailChange.fromJson(c, side: side),
       ],
       hint: s('hint'),
     );
@@ -2025,6 +2050,13 @@ class _Orphan {
   final String id;
   final ContactDeleteCause cause;
   bool rescued = false;
+
+  /// For a Gmail deletion taken as a merge: the Gmail contact it was
+  /// merged into (see `_Planner._guessMerges`).
+  String? mergedInto;
+
+  /// The held Outlook copies of its person, asked about with it.
+  final copies = <String>[];
 }
 
 /// Copies of one person: see `_Planner._copies`.
@@ -2068,6 +2100,11 @@ class _Planner {
   final graphStatus = <String, _Status>{};
 
   final orphans = <_Orphan>[];
+
+  /// Held Outlook copies of the person of a pair whose Gmail side was
+  /// taken as merged away, by id: that pair's orphan.
+  final mergedCopyOf = <String, _Orphan>{};
+
   final planned = <_Planned>[];
   final otherReviews = <ContactReviewItem>[];
   final brakes = <ContactBrake>[];
@@ -2102,6 +2139,7 @@ class _Planner {
     _answer();
     _restore();
     _rowsPass();
+    _guessMerges();
     _placeCopies();
     _newContacts(ContactSide.google);
     _newContacts(ContactSide.graph);
@@ -3350,7 +3388,7 @@ class _Planner {
   /// overwritten), and nothing is deleted on the other side. False when
   /// there is no such copy.
   bool _moveToCopy(ContactSide side, _Row row) {
-    final copy = _heldCopyOf(side, row);
+    final copy = _heldCopiesOf(side, row).firstOrNull;
     if (copy == null) return false;
     final copyRow = _rowOf(side, copy)!;
     copyRow.done = true;
@@ -3363,22 +3401,23 @@ class _Planner {
     return true;
   }
 
-  /// A copy held as a duplicate on [side] of the person [row] pairs: alive
-  /// and in Contacts, not yet planned this run, with the name of either
-  /// side of the pair and an email or mobile in common with either.
-  /// The most complete, ties by id.
-  String? _heldCopyOf(ContactSide side, _Row row) {
-    final gone = side == ContactSide.google
+  /// The copies held as duplicates on [side] of the person [row] pairs:
+  /// alive and in Contacts, not yet planned this run, with the name of
+  /// either side of the pair and an email or mobile in common with
+  /// either. The most complete first, ties by id.
+  List<String> _heldCopiesOf(ContactSide side, _Row row) {
+    final here = side == ContactSide.google
         ? row.input.googleDetails
         : row.input.graphDetails;
-    final kept = side == ContactSide.google ? _graphNow(row) : _googleNow(row);
-    // Either side's name: the copy left may still carry the gone copy's
-    // name though the other side has been renamed since (or the other
-    // way round).
-    final names = {?_personKey(kept), ?_personKey(gone)};
-    if (names.isEmpty) return null;
+    final there = side == ContactSide.google
+        ? _graphNow(row)
+        : _googleNow(row);
+    // Either side's name: a copy may still carry one side's name though
+    // the other side has been renamed since.
+    final names = {?_personKey(there), ?_personKey(here)};
+    if (names.isEmpty) return const [];
     Set<String> keys(SyncedContact d) => {..._emailKeys(d), ..._mobileKeys(d)};
-    final pairKeys = {...keys(gone), ...keys(kept)};
+    final pairKeys = {...keys(here), ...keys(there)};
     final copies = [
       for (final r in rows)
         if (r != row &&
@@ -3393,7 +3432,7 @@ class _Planner {
                   keys(_detailsOf(side, id)).any(pairKeys.contains))
             id,
     ];
-    return _mostComplete(side, copies).firstOrNull;
+    return _mostComplete(side, copies);
   }
 
   void _pairSync(
@@ -3769,7 +3808,9 @@ class _Planner {
   /// partner: moved out, held by the change brake), and, once its
   /// person's pair has gone (a member due to be deleted this run), or no
   /// contact of its name is synced, held as kept under a Needs a look
-  /// item of its own, like any kept contact.
+  /// item of its own, like any kept contact; an Outlook copy of a pair
+  /// whose Gmail side was merged away, under that pair's "Merged in
+  /// Gmail" item instead ([_unsyncedCopy]).
   void _placeCopies() {
     // A contact synced, for its copies: paired, or held with its partner
     // (moved out of Contacts, held by the change brake), whose pair stands.
@@ -3813,8 +3854,13 @@ class _Planner {
       }
 
       var paired = members.any((m) => synced(m.$1, m.$2));
-      // Its person's pair has just gone: a member is due to be deleted.
+      // Its person's pair has just gone: a member is due to be deleted, or
+      // its Gmail side was merged away ([merged]: no deletion, and the
+      // held Outlook copies are asked about with it).
       final gone = members.any((m) => _status(m.$1, m.$2) == _Status.orphan);
+      final merged = [
+        for (final (side, id) in members) ?_mergedOrphan(side, id),
+      ].firstOrNull;
       final waiting = [for (final m in members) if (open(m)) m];
       if (!paired) {
         // A copy due to be deleted (its partner gone) is paired first, so
@@ -3893,7 +3939,7 @@ class _Planner {
         if (!paired &&
             (gone ||
                 !syncedNames.contains(_personKey(_detailsOf(side, id))))) {
-          _keepCopy(side, id, row);
+          _unsyncedCopy(side, id, row, merged);
         } else if (row.reopened) {
           _hold(side, id, ContactHeldReason.duplicate, linkId: row.id);
           row.done = true;
@@ -3932,8 +3978,34 @@ class _Planner {
         }
         continue;
       }
-      _keepCopy(side, id, row);
+      _unsyncedCopy(side, id, row);
     }
+  }
+
+  /// A held copy whose person is no longer synced (D2). An Outlook copy of
+  /// a pair whose Gmail side was taken as merged away ([merged], else as
+  /// [mergedCopyOf] finds it) goes with that pair, asked about under the
+  /// same "Merged in Gmail" item ([_mergedLeft]): kept as the copy of a
+  /// gone contact, Copy it back would make a second Gmail copy of the
+  /// person just merged. Any other is kept ([_keepCopy]).
+  void _unsyncedCopy(
+    ContactSide side,
+    String id,
+    _Row row, [
+    _Orphan? merged,
+  ]) {
+    final orphan = side == ContactSide.graph
+        ? merged ?? mergedCopyOf[id]
+        : null;
+    if (orphan == null) {
+      _keepCopy(side, id, row);
+      return;
+    }
+    // Placed once it is known whether the pair is kept, and held till
+    // then, so that no new contact pairs with it.
+    row.done = true;
+    _setStatus(side, id, _Status.held);
+    orphan.copies.add(id);
   }
 
   /// A held copy of a person no longer synced (D2), never copied over
@@ -4095,6 +4167,10 @@ class _Planner {
     (d) => [?ContactNormaliser.fullNameKey(d.copyableName)],
   );
 
+  /// Every phone, for the merge guess only ([_mergedInto]).
+  late final Map<String, List<(ContactSide, String)>> _phoneIndex =
+      _index(_phoneKeys);
+
   Iterable<String> _emailKeys(SyncedContact d) => {
     for (final e in d.list(ContactField.emails))
       ?norm.itemKey(ContactField.emails, e),
@@ -4103,6 +4179,13 @@ class _Planner {
   Iterable<String> _mobileKeys(SyncedContact d) => [
     ?norm.phoneKey(d.text(ContactField.mobile)),
   ];
+
+  /// Every phone number's key: the mobile, home and work phones.
+  Iterable<String> _phoneKeys(SyncedContact d) => {
+    ?norm.phoneKey(d.text(ContactField.mobile)),
+    for (final f in [ContactField.homePhones, ContactField.workPhones])
+      for (final v in d.list(f)) ?norm.phoneKey(v),
+  };
 
   /// Every contact still there on either side, by [keys].
   Map<String, List<(ContactSide, String)>> _index(
@@ -4423,16 +4506,14 @@ class _Planner {
 
   void _orphansLeft() {
     for (final orphan in orphans) {
+      if (orphan.mergedInto case final survivor?) {
+        _mergedLeft(orphan, survivor);
+        continue;
+      }
       if (orphan.rescued) continue;
       final row = orphan.row;
       final side = orphan.side;
       final id = orphan.id;
-      if (orphan.cause == ContactDeleteCause.deletedInGoogle) {
-        if (_mergedInto(row) case final survivor?) {
-          _heldAsMerged(row, id, survivor);
-          continue;
-        }
-      }
       final listedVersion = side == ContactSide.google
           ? googleListed[id]?.etag
           : graphListed[id]?.changeKey;
@@ -4486,40 +4567,115 @@ class _Planner {
     }
   }
 
+  /// The merge guess ([_mergedInto]) for each Gmail deletion, made before
+  /// copies are placed: a pair whose Gmail side was merged away is not
+  /// due to be deleted, and the held Outlook copies of its person
+  /// ([mergedCopyOf]) are not kept as copies of a gone contact, but
+  /// asked about with it ([_unsyncedCopy], [_mergedLeft]).
+  void _guessMerges() {
+    for (final orphan in orphans) {
+      if (orphan.cause != ContactDeleteCause.deletedInGoogle) continue;
+      final survivor = _mergedInto(orphan.row);
+      if (survivor == null) continue;
+      orphan.mergedInto = survivor;
+      for (final copy in _heldCopiesOf(ContactSide.graph, orphan.row)) {
+        mergedCopyOf.putIfAbsent(copy, () => orphan);
+      }
+    }
+  }
+
+  /// The orphan whose kept contact is [id] on [side], when its pair's
+  /// Gmail side was taken as merged away ([_guessMerges]).
+  _Orphan? _mergedOrphan(ContactSide side, String id) =>
+      orphans.firstWhereOrNull(
+        (o) => o.mergedInto != null && o.side == side && o.id == id,
+      );
+
+  /// A pair whose Gmail side was taken as merged into [survivor]: its
+  /// Outlook contact and the held Outlook copies of its person
+  /// ([_Orphan.copies]) held under the "Merged in Gmail" item naming
+  /// [survivor], unless it was paired again this run (rescued): then its
+  /// copies are copies of a synced person again, held as before.
+  void _mergedLeft(_Orphan orphan, String survivor) {
+    for (final copy in orphan.copies) {
+      final row = _rowOf(ContactSide.graph, copy)!;
+      if (orphan.rescued) {
+        if (row.reopened) {
+          _hold(
+            ContactSide.graph,
+            copy,
+            ContactHeldReason.duplicate,
+            linkId: row.id,
+          );
+        }
+        continue;
+      }
+      _hold(
+        ContactSide.graph,
+        copy,
+        ContactHeldReason.waiting,
+        linkId: row.id,
+        reviews: [
+          ContactReviewItem(
+            kind: ContactReviewKind.mergedInGoogle,
+            googleName: survivor,
+            graphId: copy,
+            title: _detailsOf(ContactSide.graph, copy).title,
+          ),
+        ],
+      );
+    }
+    if (!orphan.rescued) _heldAsMerged(orphan.row, orphan.id, survivor);
+  }
+
   /// The Gmail contact [row]'s gone Gmail side was most likely merged
   /// into: Google reports Merge & fix as plain deletions of the contacts
   /// merged away, with no re-key, so a contact that went while an email
-  /// or mobile of its (its row's base) is on another Gmail contact still
-  /// there (read this run, or known from a row's base) is taken as merged
-  /// into that one, whatever its name (Google merges by name too). One
-  /// read this run first (a merge changes the survivor), then the one
-  /// sharing the most, then by name. A wrong guess (a family member
+  /// or phone number (mobile, home or work) of its (its row's base) is on
+  /// another Gmail contact still there (read this run, or known from a
+  /// row's base), whatever its name (Google merges by name too), or while
+  /// a Gmail contact of the same full name was read this run (a merge
+  /// changes the survivor), is taken as merged into that one. One read
+  /// this run first, then the one sharing the most, then one of the same
+  /// full name, then by id. A wrong guess (a family member or a colleague
   /// really deleted) only asks Ron rather than deleting.
   String? _mergedInto(_Row row) {
     final gone = row.googleName ?? row.input.googleName;
     final base = row.input.googleDetails;
+    bool other(ContactSide side, String id) =>
+        side == ContactSide.google && id != gone && _googleAlive(id);
     final shared = <String, int>{};
     for (final (keys, index) in [
       (_emailKeys(base), _emailIndex),
-      (_mobileKeys(base), _mobileIndex),
+      (_phoneKeys(base), _phoneIndex),
     ]) {
       for (final key in keys) {
         final owners = index[key] ?? const <(ContactSide, String)>[];
         for (final (side, id) in owners) {
-          if (side != ContactSide.google || id == gone) continue;
-          if (!_googleAlive(id)) continue;
-          shared[id] = (shared[id] ?? 0) + 1;
+          if (other(side, id)) shared[id] = (shared[id] ?? 0) + 1;
         }
       }
     }
-    if (shared.isEmpty) return null;
-    return (shared.keys.toList()..sort((a, b) {
-          final byRead = (googleListed.containsKey(a) ? 0 : 1).compareTo(
-            googleListed.containsKey(b) ? 0 : 1,
-          );
+    final name = ContactNormaliser.fullNameKey(base.copyableName);
+    final named = {
+      for (final (side, id)
+          in _nameIndex[name] ?? const <(ContactSide, String)>[])
+        if (other(side, id) && googleListed.containsKey(id)) id,
+    };
+    final found = {...shared.keys, ...named};
+    if (found.isEmpty) return null;
+    int first(bool yes) => yes ? 0 : 1;
+    return (found.toList()..sort((a, b) {
+          final byRead = first(
+            googleListed.containsKey(a),
+          ).compareTo(first(googleListed.containsKey(b)));
           if (byRead != 0) return byRead;
-          final byShared = shared[b]!.compareTo(shared[a]!);
-          return byShared != 0 ? byShared : a.compareTo(b);
+          final byShared = (shared[b] ?? 0).compareTo(shared[a] ?? 0);
+          if (byShared != 0) return byShared;
+          final byName = first(
+            named.contains(a),
+          ).compareTo(first(named.contains(b)));
+          return byName != 0 ? byName : a.compareTo(b);
         }))
         .first;
   }
@@ -4607,7 +4763,15 @@ class _Planner {
       for (final p in changes) {
         final plan = p.plan;
         final row = byId[plan.linkId]!;
-        items.add(_changeItem(plan));
+        items.add(
+          _changeItem(
+            plan,
+            clashes: {
+              for (final r in p.reviews)
+                if (r.kind == ContactReviewKind.clash) ...r.fields,
+            },
+          ),
+        );
         p.plan = ContactLinkPlan(
           linkId: plan.linkId,
           googleName: plan.googleName,
@@ -4679,7 +4843,12 @@ class _Planner {
             googleEtag: gc.etag,
             graphChangeKey: hc.changeKey,
           );
-          changes.add(_changeItem(made.plan));
+          changes.add(
+            _changeItem(
+              made.plan,
+              clashes: {for (final c in made.pair.clashes) c.field},
+            ),
+          );
         default:
           break;
       }
@@ -4691,12 +4860,16 @@ class _Planner {
     ];
   }
 
-  /// A change brake's item for [plan], a pair's writes: the side that
-  /// would lose details (the one losing more, Gmail on a tie; with none
-  /// lost, the side written, Gmail first) and each detail lost there.
-  ContactBrakeItem _changeItem(ContactLinkPlan plan) {
-    final google = _losses(plan.googleWrite, plan.googleNow);
-    final graph = _losses(plan.graphWrite, plan.graphNow);
+  /// A change brake's item for [plan], a pair's writes: each detail lost
+  /// on either side, and as its side the one losing more (Gmail on a tie;
+  /// with none lost, the side written, Gmail first). [clashes] are the
+  /// details changed on both sides ([ContactDetailChange.clash]).
+  ContactBrakeItem _changeItem(
+    ContactLinkPlan plan, {
+    Set<ContactField> clashes = const {},
+  }) {
+    final google = _losses(plan.googleWrite, plan.googleNow, clashes);
+    final graph = _losses(plan.graphWrite, plan.graphNow, clashes);
     final onGoogle = google.isEmpty && graph.isEmpty
         ? plan.googleWrite != null
         : google.length >= graph.length;
@@ -4705,15 +4878,21 @@ class _Planner {
       side: onGoogle ? ContactSide.google : ContactSide.graph,
       googleName: plan.googleName,
       graphId: plan.graphId,
-      changes: onGoogle ? google : graph,
+      changes: [...google, ...graph],
     );
   }
 
   /// Each detail [write] would remove or replace on its side, held there
   /// as [now]: not one added where there was none, a list only joined, or
-  /// a year given to a birthday on the same day.
-  List<ContactDetailChange> _losses(ContactWrite? write, SyncedContact? now) {
+  /// a year given to a birthday on the same day. A list gives each value
+  /// it would lose on its own, with the value new in its place, if any.
+  List<ContactDetailChange> _losses(
+    ContactWrite? write,
+    SyncedContact? now,
+    Set<ContactField> clashes,
+  ) {
     if (write == null || now == null) return const [];
+    final side = write.side;
     final lost = <ContactDetailChange>[];
     for (final f in ContactField.values) {
       if (!write.fields.contains(f)) continue;
@@ -4722,17 +4901,23 @@ class _Planner {
       if (before == null) continue;
       final after = write.target[f];
       if (before is List<String>) {
-        final kept = {
-          for (final v in (after as List<String>?) ?? const <String>[])
-            ?norm.itemKey(f, v),
-        };
-        // A value with no key (a phone with no digits) is never removed.
-        if (before.every((v) {
+        final afterList = (after as List<String>?) ?? const <String>[];
+        final kept = {for (final v in afterList) ?norm.itemKey(f, v)};
+        final had = {for (final v in before) ?norm.itemKey(f, v)};
+        for (final (i, v) in before.indexed) {
           final k = norm.itemKey(f, v);
-          return k == null || kept.contains(k);
-        })) {
-          continue;
+          // A value with no key (a phone with no digits) is never removed.
+          if (k == null || kept.contains(k)) continue;
+          // A new value in its place replaces it (as a value put in an
+          // Outlook slot keeps its Gmail entry's place).
+          String? instead;
+          if (i < afterList.length) {
+            final there = norm.itemKey(f, afterList[i]);
+            if (there != null && !had.contains(there)) instead = afterList[i];
+          }
+          lost.add(_detailChange(f, side, v, instead, clashes.contains(f)));
         }
+        continue;
       }
       if (before is ContactBirthday &&
           after is ContactBirthday &&
@@ -4740,17 +4925,19 @@ class _Planner {
           before.sameDay(after)) {
         continue;
       }
-      lost.add(_detailChange(f, before, after));
+      lost.add(_detailChange(f, side, before, after, clashes.contains(f)));
     }
     return lost;
   }
 
-  /// [field] going from [before] to [after] as the screen shows it (see
-  /// [ContactDetailChange]).
+  /// [field] going from [before] to [after] on [side] as the screen shows
+  /// it (see [ContactDetailChange]).
   static ContactDetailChange _detailChange(
     ContactField field,
+    ContactSide side,
     Object before,
     Object? after,
+    bool clash,
   ) {
     String? shown(Object? value) {
       if (value == null) return null;
@@ -4769,13 +4956,17 @@ class _Planner {
     if (field == ContactField.notes && (long(before) || long(after))) {
       return ContactDetailChange(
         field: field,
+        side: side,
         after: after == null ? null : 'changed',
+        clash: clash,
       );
     }
     return ContactDetailChange(
       field: field,
+      side: side,
       before: shown(before),
       after: shown(after),
+      clash: clash,
     );
   }
 
