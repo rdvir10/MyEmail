@@ -1435,7 +1435,14 @@ void main() {
         expect(sync.questionAnswers, [
           (ContactSyncQuestionKind.changes, ContactSyncChoice.applyThem),
         ]);
-        expect(sync.questionItems, [null], reason: 'the whole question');
+        expect(
+          sync.questionItems,
+          [
+            {'b', 'c'},
+          ],
+          reason: 'the contacts shown with no answer of their own, never '
+              'one held since',
+        );
 
         // Answered for the rest: Ann keeps her own answer.
         sync.set(synced(questions: [
@@ -1979,6 +1986,44 @@ void main() {
         ),
         '2 in Hadco; none is synced yet',
       );
+    });
+
+    testWidgets('an answer refused because the question changed is said, '
+        'and the question read again', (tester) async {
+      sync = FakeContactSync(status: synced(questions: const [
+        ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.changes,
+          items: [
+            ContactSyncQuestionItem(
+              title: 'Ann Cole',
+              side: ContactSide.graph,
+              key: 'a',
+            ),
+            ContactSyncQuestionItem(
+              title: 'Ben Day',
+              side: ContactSide.graph,
+              key: 'b',
+            ),
+          ],
+        ),
+      ]))
+        ..answerFailure = const ContactSyncRefused(
+          'These contacts have changed since they were shown. Look again.',
+        );
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      final readsBefore = sync.statusReads;
+
+      await tester.tap(find.text('Apply them'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'These contacts have changed since they were shown. Look again.',
+        ),
+        findsOneWidget,
+      );
+      expect(sync.statusReads, greaterThan(readsBefore),
+          reason: 'read again, to be answered as it is now');
     });
 
     testWidgets('a few hundred copies of people scroll to the last',

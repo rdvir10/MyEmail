@@ -30,6 +30,10 @@ class FakeContactSync implements ContactSyncService {
   /// What [choose] throws, as the runner refuses a pair while a run is
   /// going or for an account that cannot sync.
   Object? chooseFailure;
+
+  /// What [answerQuestion] throws, as the runner refuses an answer to a
+  /// question that has changed since it was drawn.
+  Object? answerFailure;
   List<ContactSyncBackupFile> backupFiles;
 
   /// The clock [startIfDue] judges by.
@@ -144,6 +148,7 @@ class FakeContactSync implements ContactSyncService {
     Set<String>? items,
   }) async {
     calls.add('answerQuestion');
+    if (answerFailure case final failure?) throw failure;
     questionAnswers.add((kind, choice));
     questionItems.add(items);
   }

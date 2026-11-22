@@ -562,6 +562,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             onAnswer: (choice, {items}) => _act(
               context,
               () => _sync.answerQuestion(q.kind, choice, items: items),
+              // Refused, perhaps because the question changed since it was
+              // drawn: said, and read again, to be answered as it is now.
+              onFailure: () {
+                if (mounted) ref.invalidate(contactSyncStatusProvider);
+              },
             ),
           ),
         if (s.firstStarted ||
@@ -1261,6 +1266,17 @@ class _QuestionCard extends StatelessWidget {
         q.items.every((i) => i.key.isNotEmpty);
     final open = q.items.where((i) => i.answer == null).length;
     final someAnswered = open < n;
+    // What the buttons for all answer: the contacts shown here with no
+    // answer of their own, by name, so that one held since Ron last looked
+    // is not answered by a tap made before he saw it. A question of none
+    // (an empty answer), or one whose contacts carry no keys, is answered
+    // whole.
+    final forAll = n > 0 && q.items.every((i) => i.key.isNotEmpty)
+        ? {
+            for (final i in q.items)
+              if (i.answer == null) i.key,
+          }
+        : null;
     return Card(
       key: ValueKey('contact-sync-question:${q.kind.name}'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -1306,7 +1322,7 @@ class _QuestionCard extends StatelessWidget {
                   for (final c in q.choices)
                     OutlinedButton(
                       key: ValueKey('contact-sync-answer:${c.name}'),
-                      onPressed: () => onAnswer(c),
+                      onPressed: () => onAnswer(c, items: forAll),
                       child: Text(_choiceLabel(c, graphName)),
                     ),
                 ],
@@ -2294,7 +2310,11 @@ List<Account> _graphAccounts(List<Account> accounts) => [
 
 /// An answer or a Restore, queued: a failure said along the bottom,
 /// after whatever is there now.
-Future<void> _act(BuildContext context, Future<void> Function() action) async {
+Future<void> _act(
+  BuildContext context,
+  Future<void> Function() action, {
+  VoidCallback? onFailure,
+}) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     await action();
@@ -2303,6 +2323,7 @@ Future<void> _act(BuildContext context, Future<void> Function() action) async {
       duration: kBottomMessage,
       content: Text(e is ReadableError ? e.message : '$e'),
     ));
+    onFailure?.call();
   }
 }
 
