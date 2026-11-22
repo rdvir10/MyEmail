@@ -2327,15 +2327,18 @@ void main() {
       expect(item.changes, [
         const ContactDetailChange(
           field: ContactField.emails,
+          side: ContactSide.graph,
           before: 'a@x.example, b@x.example',
           after: 'a@x.example, c@x.example',
         ),
         const ContactDetailChange(
           field: ContactField.mobile,
+          side: ContactSide.graph,
           before: '+1 212 555 0100',
         ),
         const ContactDetailChange(
           field: ContactField.workAddress,
+          side: ContactSide.graph,
           before:
               '1200 Industrial Parkway, Building 7, Loading Dock '
               'Entrance\u2026',
@@ -2343,31 +2346,118 @@ void main() {
         ),
         const ContactDetailChange(
           field: ContactField.company,
+          side: ContactSide.graph,
           before: 'Old',
           after: 'New',
         ),
         const ContactDetailChange(
           field: ContactField.jobTitle,
+          side: ContactSide.graph,
           before: 'Sales manager',
           after: 'Purchasing manager',
         ),
-        const ContactDetailChange(field: ContactField.notes, after: 'changed'),
+        const ContactDetailChange(
+          field: ContactField.notes,
+          side: ContactSide.graph,
+          after: 'changed',
+        ),
       ], reason: 'a year added to the birthday is no loss');
       // Kept with the question, and never in a log.
       final back = ContactBrakeItem.fromJson(item.toJson())!;
       expect(back.changes, item.changes);
       expect(back.side, ContactSide.graph);
-      expect('${item.changes[3]}', 'ContactDetailChange(company)');
+      expect('${item.changes[3]}', 'ContactDetailChange(graph company)');
       expect(
         plan.brakes.single.items[1].changes,
         [
           const ContactDetailChange(
             field: ContactField.company,
+            side: ContactSide.graph,
             before: 'Old',
             after: 'New',
           ),
         ],
       );
+    });
+
+    test('an item lists the details lost on both sides', () {
+      // Gmail changed the company (Hadco would lose Acme); Hadco removed
+      // the mobile and an email (Gmail would lose them).
+      final both = person(
+        given: 'Ann',
+        family: 'Cole',
+        emails: ['ann@x.example', 'a2@x.example'],
+        mobile: '+1 212 555 0100',
+        more: {ContactField.company: 'Acme'},
+      );
+      final rows = [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: both,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final gmail = both.withValue(ContactField.company, 'Acme Corp');
+      final hadco = both
+          .withValue(ContactField.mobile, null)
+          .withValue(ContactField.emails, ['ann@x.example']);
+      final plan = run(
+        google: [for (var i = 0; i < 11; i++) g('people/c$i', gmail)],
+        graph: [for (var i = 0; i < 11; i++) h('H$i', hadco)],
+        links: rows,
+      );
+      final item = plan.heldBrakes.single.items.first;
+      expect(item.side, ContactSide.google, reason: 'Gmail loses more');
+      expect(
+        {for (final c in item.changes) (c.side, c.field)},
+        {
+          (ContactSide.google, ContactField.emails),
+          (ContactSide.google, ContactField.mobile),
+          (ContactSide.graph, ContactField.company),
+        },
+      );
+      expect(
+        item.changes.singleWhere((c) => c.side == ContactSide.graph),
+        const ContactDetailChange(
+          field: ContactField.company,
+          side: ContactSide.graph,
+          before: 'Acme',
+          after: 'Acme Corp',
+        ),
+      );
+      // Exactly what Apply them would write.
+      final applied = run(
+        google: [g('people/c0', gmail)],
+        graph: [h('H0', hadco)],
+        links: [rows.first],
+        answers: [
+          ContactAnswer(ContactAnswerKind.applyHeld, held: [item]),
+        ],
+      );
+      final pair = byLink(applied, 0)!;
+      expect(
+        {
+          for (final f in pair.googleWrite!.fields) (ContactSide.google, f),
+          for (final f in pair.graphWrite!.fields) (ContactSide.graph, f),
+        },
+        {for (final c in item.changes) (c.side, c.field)},
+      );
+      // Each change keeps its side through toJson/fromJson; one kept
+      // without a side takes its item's.
+      final back = ContactBrakeItem.fromJson(item.toJson())!;
+      expect(back.changes, item.changes);
+      final older = ContactBrakeItem.fromJson({
+        'title': 'Ann Cole',
+        'side': 'graph',
+        'changes': [
+          {'field': 'company', 'before': 'Acme', 'after': 'Acme Corp'},
+        ],
+      })!;
+      expect(older.changes.single.side, ContactSide.graph);
     });
 
     List<ContactLinkInput> pairs(int n) => [
@@ -2505,6 +2595,7 @@ void main() {
       expect(items.first.changes, [
         const ContactDetailChange(
           field: ContactField.company,
+          side: ContactSide.graph,
           before: 'Old',
           after: 'New',
         ),

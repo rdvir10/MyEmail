@@ -980,23 +980,31 @@ enum ContactBrakeKind { deletions, changes }
 /// with an ellipsis.
 const contactDetailShownLength = 60;
 
-/// One detail a held change would remove or replace, on the side that
-/// would lose it: what is there now, and what it would become, each as
-/// one line as the screen shows it ([SyncedContact.describe], lists
+/// One detail a held change would remove or replace, on [side], the side
+/// that would lose it: what is there now, and what it would become, each
+/// as one line as the screen shows it ([SyncedContact.describe], lists
 /// joined, line breaks as ", ", cut to [contactDetailShownLength]).
 ///
 /// [after] is null when the detail would be removed. A note longer than a
 /// line is not shown: [before] null, and [after] the word 'changed', or
 /// null when it would be removed. The values are contact data: kept with
 /// the question like a Needs a look item's, never logged ([toString]
-/// names the field only).
+/// names the side and the field only).
 @immutable
 class ContactDetailChange {
-  const ContactDetailChange({required this.field, this.before, this.after});
+  const ContactDetailChange({
+    required this.field,
+    required this.side,
+    this.before,
+    this.after,
+  });
 
   final ContactField field;
 
-  /// On the side that would lose it, as shown.
+  /// The side that would lose it.
+  final ContactSide side;
+
+  /// On [side], as shown.
   final String? before;
 
   /// What it would become; null when it would be removed.
@@ -1004,20 +1012,26 @@ class ContactDetailChange {
 
   Map<String, Object?> toJson() => {
     'field': field.name,
+    'side': side.name,
     'before': ?before,
     'after': ?after,
   };
 
-  /// A change as [toJson] wrote it; null for anything else.
-  static ContactDetailChange? fromJson(Object? json) {
+  /// A change as [toJson] wrote it; null for anything else. [side] stands
+  /// in for a side the JSON does not name.
+  static ContactDetailChange? fromJson(Object? json, {ContactSide? side}) {
     if (json is! Map) return null;
     final field = json['field'] is String
         ? ContactField.byName(json['field'] as String)
         : null;
-    if (field == null) return null;
+    final losing =
+        ContactSide.values.firstWhereOrNull((s) => s.name == json['side']) ??
+        side;
+    if (field == null || losing == null) return null;
     String? s(String key) => json[key] is String ? json[key] as String : null;
     return ContactDetailChange(
       field: field,
+      side: losing,
       before: s('before'),
       after: s('after'),
     );
@@ -1027,15 +1041,16 @@ class ContactDetailChange {
   bool operator ==(Object other) =>
       other is ContactDetailChange &&
       other.field == field &&
+      other.side == side &&
       other.before == before &&
       other.after == after;
 
   @override
-  int get hashCode => Object.hash(field, before, after);
+  int get hashCode => Object.hash(field, side, before, after);
 
-  // The field only: the values are contact data.
+  // The side and the field only: the values are contact data.
   @override
-  String toString() => 'ContactDetailChange(${field.name})';
+  String toString() => 'ContactDetailChange(${side.name} ${field.name})';
 }
 
 /// One contact a brake holds: its name, and where it went or changed.
@@ -1053,13 +1068,14 @@ class ContactBrakeItem {
   final String title;
 
   /// For deletions, the side it was deleted from; for changes, the side
-  /// whose details would be removed or replaced.
+  /// that would lose more details (each of [changes] names its own).
   final ContactSide side;
   final String? googleName;
   final String? graphId;
 
-  /// For a change: every detail Apply them would remove or replace on
-  /// [side], in the order of [ContactField].
+  /// For a change: every detail Apply them would remove or replace, on
+  /// either side ([ContactDetailChange.side]): Gmail's first, then
+  /// Hadco's, each in the order of [ContactField].
   final List<ContactDetailChange> changes;
 
   /// For a deletion: enough to tell the contact apart, its first email,
@@ -1091,7 +1107,7 @@ class ContactBrakeItem {
       graphId: s('graphId'),
       changes: [
         for (final c in changes is List ? changes : const [])
-          ?ContactDetailChange.fromJson(c),
+          ?ContactDetailChange.fromJson(c, side: side),
       ],
       hint: s('hint'),
     );
@@ -4691,9 +4707,9 @@ class _Planner {
     ];
   }
 
-  /// A change brake's item for [plan], a pair's writes: the side that
-  /// would lose details (the one losing more, Gmail on a tie; with none
-  /// lost, the side written, Gmail first) and each detail lost there.
+  /// A change brake's item for [plan], a pair's writes: each detail lost
+  /// on either side, and as its side the one losing more (Gmail on a tie;
+  /// with none lost, the side written, Gmail first).
   ContactBrakeItem _changeItem(ContactLinkPlan plan) {
     final google = _losses(plan.googleWrite, plan.googleNow);
     final graph = _losses(plan.graphWrite, plan.graphNow);
@@ -4705,7 +4721,7 @@ class _Planner {
       side: onGoogle ? ContactSide.google : ContactSide.graph,
       googleName: plan.googleName,
       graphId: plan.graphId,
-      changes: onGoogle ? google : graph,
+      changes: [...google, ...graph],
     );
   }
 
@@ -4714,6 +4730,7 @@ class _Planner {
   /// a year given to a birthday on the same day.
   List<ContactDetailChange> _losses(ContactWrite? write, SyncedContact? now) {
     if (write == null || now == null) return const [];
+    final side = write.side;
     final lost = <ContactDetailChange>[];
     for (final f in ContactField.values) {
       if (!write.fields.contains(f)) continue;
@@ -4740,15 +4757,16 @@ class _Planner {
           before.sameDay(after)) {
         continue;
       }
-      lost.add(_detailChange(f, before, after));
+      lost.add(_detailChange(f, side, before, after));
     }
     return lost;
   }
 
-  /// [field] going from [before] to [after] as the screen shows it (see
-  /// [ContactDetailChange]).
+  /// [field] going from [before] to [after] on [side] as the screen shows
+  /// it (see [ContactDetailChange]).
   static ContactDetailChange _detailChange(
     ContactField field,
+    ContactSide side,
     Object before,
     Object? after,
   ) {
@@ -4769,11 +4787,13 @@ class _Planner {
     if (field == ContactField.notes && (long(before) || long(after))) {
       return ContactDetailChange(
         field: field,
+        side: side,
         after: after == null ? null : 'changed',
       );
     }
     return ContactDetailChange(
       field: field,
+      side: side,
       before: shown(before),
       after: shown(after),
     );
