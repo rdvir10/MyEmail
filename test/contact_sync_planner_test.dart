@@ -2451,6 +2451,101 @@ void main() {
       expect(first.googleWrite!.target.text(ContactField.company), 'Old');
     });
 
+    test('each of the four answers given to one item acts on it alone', () {
+      ContactBrakeItem one(int i) => ContactBrakeItem(
+        title: 'P X',
+        side: ContactSide.graph,
+        googleName: 'people/c$i',
+        graphId: 'H$i',
+      );
+      final changeRows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      for (final kind in [
+        ContactAnswerKind.applyHeld,
+        ContactAnswerKind.copyHeldBack,
+      ]) {
+        final plan = run(
+          google: renamed(3),
+          graph: unchanged(3),
+          links: changeRows,
+          answers: [
+            ContactAnswer(kind, held: [one(1)]),
+          ],
+        );
+        expect(plan.answers, [ContactAnswerOutcome.applied], reason: '$kind');
+        final answered = byLink(plan, 1)!;
+        expect(answered.state, ContactLinkState.paired, reason: '$kind');
+        expect(
+          kind == ContactAnswerKind.applyHeld
+              ? answered.graphWrite?.target.text(ContactField.company)
+              : answered.googleWrite?.target.text(ContactField.company),
+          kind == ContactAnswerKind.applyHeld ? 'New' : 'Old',
+        );
+        expect(byLink(plan, 0), isNull, reason: '$kind: still held');
+        expect(byLink(plan, 2), isNull, reason: '$kind: still held');
+        // The rest of the question stands, with its details.
+        expect(
+          plan.heldBrakes.single.items.map((i) => i.googleName),
+          ['people/c0', 'people/c2'],
+        );
+      }
+      final deletionRows = [
+        for (var i = 0; i < 3; i++)
+          link(
+            i,
+            'people/c$i',
+            null,
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ),
+      ];
+      for (final kind in [
+        ContactAnswerKind.deleteHeld,
+        ContactAnswerKind.keepHeld,
+      ]) {
+        final plan = run(
+          google: renamed(3),
+          graphGone: {'H0', 'H1', 'H2'},
+          links: deletionRows,
+          answers: [
+            ContactAnswer(
+              kind,
+              held: [
+                const ContactBrakeItem(
+                  title: 'P X',
+                  side: ContactSide.graph,
+                  googleName: 'people/c1',
+                ),
+              ],
+            ),
+          ],
+        );
+        expect(plan.answers, [ContactAnswerOutcome.applied], reason: '$kind');
+        final answered = byLink(plan, 1)!;
+        if (kind == ContactAnswerKind.deleteHeld) {
+          expect(answered.delete!.contactId, 'people/c1');
+        } else {
+          expect(answered.reason, ContactHeldReason.kept);
+        }
+        expect(byLink(plan, 0), isNull, reason: '$kind: still held');
+        expect(byLink(plan, 2), isNull, reason: '$kind: still held');
+        expect(
+          plan.heldBrakes.single.items.map((i) => i.googleName),
+          ['people/c0', 'people/c2'],
+        );
+      }
+    });
+
     test('an answer acts only on the rows its question listed', () {
       // Rows 0 and 1 were held by the brake Ron answered; row 2 by a later
       // one, after his answer was queued.
