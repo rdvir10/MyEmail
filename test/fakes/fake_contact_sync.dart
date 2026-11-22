@@ -42,6 +42,10 @@ class FakeContactSync implements ContactSyncService {
   final List<({String google, String graph})> chosen = [];
   final List<(ContactSyncQuestionKind, ContactSyncChoice)> questionAnswers =
       [];
+
+  /// The items each answer to a question named, in step with
+  /// [questionAnswers]: null for the whole question.
+  final List<Set<String>?> questionItems = [];
   final List<({int id, ContactSyncChoice choice, String? candidateId})>
       lookAnswers = [];
   final List<ContactSyncChoice> allDiffering = [];
@@ -136,10 +140,12 @@ class FakeContactSync implements ContactSyncService {
   @override
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
-    ContactSyncChoice choice,
-  ) async {
+    ContactSyncChoice choice, {
+    Set<String>? items,
+  }) async {
     calls.add('answerQuestion');
     questionAnswers.add((kind, choice));
+    questionItems.add(items);
   }
 
   @override

@@ -101,10 +101,18 @@ abstract interface class ContactSyncService {
   /// that question lists: a brake raised since holds its own under a
   /// question of its own. [ContactSyncChoice.keepWaiting] queues nothing,
   /// and the question stays.
+  ///
+  /// With [items] (their [ContactSyncQuestionItem.key]s), only those
+  /// contacts are answered, each showing its answer
+  /// ([ContactSyncQuestionItem.answer]) until a run carries it out; the
+  /// rest of the question stays open. Without, the whole question: every
+  /// item not answered on its own. The choices are the question's own
+  /// ([ContactSyncQuestion.choices]), for one contact as for all.
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
-    ContactSyncChoice choice,
-  );
+    ContactSyncChoice choice, {
+    Set<String>? items,
+  });
 
   /// Ron's answer to one Needs a look item ([ContactSyncLook.id]), one of
   /// its [ContactSyncLook.choices], queued for a run that starts at once.
@@ -183,8 +191,9 @@ class NoContactSync implements ContactSyncService {
   @override
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
-    ContactSyncChoice choice,
-  ) async {}
+    ContactSyncChoice choice, {
+    Set<String>? items,
+  }) async {}
 
   @override
   Future<void> answerLook(
@@ -600,7 +609,8 @@ class ContactSyncQuestion {
   final int? listed;
   final int? expected;
 
-  /// The answer queued, waiting for a run.
+  /// The answer queued for the whole question, waiting for a run. It
+  /// covers every item not answered on its own.
   final ContactSyncChoice? answer;
 
   List<ContactSyncChoice> get choices => switch (kind) {
@@ -621,13 +631,57 @@ class ContactSyncQuestion {
 
 @immutable
 class ContactSyncQuestionItem {
-  const ContactSyncQuestionItem({required this.title, required this.side});
+  const ContactSyncQuestionItem({
+    required this.title,
+    required this.side,
+    this.key = '',
+    this.changes = const [],
+    this.hint,
+    this.answer,
+  });
 
   final String title;
 
   /// For deletions, the side it was deleted from ("deleted in Gmail",
   /// "gone from Hadco"); for changes, the side that would lose details.
   final ContactSide side;
+
+  /// Names this contact within its question, for
+  /// [ContactSyncService.answerQuestion]'s items: stable from run to run
+  /// while its contacts keep their ids. The runner always sets it.
+  final String key;
+
+  /// For changes: each detail that would be removed or replaced on
+  /// [side], with what is there now and what it would become, in the
+  /// order of the contact's details. Empty for deletions, and for an item
+  /// whose contacts no run has read since it was held.
+  final List<ContactSyncDetailChange> changes;
+
+  /// For deletions: enough to tell the contact apart, its first email,
+  /// else its mobile. Null for changes, and where it has neither.
+  final String? hint;
+
+  /// The answer given to this item on its own, waiting for a run that
+  /// carries it out; null when it has none (the question's answer, if
+  /// any, covers it).
+  final ContactSyncChoice? answer;
+}
+
+/// One detail a held change would remove or replace, on the side that
+/// would lose it. Contact data: shown on screen and kept on this device,
+/// never written to a log.
+@immutable
+class ContactSyncDetailChange {
+  const ContactSyncDetailChange({required this.field, this.before, this.after});
+
+  final ContactField field;
+
+  /// The value there now, as shown (a long note shortened). Null where
+  /// there is none.
+  final String? before;
+
+  /// What it would become, as shown; null when it would be removed.
+  final String? after;
 }
 
 /// One Needs a look item.

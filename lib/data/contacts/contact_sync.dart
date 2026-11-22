@@ -531,8 +531,9 @@ class ContactSync implements ContactSyncService {
   @override
   Future<void> answerQuestion(
     ContactSyncQuestionKind kind,
-    ContactSyncChoice choice,
-  ) async {
+    ContactSyncChoice choice, {
+    Set<String>? items,
+  }) async {
     if (choice == ContactSyncChoice.keepWaiting) return;
     if (!ContactSyncQuestion(kind: kind).choices.contains(choice)) {
       throw ArgumentError.value(choice, 'choice', 'not an answer to $kind');
