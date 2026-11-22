@@ -532,7 +532,11 @@ class ContactSync implements ContactSyncService {
     await store.updatePair(pair.pairId, (p) {
       final held = _Held.parse(p.held);
       if (held.copies.people == 0) return p;
-      held.copies.asked ??= _now();
+      if (held.copies.asked == null) {
+        held.copies
+          ..asked = _now()
+          ..shortStops = 0;
+      }
       asked = true;
       return p.copyWith(held: held.encode());
     });
@@ -1847,6 +1851,28 @@ class _Run {
     }
   }
 
+  /// A merge's Use Hadco's answer ([_CopiesStep._write]) is the merge's
+  /// on the Gmail contact as it was when the write was made (its
+  /// `googleEtag`). Should Gmail have changed since (Ron edited it while
+  /// the answer waited), the answer is dropped, from the pair too: the
+  /// usual rules then decide between his edit and the merge's, the newer
+  /// winning and the other listed, never his edit written over unasked.
+  void _dropStale() {
+    for (var i = answers.length - 1; i >= 0; i--) {
+      final at = answerSources[i].pendingIndex;
+      if (at == null || at >= held.pending.length) continue;
+      final etag = held.pending[at]['googleEtag'];
+      final name = answers[i].googleName;
+      if (etag is! String || name == null) continue;
+      final person = googleRead[googleReKeys[name] ?? name];
+      if (person == null || googleContactEtag(person) == etag) continue;
+      answers.removeAt(i);
+      answerSources.removeAt(i);
+      debugPrint('[myemail] contacts: a merge answer dropped, Gmail changed '
+          'since');
+    }
+  }
+
   static ContactAnswer? _answerOf(Map<String, Object?>? json) {
     if (json == null) return null;
     final kind = ContactAnswerKind.values.firstWhereOrNull(
@@ -1987,6 +2013,7 @@ class _Run {
         ),
       );
       await read();
+      _dropStale();
       norm = ContactNormaliser(
         region: pair.phoneRegion ?? sync._regionNow(),
       );
@@ -4185,7 +4212,8 @@ class _CopyNotHeld implements Exception {
 
 /// The person cannot be merged as read: a photo could not be read, or a
 /// contact changed (or went) since the read. Passed over, to be tried at a
-/// later pass; nothing of theirs written or deleted.
+/// later pass; nothing of theirs deleted (details may already have been
+/// added to the synced copy, which the next pass finds there).
 class _PassOver implements Exception {
   const _PassOver();
 }
@@ -4524,11 +4552,15 @@ class _CopiesStep {
             if (!_empty(was[f]) && !run.norm.same(f, was[f], now[f])) f.name,
         ];
         if (replaced.isNotEmpty) {
+          // With the Gmail contact's version as the write found it: should
+          // Gmail change before a run carries it out, the answer is
+          // dropped ([_Run._dropStale]) and the usual rules decide.
           final useHadcos = {
             'kind': ContactAnswerKind.useGraph.name,
             'googleName': googleName,
             'graphId': key,
             'fields': replaced,
+            'googleEtag': ?pair.googleEtag,
           };
           run.copiesAnswers.add(useHadcos);
           await store.updatePair(run.pairId, (p) {
@@ -4716,8 +4748,8 @@ class _CopiesStep {
         if (short) {
           // A pass that stopped short, Hadco not read: the ask stays, but
           // after three in a row it is given up, and the last result says
-          // so.
-          c.shortStops++;
+          // so. Runs for Ron's answers alone are not passes of a merge.
+          if (asked != null && c.asked == asked) c.shortStops++;
           if (asked != null && c.asked == asked && c.shortStops >= 3) {
             c
               ..asked = null

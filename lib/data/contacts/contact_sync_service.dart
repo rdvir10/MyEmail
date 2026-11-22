@@ -1039,10 +1039,11 @@ class ContactSyncCopiesResult {
   /// next merge tries them again.
   final int failed;
 
-  /// People the pass left for the next merge without trying them: a copy
-  /// changed in Outlook while the merge went, a photo that could not be
-  /// read, or a contact no longer in Contacts. Nothing of theirs was
-  /// written or deleted.
+  /// People the pass left for the next merge: a copy changed in Outlook
+  /// while the merge went, a photo that could not be read, a contact no
+  /// longer in Contacts, or Hadco not read again just then. Nothing of
+  /// theirs was deleted, though details may already have been added to
+  /// the synced copy.
   final int passedOver;
 
   /// The merge was given up: three passes in a row stopped short because
