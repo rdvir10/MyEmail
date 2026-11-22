@@ -1735,11 +1735,69 @@ void main() {
       );
     });
 
+    test('a contact new this run is never the one merged into', () {
+      // Bob merged into Robert; the same run brings a new Gmail Bob, made
+      // again by hand with Bob's mobile, which Bob's held Hadco copy also
+      // has. Robert is the one merged into, and the new Bob is placed by
+      // the new-contact rules: asked about, his mobile on two contacts.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+        mobile: '+1 212 555 0100',
+      );
+      final robert = person(
+        given: 'Robert',
+        family: 'Smith',
+        emails: ['rob@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/rob',
+            robert.withValue(ContactField.emails, [
+              'rob@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g(
+            'people/new',
+            person(given: 'Bob', family: 'Smith', mobile: '+1 212 555 0100'),
+          ),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(
+            2,
+            null,
+            'H-bob2',
+            base: bob,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.duplicate,
+          ),
+          link(3, 'people/rob', 'H-rob', base: robert),
+        ],
+      );
+      expect(
+        {
+          for (final r in plan.reviews)
+            if (r.kind == ContactReviewKind.mergedInGoogle)
+              (r.googleName, r.graphId),
+        },
+        {('people/rob', 'H-bob'), ('people/rob', 'H-bob2')},
+      );
+      final asked = plan.reviews.singleWhere(
+        (r) => r.kind == ContactReviewKind.newContact,
+      );
+      expect(asked.googleName, 'people/new');
+    });
+
     test('a contact merged away sharing only a home or work phone is asked '
         'about', () {
-      // Bob Roe's home phone, merged into Robert Smith (read this run);
-      // Cal Poe's work phone, on Carl Moe (known from his row's base).
-      // Dee Fox shares only a company: deleted.
+      // Bob Roe's home phone, merged into Robert Smith; Cal Poe's work
+      // phone, on Carl Moe; both read this run. Dee Fox shares only a
+      // company: deleted.
       final bob = SyncedContact({
         ContactField.name: ContactName.of(given: 'Bob', family: 'Roe'),
         ContactField.homePhones: ['+1 212 555 0101'],
@@ -1776,6 +1834,7 @@ void main() {
           gDeleted('people/cal'),
           gDeleted('people/dee'),
           g('people/rob', robert, etag: 'etag-2'),
+          g('people/carl', carl, etag: 'etag-2'),
         ],
         links: [
           link(1, 'people/bob', 'H-bob', base: bob),
@@ -1801,6 +1860,102 @@ void main() {
       expect(
         [for (final l in plan.links) ?l.delete?.contactId],
         ['H-dee'],
+      );
+    });
+
+    test('a contact deleted on a shared office line is deleted', () {
+      // Old Roe, Amy Roe and Ben Roe share the office's line; Old Roe is
+      // deleted, and neither of the others was changed.
+      SyncedContact at(String given, {String? mobile}) => SyncedContact({
+        ContactField.name: ContactName.of(given: given, family: 'Roe'),
+        ContactField.emails: ['${given.toLowerCase()}@roe.example'],
+        ContactField.mobile: mobile,
+        ContactField.workPhones: ['+1 312 555 0000'],
+        ContactField.company: 'Roe Steel',
+      });
+      final rows = [
+        link(1, 'people/old', 'H-old', base: at('Old')),
+        link(2, 'people/amy', 'H-amy', base: at('Amy')),
+        link(3, 'people/ben', 'H-ben', base: at('Ben')),
+      ];
+      final plan = run(google: [gDeleted('people/old')], links: rows);
+      expect(byLink(plan, 1)!.delete!.contactId, 'H-old');
+      expect(plan.reviews, isEmpty);
+      // Amy changed this run: the line is a sign of a merge into her.
+      final changed = run(
+        google: [
+          gDeleted('people/old'),
+          g('people/amy', at('Amy'), etag: 'etag-2'),
+        ],
+        links: rows,
+      );
+      expect(byLink(changed, 1)!.delete, isNull);
+      expect(changed.reviews.single.googleName, 'people/amy');
+      // A mobile is no shared line: on Ben, unchanged, it is a sign.
+      final mobile = run(
+        google: [gDeleted('people/old')],
+        links: [
+          link(
+            1,
+            'people/old',
+            'H-old',
+            base: at('Old', mobile: '+1 312 555 0101'),
+          ),
+          rows[1],
+          link(
+            3,
+            'people/ben',
+            'H-ben',
+            base: at('Ben', mobile: '+1 312 555 0101'),
+          ),
+        ],
+      );
+      expect(byLink(mobile, 1)!.delete, isNull);
+      expect(mobile.reviews.single.googleName, 'people/ben');
+    });
+
+    test('a number on two of a contact\'s lists counts once', () {
+      // Bob's email went to Rob Ames, his mobile to Rob Zee, both read
+      // this run: one each (the mobile is a phone too), so by id.
+      final bob = person(
+        given: 'Bob',
+        family: 'Smith',
+        emails: ['bob@x.example'],
+        mobile: '+1 212 555 0100',
+      );
+      final ames = person(
+        given: 'Rob',
+        family: 'Ames',
+        emails: ['ames@y.example'],
+      );
+      final zee = person(
+        given: 'Rob',
+        family: 'Zee',
+        emails: ['zee@y.example'],
+      );
+      final plan = run(
+        google: [
+          gDeleted('people/bob'),
+          g(
+            'people/a',
+            ames.withValue(ContactField.emails, [
+              'ames@y.example',
+              'bob@x.example',
+            ]),
+          ),
+          g('people/z', zee.withValue(ContactField.mobile, '+1 212 555 0100')),
+        ],
+        links: [
+          link(1, 'people/bob', 'H-bob', base: bob),
+          link(2, 'people/a', 'H-a', base: ames),
+          link(3, 'people/z', 'H-z', base: zee),
+        ],
+      );
+      expect(
+        plan.reviews
+            .singleWhere((r) => r.kind == ContactReviewKind.mergedInGoogle)
+            .googleName,
+        'people/a',
       );
     });
 
@@ -2058,12 +2213,9 @@ void main() {
         ],
       );
       expect(byGoogle(plan, 'people/c2')!.create!.side, ContactSide.graph);
-      // Not deleted, though: a Gmail contact of its name read this run is
-      // taken as the one it was merged into.
-      expect(byLink(plan, 1)!.delete, isNull);
-      final item = plan.reviews.single;
-      expect(item.kind, ContactReviewKind.mergedInGoogle);
-      expect((item.googleName, item.graphId), ('people/c2', 'H1'));
+      // Nor the one it was merged into, new this run: deleted.
+      expect(byLink(plan, 1)!.delete!.contactId, 'H1');
+      expect(plan.reviews, isEmpty);
     });
 
     test('merged in Gmail: the closer row stays, the other is asked about', () {
@@ -2700,7 +2852,6 @@ void main() {
           field: ContactField.emails,
           side: ContactSide.graph,
           before: 'b@x.example',
-          after: 'c@x.example',
         ),
         const ContactDetailChange(
           field: ContactField.mobile,
@@ -2764,8 +2915,9 @@ void main() {
         ],
         ContactField.homePhones: ['+1 212 555 0101', '+1 212 555 0102'],
       });
-      // Gmail lost its last email, and changed its second home phone.
-      final gmail = emails
+      // Hadco lost its last email, and changed its second home phone in
+      // its slot: Gmail's is changed in place.
+      final hadco = emails
           .withValue(ContactField.emails, [
             'ann.cole@hadcometals.example',
             'ann.cole.personal@gmail.example',
@@ -2775,8 +2927,8 @@ void main() {
             '+1 212 555 0199',
           ]);
       final plan = run(
-        google: [for (var i = 0; i < 11; i++) g('people/c$i', gmail)],
-        graph: [for (var i = 0; i < 11; i++) h('H$i', emails)],
+        google: [for (var i = 0; i < 11; i++) g('people/c$i', emails)],
+        graph: [for (var i = 0; i < 11; i++) h('H$i', hadco)],
         links: [
           for (var i = 0; i < 11; i++)
             link(
@@ -2792,17 +2944,75 @@ void main() {
       expect(plan.heldBrakes.single.items.first.changes, [
         const ContactDetailChange(
           field: ContactField.emails,
-          side: ContactSide.graph,
+          side: ContactSide.google,
           before:
               'ann.cole.purchasing.department.second.floor.office@hadcomet'
               '\u2026',
         ),
         const ContactDetailChange(
           field: ContactField.homePhones,
-          side: ContactSide.graph,
+          side: ContactSide.google,
           before: '+1 212 555 0102',
           after: '+1 212 555 0199',
         ),
+      ]);
+    });
+
+    test('a value is shown replaced only by the one put in its place', () {
+      // Hadco put d in b's slot and removed a, c moving up into a's slot:
+      // Apply them removes a from Gmail and changes b to d there, though
+      // d stands where a stood.
+      final base = person(
+        given: 'Ann',
+        family: 'Cole',
+        emails: ['a@x.example', 'b@x.example', 'c@x.example'],
+      );
+      final hadco = base.withValue(ContactField.emails, [
+        'c@x.example',
+        'd@x.example',
+      ]);
+      final row = link(
+        1,
+        'people/c1',
+        'H1',
+        base: base,
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.changeBrake,
+      );
+      final plan = run(
+        google: [g('people/c1', base)],
+        graph: [h('H1', hadco)],
+        links: [row],
+      );
+      final item = plan.heldBrakes.single.items.single;
+      expect(item.changes, [
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before: 'a@x.example',
+        ),
+        const ContactDetailChange(
+          field: ContactField.emails,
+          side: ContactSide.google,
+          before: 'b@x.example',
+          after: 'd@x.example',
+        ),
+      ]);
+      final applied = run(
+        google: [g('people/c1', base)],
+        graph: [h('H1', hadco)],
+        links: [row],
+        answers: [
+          ContactAnswer(ContactAnswerKind.applyHeld, held: [item]),
+        ],
+      );
+      final write = byLink(applied, 1)!.googleWrite!;
+      expect(write.replaced[ContactField.emails], {
+        'b@x.example': 'd@x.example',
+      });
+      expect(write.target.list(ContactField.emails), [
+        'd@x.example',
+        'c@x.example',
       ]);
     });
 

@@ -4630,29 +4630,39 @@ class _Planner {
 
   /// The Gmail contact [row]'s gone Gmail side was most likely merged
   /// into: Google reports Merge & fix as plain deletions of the contacts
-  /// merged away, with no re-key, so a contact that went while an email
-  /// or phone number (mobile, home or work) of its (its row's base) is on
-  /// another Gmail contact still there (read this run, or known from a
-  /// row's base), whatever its name (Google merges by name too), or while
-  /// a Gmail contact of the same full name was read this run (a merge
-  /// changes the survivor), is taken as merged into that one. One read
-  /// this run first, then the one sharing the most, then one of the same
-  /// full name, then by id. A wrong guess (a family member or a colleague
+  /// merged away, with no re-key, so a contact that went is taken as
+  /// merged into another Gmail contact still there that holds an email or
+  /// mobile of its (its row's base), read this run or known from a row's
+  /// base, whatever its name (Google merges by name too); or, read this
+  /// run (a merge changes the survivor), one of its home or work phones
+  /// (lines a family or an office share: no sign on a contact unchanged)
+  /// or its full name. Only a contact known before this run (one with a
+  /// row) is taken: one new this run (Ron deleted Ann and made her again
+  /// by hand) is placed by the new-contact rules instead. One read this
+  /// run first, then the one sharing the most, then one of the same full
+  /// name, then by id. A wrong guess (a family member or a colleague
   /// really deleted) only asks Ron rather than deleting.
   String? _mergedInto(_Row row) {
     final gone = row.googleName ?? row.input.googleName;
     final base = row.input.googleDetails;
     bool other(ContactSide side, String id) =>
-        side == ContactSide.google && id != gone && _googleAlive(id);
-    final shared = <String, int>{};
-    for (final (keys, index) in [
-      (_emailKeys(base), _emailIndex),
-      (_phoneKeys(base), _phoneIndex),
+        side == ContactSide.google &&
+        id != gone &&
+        googleRow.containsKey(id) &&
+        _googleAlive(id);
+    // The keys each shares: a phone on a contact read this run only.
+    final shared = <String, Set<String>>{};
+    for (final (keys, index, readOnly) in [
+      (_emailKeys(base), _emailIndex, false),
+      (_mobileKeys(base), _mobileIndex, false),
+      (_phoneKeys(base), _phoneIndex, true),
     ]) {
       for (final key in keys) {
         final owners = index[key] ?? const <(ContactSide, String)>[];
         for (final (side, id) in owners) {
-          if (other(side, id)) shared[id] = (shared[id] ?? 0) + 1;
+          if (!other(side, id)) continue;
+          if (readOnly && !googleListed.containsKey(id)) continue;
+          shared.putIfAbsent(id, () => {}).add(key);
         }
       }
     }
@@ -4670,7 +4680,9 @@ class _Planner {
             googleListed.containsKey(a),
           ).compareTo(first(googleListed.containsKey(b)));
           if (byRead != 0) return byRead;
-          final byShared = (shared[b] ?? 0).compareTo(shared[a] ?? 0);
+          final byShared = (shared[b]?.length ?? 0).compareTo(
+            shared[a]?.length ?? 0,
+          );
           if (byShared != 0) return byShared;
           final byName = first(
             named.contains(a),
@@ -4885,7 +4897,9 @@ class _Planner {
   /// Each detail [write] would remove or replace on its side, held there
   /// as [now]: not one added where there was none, a list only joined, or
   /// a year given to a birthday on the same day. A list gives each value
-  /// it would lose on its own, with the value new in its place, if any.
+  /// it would lose on its own: replaced only by the value the write puts
+  /// in its place ([ContactWrite.replaced]: a Gmail entry an Outlook
+  /// slot's new value changes in place), else removed.
   List<ContactDetailChange> _losses(
     ContactWrite? write,
     SyncedContact? now,
@@ -4903,19 +4917,13 @@ class _Planner {
       if (before is List<String>) {
         final afterList = (after as List<String>?) ?? const <String>[];
         final kept = {for (final v in afterList) ?norm.itemKey(f, v)};
-        final had = {for (final v in before) ?norm.itemKey(f, v)};
-        for (final (i, v) in before.indexed) {
+        // Old value to new: no guess from places, which a removal shifts.
+        final instead = write.replaced[f] ?? const <String, String>{};
+        for (final v in before) {
           final k = norm.itemKey(f, v);
           // A value with no key (a phone with no digits) is never removed.
           if (k == null || kept.contains(k)) continue;
-          // A new value in its place replaces it (as a value put in an
-          // Outlook slot keeps its Gmail entry's place).
-          String? instead;
-          if (i < afterList.length) {
-            final there = norm.itemKey(f, afterList[i]);
-            if (there != null && !had.contains(there)) instead = afterList[i];
-          }
-          lost.add(_detailChange(f, side, v, instead, clashes.contains(f)));
+          lost.add(_detailChange(f, side, v, instead[v], clashes.contains(f)));
         }
         continue;
       }
