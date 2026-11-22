@@ -17,7 +17,10 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 /// twenty to a `$batch`), changed and deleted, and the device claim kept on
 /// the folder.
 ///
-/// Contacts read by id may also go twenty to a `$batch` ([getBatch]).
+/// Contacts read by id, and deleted, may also go twenty to a `$batch`
+/// ([getBatch], [deleteBatch]), and so may the check for photos
+/// ([photos]); a photo's bytes are read and written alone ([photoBytes],
+/// [putPhoto]).
 ///
 /// It takes and gives Graph's JSON as it is; what a contact holds, and how
 /// it maps to Google's, is the mapping's. What it does know is the wire:
@@ -278,68 +281,27 @@ class GraphContactsApi {
   /// kept: a caller that wants it asks [batchLimit] at a time.
   Future<GraphBatchRead> getBatch(Iterable<String> ids) async {
     final asked = ids.toSet().toList();
+    final answers = await _batchEach(
+      asked,
+      (id) => {
+        'method': 'GET',
+        'url': _relative(
+          '/me/contacts/${_id(id)}',
+          {r'$select': graphContactSelect},
+        ),
+        'headers': {'Prefer': prefer},
+      },
+      'batch read',
+    );
     final found = <String, Map<String, Object?>>{};
     final notFound = <String>{};
-    for (var start = 0; start < asked.length; start += batchLimit) {
-      var asking = asked.sublist(
-        start,
-        start + batchLimit < asked.length ? start + batchLimit : asked.length,
-      );
-      for (var attempt = 0; asking.isNotEmpty; attempt++) {
-        final body = jsonEncode({
-          'requests': [
-            for (final (i, id) in asking.indexed)
-              {
-                'id': '$i',
-                'method': 'GET',
-                'url': Uri.parse('$base/me/contacts/${_id(id)}')
-                    .replace(
-                      queryParameters: {r'$select': graphContactSelect},
-                    )
-                    .toString()
-                    .substring(base.length),
-                'headers': {'Prefer': prefer},
-              },
-          ],
-        });
-        final json = _json(
-          await _exchange(
-            () => http.Request('POST', Uri.parse('$base/\$batch'))
-              ..headers['Content-Type'] = 'application/json'
-              ..body = body,
-          ),
-          'batch read',
-        );
-        final responses = json['responses'];
-        final byId = {
-          for (final r in responses is List ? responses : const [])
-            if (r is Map) '${r['id']}': r,
-        };
-        final again = <String>[];
-        var wait = Duration.zero;
-        for (final (i, id) in asking.indexed) {
-          final r = byId['$i'];
-          final status = r?['status'];
-          final contact = r?['body'];
-          if (status is int && status >= 200 && status < 300) {
-            if (contact is Map) found[id] = contact.cast<String, Object?>();
-          } else if (status == 404) {
-            notFound.add(id);
-          } else if (status == 429 || status == 503) {
-            again.add(id);
-            final wanted = _innerRetryAfter(r?['headers']);
-            if (wanted > wait) wait = wanted;
-          }
-        }
-        if (again.isEmpty ||
-            attempt >= maxThrottleRetries ||
-            wait > maxThrottleWait) {
-          break;
-        }
-        debugPrint('[myemail] contacts: Microsoft throttled ${again.length} '
-            'of a batch read, waiting ${wait.inSeconds} s');
-        await (sleep ?? _realSleep)(wait);
-        asking = again;
+    for (final MapEntry(key: id, value: a) in answers.entries) {
+      final status = a.status;
+      final contact = a.body;
+      if (status != null && status >= 200 && status < 300) {
+        if (contact is Map) found[id] = contact.cast<String, Object?>();
+      } else if (status == 404) {
+        notFound.add(id);
       }
     }
     final unknown = {
@@ -351,6 +313,182 @@ class GraphContactsApi {
         '${unknown.length} unanswered');
     return GraphBatchRead(found: found, notFound: notFound, unknown: unknown);
   }
+
+  /// Which of the contacts [ids] have a photo, [batchLimit] to a `$batch`
+  /// (each one's photo asked for: 200, it has one; 404, none), throttled
+  /// as [getBatch]. One whose own answer was anything else is neither. A
+  /// batch that fails as a whole throws.
+  Future<GraphPhotos> photos(Iterable<String> ids) async {
+    final asked = ids.toSet().toList();
+    final answers = await _batchEach(
+      asked,
+      (id) => {
+        'method': 'GET',
+        'url': '/me/contacts/${_id(id)}/photo',
+        'headers': {'Prefer': prefer},
+      },
+      'photo check',
+    );
+    final have = <String>{};
+    final none = <String>{};
+    for (final MapEntry(key: id, value: a) in answers.entries) {
+      final status = a.status;
+      if (status != null && status >= 200 && status < 300) {
+        have.add(id);
+      } else if (status == 404) {
+        none.add(id);
+      }
+    }
+    final unknown = {
+      for (final id in asked)
+        if (!have.contains(id) && !none.contains(id)) id,
+    };
+    debugPrint('[myemail] contacts: Microsoft photo check ${asked.length}: '
+        '${have.length} with, ${none.length} without, '
+        '${unknown.length} unanswered');
+    return GraphPhotos(have: have, none: none, unknown: unknown);
+  }
+
+  /// The photo of the contact [id], its bytes and their type, or null
+  /// when it has none (404).
+  Future<({List<int> bytes, String type})?> photoBytes(String id) async {
+    final response = await _exchange(
+      () => http.Request(
+        'GET',
+        Uri.parse('$base/me/contacts/${_id(id)}/photo/\$value'),
+      ),
+    );
+    if (response.statusCode == 404) return null;
+    if (response.statusCode >= 400) _json(response, 'photo');
+    return (
+      bytes: response.bodyBytes,
+      type: response.headers['content-type'] ?? 'image/jpeg',
+    );
+  }
+
+  /// Give the contact [id] the photo [bytes], of [type] (`image/jpeg`),
+  /// in place of any it has. A contact no longer there is [ContactGone].
+  Future<void> putPhoto(String id, List<int> bytes, String type) async {
+    final response = await _exchange(
+      () => http.Request(
+        'PUT',
+        Uri.parse('$base/me/contacts/${_id(id)}/photo/\$value'),
+      )
+        ..headers['Content-Type'] = type
+        ..bodyBytes = bytes,
+    );
+    if (response.statusCode >= 400) _json(response, 'photo');
+  }
+
+  /// Delete the contacts [ids] as [delete] does (an ordinary delete,
+  /// never `permanentDelete`), [batchLimit] to a `$batch`, throttled as
+  /// [getBatch] (a delete asked again finds the contact gone): which were
+  /// deleted (204), which were not there (404: gone all the same), and
+  /// which failed (any other answer, or none). A batch that fails as a
+  /// whole throws, as [delete] would.
+  Future<GraphBatchDelete> deleteBatch(Iterable<String> ids) async {
+    final asked = ids.toSet().toList();
+    final answers = await _batchEach(
+      asked,
+      (id) => {
+        'method': 'DELETE',
+        'url': '/me/contacts/${_id(id)}',
+        'headers': {'Prefer': prefer},
+      },
+      'batch delete',
+    );
+    final deleted = <String>{};
+    final gone = <String>{};
+    for (final MapEntry(key: id, value: a) in answers.entries) {
+      final status = a.status;
+      if (status != null && status >= 200 && status < 300) {
+        deleted.add(id);
+      } else if (status == 404) {
+        gone.add(id);
+      }
+    }
+    final failed = {
+      for (final id in asked)
+        if (!deleted.contains(id) && !gone.contains(id)) id,
+    };
+    debugPrint('[myemail] contacts: Microsoft batch delete ${asked.length}: '
+        '${deleted.length} deleted, ${gone.length} gone, '
+        '${failed.length} failed');
+    return GraphBatchDelete(deleted: deleted, gone: gone, failed: failed);
+  }
+
+  /// [ids], each asked for as [part] builds its request, [batchLimit] to
+  /// a `$batch`: each one's answer, its status and body (a null status
+  /// where none came). One throttled (a 429, or a 503: a read or a delete
+  /// can be asked again) is asked again after the longest wait any asked
+  /// for, as a request alone would be. A batch that fails as a whole
+  /// throws, and what the batches before it were answered is not kept: a
+  /// caller that wants it asks [batchLimit] at a time.
+  Future<Map<String, ({int? status, Object? body})>> _batchEach(
+    List<String> ids,
+    Map<String, Object?> Function(String id) part,
+    String doing,
+  ) async {
+    final answers = <String, ({int? status, Object? body})>{};
+    for (var start = 0; start < ids.length; start += batchLimit) {
+      var asking = ids.sublist(
+        start,
+        start + batchLimit < ids.length ? start + batchLimit : ids.length,
+      );
+      for (var attempt = 0; asking.isNotEmpty; attempt++) {
+        final body = jsonEncode({
+          'requests': [
+            for (final (i, id) in asking.indexed) {'id': '$i', ...part(id)},
+          ],
+        });
+        final json = _json(
+          await _exchange(
+            () => http.Request('POST', Uri.parse('$base/\$batch'))
+              ..headers['Content-Type'] = 'application/json'
+              ..body = body,
+          ),
+          doing,
+        );
+        final responses = json['responses'];
+        final byId = {
+          for (final r in responses is List ? responses : const [])
+            if (r is Map) '${r['id']}': r,
+        };
+        final again = <String>[];
+        var wait = Duration.zero;
+        for (final (i, id) in asking.indexed) {
+          final r = byId['$i'];
+          final status = r?['status'];
+          answers[id] = (
+            status: status is int ? status : null,
+            body: r?['body'],
+          );
+          if (status == 429 || status == 503) {
+            again.add(id);
+            final wanted = _innerRetryAfter(r?['headers']);
+            if (wanted > wait) wait = wanted;
+          }
+        }
+        if (again.isEmpty ||
+            attempt >= maxThrottleRetries ||
+            wait > maxThrottleWait) {
+          break;
+        }
+        debugPrint('[myemail] contacts: Microsoft throttled ${again.length} '
+            'of a $doing, waiting ${wait.inSeconds} s');
+        await (sleep ?? _realSleep)(wait);
+        asking = again;
+      }
+    }
+    return answers;
+  }
+
+  /// [path] with [query], as a request inside a `$batch` names it.
+  static String _relative(String path, Map<String, String> query) =>
+      Uri.parse('$base$path')
+          .replace(queryParameters: query)
+          .toString()
+          .substring(base.length);
 
   /// The contacts in the main Contacts folder with [address] among their
   /// email addresses, each with its tag: how a create whose answer was lost
@@ -924,6 +1062,44 @@ class GraphBatchRead {
   /// Ids whose own answer was a failure, or none came: neither there nor
   /// gone.
   final Set<String> unknown;
+}
+
+/// What [GraphContactsApi.photos] found.
+@immutable
+class GraphPhotos {
+  const GraphPhotos({
+    required this.have,
+    required this.none,
+    required this.unknown,
+  });
+
+  /// Ids whose photo was there.
+  final Set<String> have;
+
+  /// Ids Graph answered 404: no photo.
+  final Set<String> none;
+
+  /// Ids whose own answer was a failure, or none came.
+  final Set<String> unknown;
+}
+
+/// What became of each contact [GraphContactsApi.deleteBatch] deleted.
+@immutable
+class GraphBatchDelete {
+  const GraphBatchDelete({
+    required this.deleted,
+    required this.gone,
+    required this.failed,
+  });
+
+  /// Deleted now (204).
+  final Set<String> deleted;
+
+  /// Not there (404): gone all the same.
+  final Set<String> gone;
+
+  /// Any other answer, or none: perhaps still there.
+  final Set<String> failed;
 }
 
 /// A whole `$batch` failed after some of it may have been answered: the
