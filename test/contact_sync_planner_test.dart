@@ -2367,6 +2367,68 @@ void main() {
       expect(plan.links.where((l) => l.graphWrite != null), hasLength(10));
     });
 
+    test('a change held before shows its details at the next run', () {
+      // Held before details were kept (the tablet's 58): every run the
+      // question's items are rebuilt from the pairs' reads.
+      final heldRows = [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            base: base,
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.changeBrake,
+          ),
+      ];
+      final reads = contactsToRead(links: heldRows);
+      expect(reads.google, hasLength(11), reason: 'read every run');
+      expect(reads.graph, hasLength(11));
+      final plan = run(
+        // Pair 10 read on its Gmail side only: left out.
+        google: renamed(11),
+        graph: unchanged(10),
+        links: heldRows,
+      );
+      expect(plan.brakes, isEmpty, reason: 'nothing raised anew');
+      expect(plan.links, isEmpty, reason: 'still held');
+      final items = plan.heldBrakes.single.items;
+      expect(plan.heldBrakes.single.kind, ContactBrakeKind.changes);
+      expect(items, hasLength(10));
+      expect(items.first.googleName, 'people/c0');
+      expect(items.first.side, ContactSide.graph);
+      expect(items.first.changes, [
+        const ContactDetailChange(
+          field: ContactField.company,
+          before: 'Old',
+          after: 'New',
+        ),
+      ]);
+      // A deletion held before keeps its hint, read or not.
+      final deletion = run(
+        links: [
+          link(
+            20,
+            'people/c20',
+            null,
+            base: person(given: 'P', family: 'X', emails: ['p@x.example']),
+            state: ContactLinkState.held,
+            reason: ContactHeldReason.deletionBrake,
+          ),
+        ],
+      );
+      final held = deletion.heldBrakes.single;
+      expect(held.kind, ContactBrakeKind.deletions);
+      expect(held.items.single.hint, 'p@x.example');
+      expect(held.items.single.side, ContactSide.graph);
+      // A question raised this run is there too.
+      final raised = run(google: renamed(11), links: pairs(11));
+      expect(
+        raised.heldBrakes.single.items.map((i) => i.googleName),
+        raised.brakes.single.items.map((i) => i.googleName),
+      );
+    });
+
     test('Copy them back writes the other side\'s values back', () {
       final plan = run(
         google: renamed(11),

@@ -1294,6 +1294,7 @@ class ContactSyncPlan {
     this.graphPassedOver = const {},
     this.mergedAway = const [],
     this.duplicates = const [],
+    this.heldBrakes = const [],
   });
 
   /// The empty-answers brake: when set, nothing else is planned.
@@ -1387,6 +1388,18 @@ class ContactSyncPlan {
   /// too), by title.
   final List<ContactDuplicateGroup> duplicates;
 
+  /// Every row a brake holds once the plan is carried out, one
+  /// [ContactBrake] per kind, each item's details as this run sees them:
+  /// the items raised this run (also in [brakes]), and those held before,
+  /// rebuilt every run so a question shows what it would do however long
+  /// it waits (and a question raised before details were kept gets them).
+  /// A deletion's [ContactBrakeItem.hint] comes from its row; a change's
+  /// [ContactBrakeItem.changes] from its pair's reads ([contactsToRead]
+  /// names both contacts every run), and a held change whose pair was not
+  /// read on both sides is left out, so the runner keeps what it has. The
+  /// runner refreshes its questions' items from these, by their ids.
+  final List<ContactBrake> heldBrakes;
+
   /// The normaliser this plan compared with, for the pair to store.
   int get normaliserVersion => contactNormaliserVersion;
 }
@@ -1449,9 +1462,10 @@ ContactChecks contactsToConfirm({
 
 /// Contacts the runner must read by id before planning, because the plan
 /// acts on them and a feed brings only what changed: the contacts of
-/// queued answers (both sides of a pair, and of every pair the change
-/// brake holds when it is answered), every contact held as a candidate,
-/// the source of every journal entry, and both sides of every Restore.
+/// queued answers (both sides of a pair), both sides of every pair the
+/// change brake holds (its question shows what Apply them would do, from
+/// these reads), every contact held as a candidate, the source of every
+/// journal entry, and both sides of every Restore.
 /// Found, each goes into the listing; not found (Gmail's NOT_FOUND; for
 /// Outlook a 404 or Deleted Items), into the gone sets; elsewhere, as a
 /// move or a re-key. An answer whose contacts were not read stays queued
@@ -1503,9 +1517,14 @@ ContactChecks contactsToRead({
     (entry.side == ContactSide.google ? graph : google).add(entry.sourceId);
   }
   // Contacts held as candidates are placed again each run, which needs
-  // them read (see ContactHeldReason.candidate).
+  // them read (see ContactHeldReason.candidate); so are the pairs the
+  // change brake holds, whose questions show what Apply them would do
+  // (ContactSyncPlan.heldBrakes).
   for (final link in links) {
-    if (link.reason == ContactHeldReason.candidate) both(link);
+    if (link.reason == ContactHeldReason.candidate ||
+        link.reason == ContactHeldReason.changeBrake) {
+      both(link);
+    }
   }
   for (final b in bin) {
     if (!b.restore) continue;
@@ -4531,6 +4550,71 @@ class _Planner {
     }
   }
 
+  /// The brakes' items as they stand after this run (see
+  /// [ContactSyncPlan.heldBrakes]); [touched] are the rows this run plans.
+  List<ContactBrake> _heldBrakes(Set<int> touched) {
+    final deletions = [
+      for (final b in brakes)
+        if (b.kind == ContactBrakeKind.deletions) ...b.items,
+    ];
+    final changes = [
+      for (final b in brakes)
+        if (b.kind == ContactBrakeKind.changes) ...b.items,
+    ];
+    for (final row in rows) {
+      if (touched.contains(row.id) || row.state != ContactLinkState.held) {
+        continue;
+      }
+      final g = row.googleName;
+      final h = row.graphId;
+      switch (row.reason) {
+        case ContactHeldReason.deletionBrake:
+          final side = g != null ? ContactSide.google : ContactSide.graph;
+          final id = g ?? h;
+          if (id == null || !_alive(side, id)) continue;
+          deletions.add(
+            ContactBrakeItem(
+              title: _detailsOf(side, id).title,
+              side: side.other,
+              googleName: g,
+              graphId: h,
+              hint: _hintOf(side, id),
+            ),
+          );
+        case ContactHeldReason.changeBrake:
+          final gc = googleListed[g];
+          final hc = graphListed[h];
+          if (g == null || h == null || gc == null || hc == null) continue;
+          // As Apply them would plan it.
+          final made = _comparePair(
+            settings: ContactPairSettings(
+              normaliser: norm,
+              googleBase: row.input.googleDetails,
+              graphBase: row.input.graphDetails,
+              googleUpdatedAt: gc.updatedAt,
+              graphUpdatedAt: hc.updatedAt,
+              firstSync: input.firstSync,
+            ),
+            linkId: row.id,
+            googleName: g,
+            graphId: h,
+            googleNow: gc.details,
+            graphNow: hc.details,
+            googleEtag: gc.etag,
+            graphChangeKey: hc.changeKey,
+          );
+          changes.add(_changeItem(made.plan));
+        default:
+          break;
+      }
+    }
+    return [
+      if (deletions.isNotEmpty)
+        ContactBrake(ContactBrakeKind.deletions, deletions),
+      if (changes.isNotEmpty) ContactBrake(ContactBrakeKind.changes, changes),
+    ];
+  }
+
   /// A change brake's item for [plan], a pair's writes: the side that
   /// would lose details (the one losing more, Gmail on a tie; with none
   /// lost, the side written, Gmail first) and each detail lost there.
@@ -4685,6 +4769,7 @@ class _Planner {
       graphPassedOver: Set.unmodifiable(graphPassedOver),
       mergedAway: List.unmodifiable(mergedAway),
       duplicates: duplicates,
+      heldBrakes: _heldBrakes(touched),
       counts: ContactSyncCounts(
         addToGoogle: count((l) => l.create?.side == ContactSide.google),
         addToGraph: count((l) => l.create?.side == ContactSide.graph),
