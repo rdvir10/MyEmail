@@ -4230,6 +4230,524 @@ void main() {
     });
   });
 
+  group("merging Hadco's copies of one person", () {
+    /// [given] [family] once in Gmail and [copies] times in Hadco, every
+    /// copy alike: the first sync pairs one Hadco copy and holds the
+    /// others as copies of one person.
+    ({String google, List<String> graph}) copiesOf(
+      String given,
+      String family, {
+      int copies = 2,
+      String? jobTitle,
+    }) {
+      final email = '${given.toLowerCase()}@example.com';
+      return (
+        google: h.google.seed({
+          ...person(given, family, email: email),
+          if (jobTitle != null)
+            'organizations': [
+              {'name': 'Acme', 'title': jobTitle},
+            ],
+        }),
+        graph: [
+          for (var i = 0; i < copies; i++)
+            h.graph.seed({
+              ...outlook(
+                given,
+                family,
+                email: email,
+                company: jobTitle == null ? null : 'Acme',
+              ),
+              'jobTitle': ?jobTitle,
+            }),
+        ],
+      );
+    }
+
+    /// The Hadco copy paired with [p]'s Gmail contact, and the others.
+    Future<({String synced, List<String> others})> hadcoOf(
+      ({String google, List<String> graph}) p,
+    ) async {
+      final synced = (await h.paired())
+          .firstWhere((l) => l.googleName == p.google)
+          .graphId!;
+      return (
+        synced: synced,
+        others: [
+          for (final id in p.graph)
+            if (id != synced) id,
+        ],
+      );
+    }
+
+    String? gmailTitle(String name) {
+      final orgs = h.google.person(name)?['organizations'];
+      if (orgs is! List || orgs.isEmpty) return null;
+      return (orgs.first as Map)['title'] as String?;
+    }
+
+    test('the tablet pattern: copies the same are deleted, a detail only '
+        'another copy has is added first, copies that differ are listed, '
+        'and Gmail loses nothing', () async {
+      final logged = <String>[];
+      final was = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) =>
+          logged.add(message ?? '');
+      addTearDown(() => debugPrint = was);
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray', copies: 3);
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      final dan = copiesOf('Dan', 'Lee');
+      final eve = copiesOf('Eve', 'Moss');
+      seedPairs(h, 3);
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      final c = await hadcoOf(cat);
+      final d = await hadcoOf(dan);
+      final e = await hadcoOf(eve);
+      // Ron's held copies, as they are on the tablet: one with a detail
+      // the synced copy lacks, one with another job title, one with a
+      // photo, and two photos that are not the same.
+      h.graph.editFromOutlook(b.others.first, {'jobTitle': 'Quartermaster'});
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Navigator'});
+      h.graph.setPhotoFromOutlook(d.others.single, [1, 2, 3]);
+      h.graph.setPhotoFromOutlook(e.synced, [4, 5, 6]);
+      h.graph.setPhotoFromOutlook(e.others.single, [7, 8, 9]);
+      var status = await h.later();
+      expect(status.copies.people, 5);
+      expect(status.copies.extras, 6);
+      expect(status.copies.notSynced, 0);
+      expect(status.copies.asked, isFalse);
+      final gmail = h.google.count;
+      h.requests.clear();
+
+      await h.sync.mergeCopies();
+      expect((await h.status()).copies.asked, isTrue);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isFalse);
+      final last = status.copies.last!;
+      expect(last.people, 3);
+      expect(last.deleted, 4);
+      expect(last.added, 2);
+      expect(last.differing, 2);
+      expect(last.failed, 0);
+      // Ann's and Dan's copy, and Bob's two, are gone; the synced copies
+      // stay, Bob's with the job title, Dan's with the photo.
+      for (final id in [...a.others, ...b.others, ...d.others]) {
+        expect(h.graph.contact(id), isNull);
+      }
+      for (final id in [a.synced, b.synced, d.synced]) {
+        expect(h.graph.contact(id), isNotNull);
+      }
+      expect(h.graph.contact(b.synced)!['jobTitle'], 'Quartermaster');
+      expect(h.graph.photoOf(d.synced)!.bytes, [1, 2, 3]);
+      // Cat's and Eve's copies differ: all there, listed for Ron, the
+      // synced copy first.
+      for (final id in [c.synced, ...c.others, e.synced, ...e.others]) {
+        expect(h.graph.contact(id), isNotNull);
+      }
+      expect(
+        {for (final p in status.copies.differing) p.title},
+        {'Cat Fox', 'Eve Moss'},
+      );
+      final listed = status.copies.differing.firstWhere(
+        (p) => p.title == 'Cat Fox',
+      );
+      expect(listed.key, c.synced);
+      expect(listed.answer, isNull);
+      expect([for (final x in listed.copies) x.key], [c.synced, ...c.others]);
+      expect([for (final x in listed.copies) x.synced], [true, false]);
+      expect(listed.copies.first.details, isNotEmpty);
+      expect(
+        listed.copies.last.details.length,
+        listed.copies.first.details.length,
+      );
+      // Nothing deleted, nor held, in Gmail; the next run gave Gmail Bob's
+      // job title; the held rows of the copies deleted are gone.
+      expect(h.google.count, gmail);
+      expect(
+        h.requests.where(
+          (r) => r.url.host == 'people.googleapis.com' && r.method == 'DELETE',
+        ),
+        isEmpty,
+      );
+      expect(status.questions, isEmpty);
+      expect(status.recentlyDeleted, isEmpty);
+      expect(gmailTitle(bob.google), 'Quartermaster');
+      expect(
+        (await h.links())
+            .where((l) => l.reason == ContactHeldReason.duplicate)
+            .map((l) => l.graphId)
+            .toSet(),
+        {...c.others, ...e.others},
+      );
+      expect(status.graphCount, 14 - 4);
+      expect(status.copies.people, 0);
+      // The log has counts only.
+      final all = logged.join('\n');
+      expect(all, contains('copies: 3 people, 4 deleted'));
+      for (final secret in ['Quartermaster', 'Navigator', 'Cole', 'Moss']) {
+        expect(all, isNot(contains(secret)), reason: secret);
+      }
+    });
+
+    test("Ron's answers: another copy's details for eleven go to Gmail as "
+        "his, never held by the change brake; the synced copy's for the "
+        'rest', () async {
+      final people = [
+        for (var i = 0; i < 12; i++)
+          copiesOf('P$i', 'Fam$i', jobTitle: 'Buyer'),
+      ];
+      await h.firstSync();
+      final hadco = [for (final p in people) await hadcoOf(p)];
+      for (final x in hadco) {
+        h.graph.editFromOutlook(x.others.single, {'jobTitle': 'Manager'});
+      }
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.copies.differing, hasLength(12));
+      // Answered while the runs cannot reach Hadco, then carried out in
+      // one run.
+      h.refusing.add(Harness.hadco.id);
+      for (var i = 0; i < 11; i++) {
+        await h.sync.answerCopies(hadco[i].synced, hadco[i].others.single);
+      }
+      await h.sync.answerAllCopies();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(
+        {for (final p in status.copies.differing) p.key: p.answer},
+        {
+          for (var i = 0; i < 11; i++)
+            hadco[i].synced: hadco[i].others.single,
+          hadco[11].synced: hadco[11].synced,
+        },
+      );
+      h.refusing.clear();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.questions, isEmpty);
+      expect(status.copies.differing, isEmpty);
+      expect(status.copies.last!.people, 12);
+      for (var i = 0; i < 11; i++) {
+        expect(h.graph.contact(hadco[i].synced)!['jobTitle'], 'Manager');
+        expect(h.graph.contact(hadco[i].others.single), isNull);
+        expect(gmailTitle(people[i].google), 'Manager');
+      }
+      expect(h.graph.contact(hadco[11].synced)!['jobTitle'], 'Buyer');
+      expect(h.graph.contact(hadco[11].others.single), isNull);
+      expect(gmailTitle(people[11].google), 'Buyer');
+    });
+
+    test('an answer on differences that have changed since is dropped, and '
+        'the person listed again as it now is', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // Ron changes that copy in Outlook, then answers from the list he
+      // saw before.
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Director'});
+      await h.sync.answerCopies(listed.key, c.others.single);
+      await h.sync.syncNow();
+      final again = (await h.status()).copies.differing.single;
+      expect(again.answer, isNull);
+      expect(
+        again.copies.last.details.map((d) => d.value).join(' '),
+        contains('Director'),
+      );
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
+      expect(h.graph.contact(c.others.single), isNotNull);
+
+      // Answered on these: carried out, its copies read by id, not the
+      // folder whole.
+      h.requests.clear();
+      await h.sync.answerCopies(again.key, c.others.single);
+      await h.sync.syncNow();
+      expect(h.requestsTo('/contacts'), isEmpty);
+      expect(
+        h.requests.where(
+          (r) => r.method == 'GET' && r.url.pathSegments.last == c.synced,
+        ),
+        isNotEmpty,
+      );
+      expect((await h.status()).copies.differing, isEmpty);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Director');
+      expect(h.graph.contact(c.others.single), isNull);
+    });
+
+    test('an answer given while a merge goes, on the differences listed, '
+        'stands', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing.single.answer, isNull);
+      // Another person to merge; as that merge checks the photos, Ron
+      // answers Cat from the list.
+      copiesOf('Ann', 'Cole');
+      await h.later();
+      var given = false;
+      h.before = (r) async {
+        if (!given &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('/photo')) {
+          given = true;
+          await h.sync.answerCopies(c.synced, c.others.single);
+        }
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      expect(given, isTrue);
+      final status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Manager');
+      expect(h.graph.contact(c.others.single), isNull);
+    });
+
+    test('a person whose copies are merged in Outlook goes from the list',
+        () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, hasLength(1));
+      h.graph.deleteFromOutlook(c.others.single);
+      final status = await h.later();
+      expect(status.copies.differing, isEmpty);
+      expect(status.copies.people, 0);
+    });
+
+    test("a copy whose photo cannot be checked fails its person; nothing of "
+        "theirs is deleted", () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      // The first copy asked about in the merge's first batch is turned
+      // away for longer than is worth waiting.
+      h.graph.throttleInBatch(1, retryAfter: 60);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.failed, 1);
+      expect(status.copies.last!.people, 1);
+      final left = [
+        for (final id in [...a.others, ...b.others])
+          if (h.graph.contact(id) != null) id,
+      ];
+      expect(left, hasLength(1));
+    });
+
+    test('a person no longer listed, or a copy not its own, is refused',
+        () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      await expectLater(
+        h.sync.answerCopies('no-such-person', null),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      await expectLater(
+        h.sync.answerCopies(c.synced, 'no-such-copy'),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      expect((await h.status()).copies.differing.single.answer, isNull);
+    });
+
+    test('Leave them takes the person off the list, and later merges pass '
+        'it over until its copies change', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.refusing.add(Harness.hadco.id);
+      await h.sync.answerCopies(c.synced, null);
+      await h.sync.syncNow();
+      expect(
+        (await h.status()).copies.differing.single.answer,
+        ContactSyncCopiesPerson.leave,
+      );
+      h.refusing.clear();
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(status.copies.people, 0);
+      expect(h.graph.contact(c.others.single), isNotNull);
+
+      // Another person's copies to merge: Cat's are passed over.
+      copiesOf('Ann', 'Cole');
+      status = await h.later();
+      expect(status.copies.people, 1);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(c.others.single), isNotNull);
+
+      // Cat's copy changes: the next merge lists Cat again.
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Director'});
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.differing.single.title, 'Cat Fox');
+      expect(h.graph.contact(c.others.single), isNotNull);
+    });
+
+    test('a merge stopped part way carries on at the next run, the ask kept '
+        'until every person is dealt with', () async {
+      for (var i = 0; i < 30; i++) {
+        copiesOf('P$i', 'Fam$i');
+      }
+      await h.firstSync();
+      expect((await h.status()).copies.people, 30);
+      var stopped = false;
+      h.before = (r) async {
+        if (!stopped &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          stopped = true;
+          unawaited(h.sync.stop());
+        }
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      expect(status.copies.asked, isTrue);
+      expect(status.copies.last, isNull);
+      // A batch of twenty went, and what was queued before the stop.
+      expect(h.graph.count, inInclusiveRange(30, 40));
+      expect(status.graphCount, h.graph.count);
+
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isFalse);
+      expect(status.copies.last!.people, 30);
+      expect(status.copies.last!.deleted, 30);
+      expect(h.graph.count, 30);
+      expect(status.copies.people, 0);
+    });
+
+    test('a write that is refused, or does not hold, fails that person: '
+        'nothing of theirs is deleted, and the others go on', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      final cat = copiesOf('Cat', 'Fox');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(b.others.single, {'jobTitle': 'Chief'});
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Clerk'});
+      await h.later();
+      // Bob's write refused; Cat's answered without what was written.
+      h.answer = (r) => r.method == 'PATCH' &&
+              r.url.pathSegments.last == b.synced
+          ? http.Response(
+              '{"error":{"code":"ErrorInvalidProperty","message":"x"}}',
+              400,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      h.reshape = (r, response) {
+        if (r.method != 'PATCH' || r.url.pathSegments.last != c.synced) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>
+          ..remove('jobTitle');
+        return http.Response(
+          jsonEncode(json),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.answer = null;
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isFalse);
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.last!.failed, 2);
+      expect(h.graph.contact(a.others.single), isNull);
+      expect(h.graph.contact(b.others.single), isNotNull);
+      expect(h.graph.contact(b.synced)!['jobTitle'], isNull);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      // Still to merge, for another try.
+      expect(status.copies.people, 2);
+    });
+
+    test("the drop in Hadco's count does not trip the empty-answers guard "
+        'at the next listing of Hadco whole', () async {
+      for (var i = 0; i < 4; i++) {
+        copiesOf('P$i', 'Fam$i', copies: 3);
+      }
+      await h.firstSync();
+      expect(h.graph.count, 12);
+      h.after = (r) {
+        if (r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          h.graph.expireDeltaLinks();
+        }
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.after = null;
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(h.graph.count, 4);
+      expect(status.graphCount, 4);
+      expect(status.copies.last!.deleted, 8);
+    });
+
+    test('Merge does nothing before the first sync is done, nor with nothing '
+        'to merge', () async {
+      copiesOf('Ann', 'Cole');
+      await h.choose();
+      await h.sync.mergeCopies();
+      expect((await h.status()).copies.asked, isFalse);
+      await h.sync.start();
+      final hadco = h.graph.count;
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      expect(h.graph.count, hadco - 1);
+      // Nothing left to merge: nothing asked.
+      await h.sync.mergeCopies();
+      expect((await h.status()).copies.asked, isFalse);
+    });
+  });
+
   group('privacy', () {
     test('a run logs no name, address or number', () async {
       final logged = <String>[];
