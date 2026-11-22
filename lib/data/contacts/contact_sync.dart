@@ -239,7 +239,7 @@ class ContactSync implements ContactSyncService {
       // A merge of Hadco's copies asked, or an answer to one waiting, is
       // carried on the next time MyEmail is open, as a first sync is.
       if (!firstUnfinished &&
-          !held.copies.waiting &&
+          !held.copies.dueNow &&
           done != null &&
           now.difference(done) < ContactSyncStatus.dueAfter) {
         return false;
@@ -3175,10 +3175,16 @@ class _Run {
         stopped = (e, stack);
       }
     }
-    await step.save(ended: complete, asked: asked, at: sync._now());
+    await step.save(
+      ended: complete,
+      short: !complete && stopped == null,
+      asked: asked,
+      at: sync._now(),
+    );
     debugPrint('[myemail] contacts: copies: ${pass.people} people, '
         '${pass.deleted} deleted, ${pass.added} added, '
         '${pass.differing} differ, ${pass.failed} failed, '
+        '${pass.passedOver} passed over, '
         '${watch.elapsedMilliseconds} ms');
     if (step.changedAny) sync._again = true;
     if (stopped case (final e, final stack)) {
@@ -3191,12 +3197,13 @@ class _Run {
       base64Encode((await Sha256().hash(bytes)).bytes);
 
   /// Whether [answer], a contact as Graph answered a write, holds [written]
-  /// as written: a text the same once trimmed, a list each value written,
-  /// a collection each part.
+  /// as written: a text the same as the sync compares one (line breaks of
+  /// any kind, runs of spaces and the ends aside), a list each value
+  /// written, a collection each part.
   static bool _holds(Object? written, Object? answer) {
     if (written == null) return true;
     if (written is String) {
-      return answer is String && answer.trim() == written.trim();
+      return answer is String && _asText(answer) == _asText(written);
     }
     if (written is List) {
       return answer is List &&
@@ -3208,6 +3215,15 @@ class _Run {
     }
     return written == answer;
   }
+
+  /// [text] as a written text is compared: line breaks as LF, runs of
+  /// spaces as one, each line and the whole trimmed.
+  static String _asText(String text) => text
+      .replaceAll(RegExp(r'\r\n?'), '\n')
+      .split('\n')
+      .map((l) => l.replaceAll(RegExp(r'[ \t]+'), ' ').trim())
+      .join('\n')
+      .trim();
 
   // --- the end ---------------------------------------------------------------
 
@@ -3828,6 +3844,7 @@ class _Copies {
     int n(String key) => json[key] is int ? json[key]! as int : 0;
     copies
       ..asked = _time(json['asked'])
+      ..shortStops = n('shortStops')
       ..people = n('people')
       ..extras = n('extras')
       ..notSynced = n('notSynced')
@@ -3851,6 +3868,9 @@ class _Copies {
 
   /// When a merge was asked; null when none is.
   DateTime? asked;
+
+  /// Passes in a row that stopped short, Hadco not read.
+  int shortStops = 0;
 
   /// The people a merge would act on and their other copies, and the
   /// people with copies but no synced copy, as the last run counted them
@@ -3880,9 +3900,11 @@ class _Copies {
   Map<String, Object?>? listed(String key) =>
       differing.firstWhereOrNull((d) => d['key'] == key);
 
-  /// A merge asked, or an answer waiting for a run.
-  bool get waiting =>
-      asked != null || differing.any((d) => d['answer'] != null);
+  /// A merge asked, or an answer waiting for a run: a run is due at once,
+  /// unless the last pass stopped short (then the usual hour applies).
+  bool get dueNow =>
+      shortStops == 0 &&
+      (asked != null || differing.any((d) => d['answer'] != null));
 
   /// The people listed that Ron has not answered.
   int get unanswered => differing.where((d) => d['answer'] == null).length;
@@ -3949,8 +3971,9 @@ class _Copies {
     for (final g in bySynced(groups)) {
       final synced = g.graphSynced!;
       if (!paired.contains(synced) || merged.contains(synced)) continue;
-      final ours = joined(norm, base[synced], {
-        for (final id in g.graphCopies) id: ?base[id],
+      final ours = mergeable(norm, synced, base[synced], {
+        for (final id in g.graphCopies)
+          if (!paired.contains(id)) id: ?base[id],
       });
       if (ours.length < g.graphCopies.length) notSynced++;
       if (ours.isEmpty || left.containsKey(synced) || listed(synced) != null) {
@@ -3985,6 +4008,27 @@ class _Copies {
     return [...by.values];
   }
 
+  /// Which of [others] are the merge's copies of the synced copy [key],
+  /// [synced]: not the synced copy, nor one any pair names, of the same
+  /// full name ([ContactNormaliser.fullNameKey] of the name as copied, as
+  /// the plan groups copies), and joined to it by an email or a mobile
+  /// ([joined]).
+  static Set<String> mergeable(
+    ContactNormaliser norm,
+    String key,
+    SyncedContact? synced,
+    Map<String, SyncedContact> others,
+  ) {
+    if (synced == null) return const {};
+    final name = ContactNormaliser.fullNameKey(synced.copyableName);
+    return joined(norm, synced, {
+      for (final MapEntry(key: id, value: d) in others.entries)
+        if (id != key &&
+            ContactNormaliser.fullNameKey(d.copyableName) == name)
+          id: d,
+    });
+  }
+
   /// Which of [others] are joined to [synced] by an email or a mobile,
   /// directly or through another that is, as the plan joins copies of one
   /// person. One sharing only the name is not.
@@ -4017,6 +4061,7 @@ class _Copies {
 
   Map<String, Object?> toJson() => {
     'asked': ?_ms(asked),
+    if (shortStops > 0) 'shortStops': shortStops,
     if (people > 0) 'people': people,
     if (extras > 0) 'extras': extras,
     if (notSynced > 0) 'notSynced': notSynced,
@@ -4032,6 +4077,7 @@ class _Copies {
     extras: extras,
     notSynced: notSynced,
     asked: asked != null,
+    shortStops: shortStops,
     last: switch ((last, lastAt)) {
       (final l?, final at?) => l.shown(at),
       _ => null,
@@ -4081,7 +4127,9 @@ class _CopiesCounts {
       ..deleted = n('deleted')
       ..added = n('added')
       ..differing = n('differing')
-      ..failed = n('failed');
+      ..failed = n('failed')
+      ..passedOver = n('passedOver')
+      ..stoppedShort = json['stoppedShort'] == true;
   }
 
   int people = 0;
@@ -4089,10 +4137,14 @@ class _CopiesCounts {
   int added = 0;
   int differing = 0;
   int failed = 0;
+  int passedOver = 0;
+
+  /// The merge was given up, its passes stopping short.
+  bool stoppedShort = false;
 
   bool get isEmpty =>
       people == 0 && deleted == 0 && added == 0 && differing == 0 &&
-      failed == 0;
+      failed == 0 && passedOver == 0 && !stoppedShort;
 
   void add(_CopiesCounts other) {
     people += other.people;
@@ -4100,6 +4152,7 @@ class _CopiesCounts {
     added += other.added;
     differing += other.differing;
     failed += other.failed;
+    passedOver += other.passedOver;
   }
 
   Map<String, Object?> toJson() => {
@@ -4108,6 +4161,8 @@ class _CopiesCounts {
     'added': added,
     'differing': differing,
     'failed': failed,
+    'passedOver': passedOver,
+    if (stoppedShort) 'stoppedShort': true,
   };
 
   ContactSyncCopiesResult shown(DateTime at) => ContactSyncCopiesResult(
@@ -4117,6 +4172,8 @@ class _CopiesCounts {
     added: added,
     differing: differing,
     failed: failed,
+    passedOver: passedOver,
+    stoppedShort: stoppedShort,
   );
 }
 
@@ -4126,8 +4183,9 @@ class _CopyNotHeld implements Exception {
   const _CopyNotHeld();
 }
 
-/// A photo of the person's could not be read this time: the person is
-/// passed over, to be merged at a later pass.
+/// The person cannot be merged as read: a photo could not be read, or a
+/// contact changed (or went) since the read. Passed over, to be tried at a
+/// later pass; nothing of theirs written or deleted.
 class _PassOver implements Exception {
   const _PassOver();
 }
@@ -4163,11 +4221,18 @@ class _CopiesStep {
   final _left = <String, String>{};
   final _unleft = <String>{};
   var _gone = 0;
-  var _answers = 0;
   final _rowsGone = <int>{};
 
   /// Copies to delete, by person: whole people to a batch.
   final _queued = <String, List<String>>{};
+
+  /// The `changeKey` each contact queued should still have when its
+  /// delete goes: as read, or for a synced copy written, as the write left
+  /// it.
+  final _expected = <String, String?>{};
+
+  /// Every copy taken by a person this pass: none is taken twice.
+  final _taken = <String>{};
 
   var _done = 0;
   var _total = 0;
@@ -4184,6 +4249,7 @@ class _CopiesStep {
     int added = 0,
     int differing = 0,
     int failed = 0,
+    int passedOver = 0,
   }) {
     for (final c in [_counts, pass]) {
       c
@@ -4191,7 +4257,8 @@ class _CopiesStep {
         ..deleted += deleted
         ..added += added
         ..differing += differing
-        ..failed += failed;
+        ..failed += failed
+        ..passedOver += passedOver;
     }
   }
 
@@ -4207,6 +4274,11 @@ class _CopiesStep {
   void _personDone() {
     _done++;
     _progress();
+  }
+
+  void _passedOver() {
+    _count(passedOver: 1);
+    _personDone();
   }
 
   /// Merge [groups], the people whose synced copies are [paired]: the
@@ -4267,26 +4339,34 @@ class _CopiesStep {
       if (run.sync._stopAsked && !run.preview) await _flush();
       run._checkStop();
       final key = g.graphSynced!;
-      // Only the copies joined to the synced one by an email or a mobile:
-      // one sharing only the name is left as it is.
-      final copies = read.containsKey(key)
-          ? _Copies.joined(run.norm, syncedFromGraph(read[key]!), {
-              for (final id in g.graphCopies)
-                if (read[id] case final c?) id: syncedFromGraph(c),
-            })
-          : const <String>{};
+      final synced = read[key];
+      if (synced == null || !g.graphCopies.any(read.containsKey)) {
+        // Not in Contacts as read: passed over this time.
+        _passedOver();
+        continue;
+      }
+      // The merge's copies only ([_Copies.mergeable]): none another pair
+      // names, none taken by another person this pass, of the same name,
+      // joined by an email or a mobile. Any other is left as it is.
+      final copies = _Copies.mergeable(run.norm, key, syncedFromGraph(synced), {
+        for (final id in g.graphCopies)
+          if (!paired.containsKey(id) && !_taken.contains(id))
+            if (read[id] case final c?) id: syncedFromGraph(c),
+      });
+      if (copies.isEmpty) {
+        _personDone();
+        continue;
+      }
       // A copy whose photo could not be checked is not taken as having
       // none.
-      if (copies.isEmpty || [key, ...copies].any(unknown.contains)) {
-        // Passed over this time: not in Contacts as read, none of its own
-        // to merge, or a photo not known.
-        _personDone();
+      if ([key, ...copies].any(unknown.contains)) {
+        _passedOver();
         continue;
       }
       try {
         await _person(g, [...copies], read, photo, paired[key]!);
       } on _PassOver {
-        _personDone();
+        _passedOver();
       } on Exception catch (e) {
         if (e is! _CopyNotHeld && !_Run._failsAlone(e)) rethrow;
         _count(failed: 1);
@@ -4329,9 +4409,10 @@ class _CopiesStep {
         cp.OutlookCopy(id: id, json: read[id]!, photo: hashes[id]),
     ];
     final listed = seen.listed(key);
-    final answer = listed?['answer'] as String?;
+    final answer = listed?['answer'] is String
+        ? listed!['answer']! as String
+        : null;
     var merge = cp.mergeCopies(kept, others, norm: run.norm);
-    var chosen = false;
     // Ron's answer counts on the differences he saw, and on no others.
     if (answer != null &&
         merge.outcome == cp.CopiesOutcome.differs &&
@@ -4343,7 +4424,6 @@ class _CopiesStep {
       }
       if (answer == key || copies.contains(answer)) {
         merge = cp.mergeCopies(kept, others, keep: answer, norm: run.norm);
-        chosen = answer != key;
       }
     }
     if (merge.outcome == cp.CopiesOutcome.differs) {
@@ -4357,53 +4437,104 @@ class _CopiesStep {
       _personDone();
       return;
     }
+    final read0 = {
+      for (final id in [key, ...copies])
+        id: read[id]!['changeKey'] as String?,
+    };
+    var syncedKey = read0[key];
+    if (merge.outcome == cp.CopiesOutcome.adds) {
+      // Nothing written on a stale read: each contact read again first,
+      // and the person passed over should one have changed, or gone.
+      final now = await _asTheyWere([key, ...copies], read0);
+      if (now.length < copies.length + 1 || now.values.contains(false)) {
+        throw const _PassOver();
+      }
+      syncedKey = await _write(key, merge, read[key]!, bytes, pair);
+      _count(added: merge.adds.length);
+      changedAny = true;
+    }
     _unlisted.add(key);
     _listed.remove(key);
     _unleft.add(key);
     _left.remove(key);
-    if (merge.outcome == cp.CopiesOutcome.adds) {
-      await _write(key, merge, read[key]!, bytes, chosen ? pair : null);
-      _count(added: merge.adds.length);
-      changedAny = true;
-    }
     if (_queued.values.fold(0, (n, c) => n + c.length) + copies.length >
         GraphContactsApi.batchLimit) {
       await _flush();
     }
     _queued[key] = copies;
+    _taken.addAll(copies);
+    _expected[key] = syncedKey;
+    for (final id in copies) {
+      _expected[id] = read0[id];
+    }
+  }
+
+  /// The contacts [ids] read again by id: for each still there, whether
+  /// it is as it was ([expected] its `changeKey`) and in Contacts. Those
+  /// gone are left out. A read that fails says none is as it was.
+  Future<Map<String, bool>> _asTheyWere(
+    List<String> ids,
+    Map<String, String?> expected,
+  ) async {
+    final GraphBatchRead r;
+    try {
+      r = await run.graph((a) => a.getBatch(ids));
+    } on Exception catch (e) {
+      if (!_Run._failsAlone(e)) rethrow;
+      return {for (final id in ids) id: false};
+    }
+    return {
+      for (final id in ids)
+        if (!r.notFound.contains(id))
+          id: switch (r.found[id]) {
+            final c? =>
+              run._inContacts(c) &&
+                  c['changeKey'] != null &&
+                  c['changeKey'] == expected[id],
+            null => false,
+          },
+    };
   }
 
   /// Write what [merge] adds to the synced copy [key] ([before] as read),
   /// check the answer holds each value, and give it a photo where the
-  /// merge says. With [chosen], Ron chose another copy's details: the
-  /// details they replaced go to Gmail as his answer at the next run.
-  Future<void> _write(
+  /// merge says, read back before any copy goes. The details it replaced
+  /// go to Gmail at the next run as an answer (Use Hadco's), kept on the
+  /// pair at once: the merge's own, never held by the change brake. The
+  /// synced copy's `changeKey` as the write left it.
+  Future<String?> _write(
     String key,
     cp.CopiesMerge merge,
     Map<String, Object?> before,
     Map<String, ({List<int> bytes, String type})> bytes,
-    ContactLink? chosen,
+    ContactLink pair,
   ) async {
+    var changeKey = before['changeKey'] as String?;
     if (merge.patch.isNotEmpty) {
       final answer = await run.graph((a) => a.update(key, merge.patch));
       for (final MapEntry(key: name, value: value) in merge.patch.entries) {
         if (!_Run._holds(value, answer[name])) throw const _CopyNotHeld();
       }
-      if (chosen?.googleName case final googleName?) {
+      changeKey = answer['changeKey'] as String?;
+      if (pair.googleName case final googleName?) {
         final was = syncedFromGraph(before);
         final now = syncedFromGraph(answer);
-        final fields = [
+        final replaced = [
           for (final f in ContactField.values)
-            if (!run.norm.same(f, was[f], now[f])) f.name,
+            if (!_empty(was[f]) && !run.norm.same(f, was[f], now[f])) f.name,
         ];
-        if (fields.isNotEmpty) {
-          run.copiesAnswers.add({
+        if (replaced.isNotEmpty) {
+          final useHadcos = {
             'kind': ContactAnswerKind.useGraph.name,
             'googleName': googleName,
             'graphId': key,
-            'fields': fields,
+            'fields': replaced,
+          };
+          run.copiesAnswers.add(useHadcos);
+          await store.updatePair(run.pairId, (p) {
+            final h = _Held.parse(p.held)..pending.add(useHadcos);
+            return p.copyWith(held: h.encode());
           });
-          _answers++;
         }
       }
     }
@@ -4411,23 +4542,58 @@ class _CopiesStep {
       final photo = bytes[from];
       if (photo == null) throw const _CopyNotHeld();
       await run.graph((a) => a.putPhoto(key, photo.bytes, photo.type));
+      // The photo there before its copy goes, and the synced copy as the
+      // photo left it.
+      final there = await run.graph((a) => a.photos([key]));
+      if (!there.have.contains(key)) throw const _CopyNotHeld();
+      final now = await run.graph((a) => a.getBatch([key]));
+      changeKey = now.found[key]?['changeKey'] as String?;
+      if (changeKey == null) throw const _CopyNotHeld();
     }
+    return changeKey;
   }
 
-  /// Delete the copies queued, whole people to a batch: a person whose
-  /// copies are all gone is merged; one with a copy left failed (its
-  /// update stands, and a later merge finds the copy the same).
+  /// Whether a detail's value is none.
+  static bool _empty(Object? v) =>
+      v == null ||
+      (v is String && v.trim().isEmpty) ||
+      (v is List && v.isEmpty);
+
+  /// Delete the copies queued, whole people to a batch, each person read
+  /// again first: one whose synced copy or a copy changed since (or a
+  /// copy moved out) is passed over, nothing of theirs deleted; a copy
+  /// gone meanwhile is left out. A person whose copies are all gone is
+  /// merged; one with a copy left failed (its update stands, and a later
+  /// merge finds the copy the same).
   Future<void> _flush() async {
     if (_queued.isEmpty) return;
-    final people = Map.of(_queued);
+    final queued = Map.of(_queued);
     _queued.clear();
+    final now = await _asTheyWere([
+      for (final MapEntry(key: person, value: copies) in queued.entries) ...[
+        person,
+        ...copies,
+      ],
+    ], _expected);
+    final people = <String, List<String>>{};
+    for (final MapEntry(key: person, value: copies) in queued.entries) {
+      if (now[person] != true || copies.any((id) => now[id] == false)) {
+        _passedOver();
+        continue;
+      }
+      people[person] = [
+        for (final id in copies)
+          if (now.containsKey(id)) id,
+      ];
+    }
+    final ids = [for (final c in people.values) ...c];
     GraphBatchDelete? deleted;
-    try {
-      deleted = await run.graph(
-        (a) => a.deleteBatch([for (final c in people.values) ...c]),
-      );
-    } on Exception catch (e) {
-      if (!_Run._failsAlone(e)) rethrow;
+    if (ids.isNotEmpty) {
+      try {
+        deleted = await run.graph((a) => a.deleteBatch(ids));
+      } on Exception catch (e) {
+        if (!_Run._failsAlone(e)) rethrow;
+      }
     }
     final gone = {...?deleted?.deleted, ...?deleted?.gone};
     for (final id in gone) {
@@ -4493,14 +4659,15 @@ class _CopiesStep {
   }
 
   /// What was done since the last save, kept on the pair: the counts, the
-  /// people listed and left, Ron's chosen details as answers for the next
-  /// run, the rows of the copies gone, and the pair's Microsoft count
-  /// lowered by them. With
-  /// [ended], the pass dealt with every person: the merge [asked] is done
-  /// and its numbers are the last result; without one asked, what this
-  /// run did for Ron's answers is added to the last result.
+  /// people listed and left, the rows of the copies gone, and the pair's
+  /// Microsoft count lowered by them. With [ended], the pass dealt with
+  /// every person: the merge [asked] is done and its numbers are the last
+  /// result; without one asked, what this run did for Ron's answers is
+  /// added to the last result. With [short], the pass stopped short
+  /// (Hadco could not be read): one more in a row ([_Copies.shortStops]).
   Future<void> save({
     bool ended = false,
+    bool short = false,
     DateTime? asked,
     DateTime? at,
   }) async {
@@ -4510,9 +4677,6 @@ class _CopiesStep {
     final left = Map.of(_left);
     final unleft = Set.of(_unleft);
     final gone = _gone;
-    final answers = run.copiesAnswers.sublist(
-      run.copiesAnswers.length - _answers,
-    );
     final rows = Set.of(_rowsGone);
     _rowsGone.clear();
     _counts = _CopiesCounts();
@@ -4521,7 +4685,6 @@ class _CopiesStep {
     _left.clear();
     _unleft.clear();
     _gone = 0;
-    _answers = 0;
     await store.transaction(() async {
       if (rows.isNotEmpty) await store.deleteLinks(rows);
       await store.updatePair(run.pairId, (p) {
@@ -4550,8 +4713,24 @@ class _CopiesStep {
           c.left.remove(key);
         }
         c.left.addAll(left);
-        h.pending.addAll(answers);
+        if (short) {
+          // A pass that stopped short, Hadco not read: the ask stays, but
+          // after three in a row it is given up, and the last result says
+          // so.
+          c.shortStops++;
+          if (asked != null && c.asked == asked && c.shortStops >= 3) {
+            c
+              ..asked = null
+              ..shortStops = 0
+              ..last = (c.pass
+                ..differing = c.unanswered
+                ..stoppedShort = true)
+              ..lastAt = at
+              ..pass = _CopiesCounts();
+          }
+        }
         if (ended) {
+          c.shortStops = 0;
           if (asked != null) {
             if (c.asked == asked) {
               c
