@@ -4280,6 +4280,13 @@ void main() {
       );
     }
 
+    /// The version the status shows for the person [key].
+    Future<String> versionOf(String key) async => (await h.status())
+        .copies
+        .differing
+        .firstWhere((p) => p.key == key)
+        .version;
+
     String? gmailTitle(String name) {
       final orgs = h.google.person(name)?['organizations'];
       if (orgs is! List || orgs.isEmpty) return null;
@@ -4485,9 +4492,15 @@ void main() {
       // one run.
       h.refusing.add(Harness.hadco.id);
       for (var i = 0; i < 11; i++) {
-        await h.sync.answerCopies(hadco[i].synced, hadco[i].others.single);
+        await h.sync.answerCopies(
+          hadco[i].synced,
+          hadco[i].others.single,
+          await versionOf(hadco[i].synced),
+        );
       }
-      await h.sync.answerAllCopies();
+      await h.sync.answerAllCopies({
+        for (final p in status.copies.differing) p.key: p.version,
+      });
       await h.sync.syncNow();
       status = await h.status();
       expect(
@@ -4528,7 +4541,7 @@ void main() {
       // Ron changes that copy in Outlook, then answers from the list he
       // saw before.
       h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Director'});
-      await h.sync.answerCopies(listed.key, c.others.single);
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
       await h.sync.syncNow();
       final again = (await h.status()).copies.differing.single;
       expect(again.answer, isNull);
@@ -4542,7 +4555,7 @@ void main() {
       // Answered on these: carried out, its copies read by id, not the
       // folder whole.
       h.requests.clear();
-      await h.sync.answerCopies(again.key, c.others.single);
+      await h.sync.answerCopies(again.key, c.others.single, again.version);
       await h.sync.syncNow();
       expect(h.requestsTo('/contacts'), isEmpty);
       expect(
@@ -4576,7 +4589,11 @@ void main() {
             r.url.path.endsWith(r'$batch') &&
             r.body.contains('/photo')) {
           given = true;
-          await h.sync.answerCopies(c.synced, c.others.single);
+          await h.sync.answerCopies(
+            c.synced,
+            c.others.single,
+            await versionOf(c.synced),
+          );
         }
       };
       await h.sync.mergeCopies();
@@ -4760,11 +4777,15 @@ void main() {
       await h.sync.mergeCopies();
       await h.sync.syncNow();
       await expectLater(
-        h.sync.answerCopies('no-such-person', null),
+        h.sync.answerCopies('no-such-person', null, ''),
         throwsA(isA<ContactSyncRefused>()),
       );
       await expectLater(
-        h.sync.answerCopies(c.synced, 'no-such-copy'),
+        h.sync.answerCopies(
+          c.synced,
+          'no-such-copy',
+          await versionOf(c.synced),
+        ),
         throwsA(isA<ContactSyncRefused>()),
       );
       expect((await h.status()).copies.differing.single.answer, isNull);
@@ -4780,7 +4801,7 @@ void main() {
       await h.sync.mergeCopies();
       await h.sync.syncNow();
       h.refusing.add(Harness.hadco.id);
-      await h.sync.answerCopies(c.synced, null);
+      await h.sync.answerCopies(c.synced, null, await versionOf(c.synced));
       await h.sync.syncNow();
       expect(
         (await h.status()).copies.differing.single.answer,

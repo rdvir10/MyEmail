@@ -55,9 +55,16 @@ class FakeContactSync implements ContactSyncService {
   final List<ContactSyncChoice> allDiffering = [];
   final List<int> restored = [];
 
-  /// Each [answerCopies] call: the person, and the copy kept (null: leave
-  /// them).
-  final List<({String person, String? keep})> copiesAnswers = [];
+  /// Each [answerCopies] call: the person, the copy kept (null: leave
+  /// them), and the version shown.
+  final List<({String person, String? keep, String version})> copiesAnswers =
+      [];
+
+  /// Each [answerAllCopies] call: the people shown, key to version.
+  final List<Map<String, String>> allCopiesAnswers = [];
+
+  /// Each [backup] call's side asked for alone (null: both).
+  final List<ContactSide?> backupsOf = [];
   final List<DateTime> noticesSeen = [];
   final List<String> accessAsked = [];
 
@@ -113,9 +120,13 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<List<ContactSyncBackupFile>> backup() async {
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only}) async {
     calls.add('backup');
-    return backupFiles;
+    backupsOf.add(only);
+    return [
+      for (final f in backupFiles)
+        if (only == null || f.side == only) f,
+    ];
   }
 
   @override
@@ -186,13 +197,16 @@ class FakeContactSync implements ContactSyncService {
   Future<void> mergeCopies() async => calls.add('mergeCopies');
 
   @override
-  Future<void> answerCopies(String person, String? keep) async {
+  Future<void> answerCopies(String person, String? keep, String version) async {
     calls.add('answerCopies');
-    copiesAnswers.add((person: person, keep: keep));
+    copiesAnswers.add((person: person, keep: keep, version: version));
   }
 
   @override
-  Future<void> answerAllCopies() async => calls.add('answerAllCopies');
+  Future<void> answerAllCopies(Map<String, String> people) async {
+    calls.add('answerAllCopies');
+    allCopiesAnswers.add(people);
+  }
 
   @override
   Future<void> noticeSeen(DateTime at) async {

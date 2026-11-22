@@ -540,7 +540,11 @@ class ContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerCopies(String person, String? keep) async {
+  Future<void> answerCopies(
+    String person,
+    String? keep,
+    String version,
+  ) async {
     final pair = await _attachedPair();
     if (pair == null) return;
     await store.updatePair(pair.pairId, (p) {
@@ -561,7 +565,7 @@ class ContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerAllCopies() async {
+  Future<void> answerAllCopies(Map<String, String> people) async {
     final pair = await _attachedPair();
     if (pair == null) return;
     var any = false;
@@ -863,7 +867,7 @@ class ContactSync implements ContactSyncService {
   }
 
   @override
-  Future<List<ContactSyncBackupFile>> backup() async {
+  Future<List<ContactSyncBackupFile>> backup({ContactSide? only}) async {
     final pair = await _chosenPair();
     final run = _Run(this, pair, preview: true);
     try {
