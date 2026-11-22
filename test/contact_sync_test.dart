@@ -3311,6 +3311,50 @@ void main() {
       }
     });
 
+    test('for all, an item answered on its own keeps its answer; named '
+        'alone, it takes the new one', () async {
+      await heldChanges();
+      // Runs stop before planning: the answers stay to be seen.
+      h.refusing.add(Harness.hadco.id);
+      var q = (await h.status()).questions.single;
+      final ann = q.items.first.key;
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+        items: {ann},
+      );
+      // Copy them back for all, from a screen that still showed Ann open.
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {for (final i in q.items) i.key},
+      );
+      await h.sync.syncNow();
+      q = (await h.status()).questions.single;
+      expect(
+        q.items.firstWhere((i) => i.key == ann).answer,
+        ContactSyncChoice.applyThem,
+      );
+      expect(
+        q.items
+            .where((i) => i.key != ann)
+            .every((i) => i.answer == ContactSyncChoice.copyThemBack),
+        isTrue,
+      );
+      // Named alone, Ann takes the new answer.
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.copyThemBack,
+        items: {ann},
+      );
+      await h.sync.syncNow();
+      q = (await h.status()).questions.single;
+      expect(
+        q.items.firstWhere((i) => i.key == ann).answer,
+        ContactSyncChoice.copyThemBack,
+      );
+    });
+
     test('an answer given while a run carries out another is kept, and '
         'carried out next', () async {
       final pairs = await heldChanges();
