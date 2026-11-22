@@ -516,6 +516,19 @@ class ContactSync implements ContactSyncService {
     );
   }
 
+  // --- the copies on the Microsoft side ---------------------------------------
+
+  // Stand-ins until the merge is built: nothing queued yet.
+
+  @override
+  Future<void> mergeCopies() async {}
+
+  @override
+  Future<void> answerCopies(String person, String? keep) async {}
+
+  @override
+  Future<void> answerAllCopies() async {}
+
   @override
   Future<void> noticeSeen(DateTime at) async {
     final pair = await _attachedPair();

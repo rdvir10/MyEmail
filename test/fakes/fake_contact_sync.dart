@@ -54,6 +54,10 @@ class FakeContactSync implements ContactSyncService {
       lookAnswers = [];
   final List<ContactSyncChoice> allDiffering = [];
   final List<int> restored = [];
+
+  /// Each [answerCopies] call: the person, and the copy kept (null: leave
+  /// them).
+  final List<({String person, String? keep})> copiesAnswers = [];
   final List<DateTime> noticesSeen = [];
   final List<String> accessAsked = [];
 
@@ -179,6 +183,18 @@ class FakeContactSync implements ContactSyncService {
   Future<void> syncHere() async => calls.add('syncHere');
 
   @override
+  Future<void> mergeCopies() async => calls.add('mergeCopies');
+
+  @override
+  Future<void> answerCopies(String person, String? keep) async {
+    calls.add('answerCopies');
+    copiesAnswers.add((person: person, keep: keep));
+  }
+
+  @override
+  Future<void> answerAllCopies() async => calls.add('answerAllCopies');
+
+  @override
   Future<void> noticeSeen(DateTime at) async {
     calls.add('noticeSeen');
     noticesSeen.add(at);
@@ -210,5 +226,6 @@ class FakeContactSync implements ContactSyncService {
         graphCount: s.graphCount,
         notice: dropNotice ? null : s.notice,
         duplicates: s.duplicates,
+        copies: s.copies,
       );
 }
