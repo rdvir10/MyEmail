@@ -283,8 +283,10 @@ class GraphContactsApi {
   /// The contact [id] wherever it is in the mailbox, or null when it is not
   /// there. With [whole], every property (the read before a delete, which
   /// goes into Recently deleted); otherwise the sync's. With [withTag], its
-  /// hidden tag too ([tagOf]); with [withOutlookOnly], the details only
-  /// Outlook keeps ([listAll]).
+  /// hidden tag too ([tagOf]), the message class asked for beside it
+  /// ([outlookOnlyCanary]): answered without that, it throws [TagNotGiven],
+  /// never read as a contact without a tag. With [withOutlookOnly], the
+  /// details only Outlook keeps ([listAll]).
   Future<Map<String, Object?>?> get(
     String id, {
     bool whole = false,
@@ -294,6 +296,8 @@ class GraphContactsApi {
     final expand = [
       if (withTag) graphLinkPropertyId,
       if (withOutlookOnly) ..._outlookOnlyIds,
+      // The message class beside the tag, as beside the details.
+      if (withTag && !withOutlookOnly) outlookOnlyCanary,
     ];
     final uri = Uri.parse('$base/me/contacts/${_id(id)}').replace(
       queryParameters: {
@@ -307,18 +311,22 @@ class GraphContactsApi {
       withOutlookOnly,
       () async => _json(response, 'get'),
     );
-    return withOutlookOnly ? _givenOutlookOnly([contact]).single : contact;
+    if (withOutlookOnly) return _givenOutlookOnly([contact]).single;
+    if (!withTag) return contact;
+    return _tagGiven(contact) ??
+        (throw TagNotGiven({...contact}..remove(_extended)));
   }
 
   /// The contacts [ids] read as [get] reads them (the sync's properties,
-  /// with [withTag] the hidden tag too), [batchLimit] to a `$batch`: which
-  /// are there, wherever each is in the mailbox; which are not (404); and
-  /// which no answer said either of, their own answer a failure. One
-  /// throttled (a 429, or a 503: a read can be asked again) is asked again
-  /// after the longest wait any asked for, as a request alone would be. A
-  /// batch that fails as a whole throws, as [get] would, and what the
-  /// batches before it read is not kept: a caller that wants it asks
-  /// [batchLimit] at a time.
+  /// with [withTag] the hidden tag too, and the message class beside it),
+  /// [batchLimit] to a `$batch`: which are there, wherever each is in the
+  /// mailbox; which are not (404); and which no answer said either of,
+  /// their own answer a failure, or, with [withTag], an answer without the
+  /// message class, whose tag is not known. One throttled (a 429, or a
+  /// 503: a read can be asked again) is asked again after the longest wait
+  /// any asked for, as a request alone would be. A batch that fails as a
+  /// whole throws, as [get] would, and what the batches before it read is
+  /// not kept: a caller that wants it asks [batchLimit] at a time.
   Future<GraphBatchRead> getBatch(
     Iterable<String> ids, {
     bool withTag = false,
@@ -330,7 +338,8 @@ class GraphContactsApi {
         'method': 'GET',
         'url': _relative('/me/contacts/${_id(id)}', {
           r'$select': graphContactSelect,
-          if (withTag) r'$expand': _expandOf([graphLinkPropertyId]),
+          if (withTag)
+            r'$expand': _expandOf([graphLinkPropertyId, outlookOnlyCanary]),
         }),
         'headers': {'Prefer': prefer},
       },
@@ -342,7 +351,13 @@ class GraphContactsApi {
       final status = a.status;
       final contact = a.body;
       if (status != null && status >= 200 && status < 300) {
-        if (contact is Map) found[id] = contact.cast<String, Object?>();
+        if (contact is! Map) continue;
+        final read = contact.cast<String, Object?>();
+        if (!withTag) {
+          found[id] = read;
+        } else if (_tagGiven(read) case final given?) {
+          found[id] = given;
+        }
       } else if (status == 404) {
         notFound.add(id);
       }
@@ -870,6 +885,30 @@ class GraphContactsApi {
 
   static final _canaryKey = extendedPropertyKey(outlookOnlyCanary)!;
 
+  static const _extended = 'singleValueExtendedProperties';
+
+  /// [c] with the message class asked for beside other properties
+  /// ([outlookOnlyCanary]) taken out again, so that what reads it sees
+  /// only those; null when it was answered without it, and so without
+  /// them.
+  static Map<String, Object?>? _canaryOff(Map<String, Object?> c) {
+    final props = c[_extended];
+    final rest = [
+      for (final p in props is List ? props : const [])
+        if (p is! Map || extendedPropertyKey(p['id']) != _canaryKey) p,
+    ];
+    if (props is! List || rest.length == props.length) return null;
+    final contact = {...c}..remove(_extended);
+    if (rest.isNotEmpty) contact[_extended] = rest;
+    return contact;
+  }
+
+  /// [c], read with its tag and the message class beside it, as [_canaryOff]
+  /// leaves it; null when Graph answered it without them, so that whether
+  /// it carries a tag is not known. One whose tag came is taken as read.
+  static Map<String, Object?>? _tagGiven(Map<String, Object?> c) =>
+      _canaryOff(c) ?? (tagOf(c) == null ? null : c);
+
   /// [contacts], read with the details only Outlook keeps, each with the
   /// message class asked for beside them taken out again, so that what
   /// reads them sees only the details. One without it was answered without
@@ -880,17 +919,11 @@ class GraphContactsApi {
     var without = 0;
     final given = <Map<String, Object?>>[];
     for (final c in contacts) {
-      final props = c['singleValueExtendedProperties'];
-      final rest = [
-        for (final p in props is List ? props : const [])
-          if (p is! Map || extendedPropertyKey(p['id']) != _canaryKey) p,
-      ];
-      if (props is! List || rest.length == props.length) {
+      final contact = _canaryOff(c);
+      if (contact == null) {
         without++;
         continue;
       }
-      final contact = {...c}..remove('singleValueExtendedProperties');
-      if (rest.isNotEmpty) contact['singleValueExtendedProperties'] = rest;
       given.add(contact);
     }
     if (without > 0) {
@@ -1218,6 +1251,21 @@ class OutlookOnlyRefused extends ContactRefused {
         'numbers, an anniversary and the like), so nothing was saved or '
         'merged.',
       );
+}
+
+/// Graph answered a read that asked for the hidden tag ([GraphContactsApi.get]
+/// with `withTag`) without the extended properties it asked for, the
+/// message class beside the tag among them
+/// ([GraphContactsApi.outlookOnlyCanary]), with no error: whether the
+/// contact carries a tag is not known. [contact] is the contact as read,
+/// without them. Never to be taken for a contact without a tag.
+class TagNotGiven implements Exception {
+  const TagNotGiven(this.contact);
+
+  final Map<String, Object?> contact;
+
+  @override
+  String toString() => 'TagNotGiven';
 }
 
 /// A whole `$batch` failed after some of it may have been answered: the

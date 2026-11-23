@@ -2978,6 +2978,104 @@ void main() {
       expect(under(4, 'No longer needs a look.'), findsOneWidget);
     });
 
+    testWidgets('Needs a look: an item whose answer the server refused comes '
+        'back listed, never said to be done', (tester) async {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.notes],
+            googleValues: {ContactField.notes: 'Met at the fair $id'},
+            graphValues: {ContactField.notes: 'Prefers email after 5'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      const refused = ContactSyncLook(
+        id: 3,
+        kind: ContactReviewKind.refused,
+        side: ContactSide.graph,
+        title: 'Person 1',
+        choices: [ContactSyncChoice.retry],
+      );
+      const running = ContactSyncProgress(step: ContactSyncStep.writing);
+      sync = FakeContactSync(status: synced(looks: [
+        differs(1),
+        differs(2),
+        differs(4),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+      Finder said(int id, String text) => find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.textContaining(text),
+          );
+      Future<void> tap(String key) async {
+        await tester.ensureVisible(button(key));
+        await tester.tap(button(key));
+        await tester.pumpAndSettle();
+      }
+
+      const carrying = "You chose Use Gmail's: the sync is carrying it out.";
+      const done = "You chose Use Gmail's: done. No longer needs a look.";
+
+      // Use Gmail's on two: queued (the second's never shown so, the run
+      // too quick), then taken away by the run that carries them out,
+      // said to be carried out while it runs.
+      await tap('contact-sync-look:1:useGoogle');
+      sync.set(synced(looks: [
+        differs(1, answer: ContactSyncChoice.useGoogle),
+        differs(2),
+        differs(4),
+      ]));
+      await tester.pumpAndSettle();
+      await tap('contact-sync-look:2:useGoogle');
+      sync.set(synced(looks: [differs(4)], running: running));
+      await tester.pumpAndSettle();
+      for (final id in [1, 2]) {
+        expect(said(id, carrying), findsOneWidget);
+        expect(said(id, 'done'), findsNothing);
+      }
+      // Leave as they are needs no run: done at once, a run going or not.
+      await tap('contact-sync-look:4:leaveAsTheyAre');
+      sync.set(synced(looks: const [], running: running));
+      await tester.pumpAndSettle();
+      expect(
+        said(4, 'You chose Leave as they are: done. No longer needs a look.'),
+        findsOneWidget,
+      );
+
+      // Outlook refused the first's write: it is put back as it was,
+      // unanswered, beside the refusal, to be answered again. The second
+      // went through.
+      sync.set(synced(looks: [differs(1), refused]));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-look:1:useGoogle'), findsOneWidget);
+      expect(button('contact-sync-look:1:useGraph'), findsOneWidget);
+      expect(said(1, 'You chose'), findsNothing);
+      expect(said(1, 'No longer needs a look'), findsNothing);
+      expect(said(2, done), findsOneWidget);
+      expect(button('contact-sync-look:3:retry'), findsOneWidget);
+      expect(
+        tester.getTopLeft(button('contact-sync-look:1')).dy,
+        lessThan(tester.getTopLeft(button('contact-sync-look:2')).dy),
+      );
+
+      // Taken away later with no answer (its contacts gone): the answer
+      // that was refused is not said to be done.
+      sync.set(synced(looks: const [refused]));
+      await tester.pumpAndSettle();
+      expect(said(1, 'No longer needs a look.'), findsOneWidget);
+      expect(said(1, 'You chose'), findsNothing);
+      expect(said(2, done), findsOneWidget);
+    });
+
     group('Needs a look: the box for all keeps its place', () {
       ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
           ContactSyncLook(
@@ -4701,6 +4799,57 @@ void main() {
       expect(button('contact-sync-copies-sync-now'), findsNothing);
     });
 
+    testWidgets('a merge stopped part way says it carries on, not that it '
+        'starts', (tester) async {
+      const partWay = ContactSyncCopies(
+        people: 600,
+        extras: 700,
+        asked: true,
+        partWay: true,
+      );
+      ContactSyncStatus stopped({ContactSyncProgress? running}) => synced(
+            copies: partWay,
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.notAllowed,
+              at: at1042,
+              side: ContactSide.graph,
+              error: const ContactSyncNeedsSignIn(
+                side: ContactSide.graph,
+                accountId: 'acct-h',
+                message: 'Hadco needs you to sign in again.',
+              ),
+            ),
+            running: running,
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      await openDuplicates(tester, copies: partWay);
+      // A sign-in Hadco asked for during the merge, after the sync's end.
+      sync.set(stopped());
+      await tester.pumpAndSettle();
+      inOrder(tester, button('contact-sync-copies'), [
+        'Merge stopped part way: it carries on once the sync can.',
+        'Contact sync has stopped: not allowed yet for Hadco.',
+        'Hadco needs you to sign in again.',
+        'Sync now',
+      ]);
+      expect(find.textContaining('it starts'), findsNothing);
+
+      // The next sync going: the merge carries on after its changes.
+      sync.set(stopped(
+        running: const ContactSyncProgress(step: ContactSyncStep.reading),
+      ));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge stopped part way: it carries on once the sync has '
+            'made its changes.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('it starts'), findsNothing);
+    });
+
     testWidgets('a merge waiting on a stop that needs a sign-in offers the '
         'sign-in there, as the Contact sync screen does', (tester) async {
       final web = FakeWebViewPlatform.install();
@@ -5273,16 +5422,17 @@ void main() {
       await tester.pumpAndSettle();
 
       // Where Graph's delete puts a contact is not yet known: true either
-      // way, as the merge's texts are.
+      // way, as the merge's texts are. None of the details only Outlook
+      // keeps is read into the bin, so none comes back with a Restore.
       expect(
         find.text('Every contact the sync deleted in the last 30 days. '
             'Restore makes it again where it was deleted, with every detail '
             'that can be written, and on the other side too unless it is '
-            'back there already; the two are then paired. Photos, and '
-            "Outlook's fax, pager and anniversary, come back only from "
-            "Google's Trash or, for a while, from Outlook: in Deleted Items, "
-            'or under Recover items deleted from this folder at the top of '
-            'it.'),
+            'back there already; the two are then paired. Photos, and the '
+            'details only Outlook keeps (faxes and the like), come back '
+            "only from Google's Trash or, for a while, from Outlook: in "
+            'Deleted Items, or under Recover items deleted from this folder '
+            'at the top of it.'),
         findsOneWidget,
       );
       expect(

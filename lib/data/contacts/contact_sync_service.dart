@@ -1013,6 +1013,7 @@ class ContactSyncCopies {
     this.extras = 0,
     this.notSynced = 0,
     this.asked = false,
+    this.partWay = false,
     this.shortStops = 0,
     this.last,
     this.differing = const [],
@@ -1033,6 +1034,10 @@ class ContactSyncCopies {
   /// A merge is queued or running: from [ContactSyncService.mergeCopies]
   /// until one pass has dealt with every person.
   final bool asked;
+
+  /// The pass under way has dealt with some people already, in a run that
+  /// stopped part way: the merge carries on from there.
+  final bool partWay;
 
   /// How many passes in a row stopped short because Hadco could not be
   /// read, while the merge is asked. After one, the next pass waits the

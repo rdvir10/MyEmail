@@ -1453,6 +1453,11 @@ class _Run {
       [...tagged],
       (id, c) => _placeWhole(id, c, withTag: true),
       withTag: true,
+      // Answered without its tag even alone: read, as a read without the
+      // tag sees it, and not kept as having none, so that a later read
+      // asks again. Left out instead, a copy the sync made could be made
+      // again once its create is given up.
+      tagUnknown: (id, c) => _placeWhole(id, c, withTag: false),
     );
 
     // Gmail: a listing lags behind writes by minutes, so a contact the
@@ -1657,16 +1662,19 @@ class _Run {
   /// ([GraphContactsApi.getBatch]) and with their tags where [withTag]:
   /// candidates are read at every run, and a GET apiece made a hundred or
   /// more requests one after another. A part left with no answer
-  /// (throttled past the wait, or failed on its own), and every part of a
-  /// batch refused as a whole, is read alone, as all were before: what
-  /// that read finds is placed, and its failure is the run's, as any
-  /// read's is.
+  /// (throttled past the wait, or failed on its own, or answered without
+  /// the tag asked for), and every part of a batch refused as a whole, is
+  /// read alone, as all were before: what that read finds is placed, and
+  /// its failure is the run's, as any read's is. One Graph answers alone
+  /// without its tag too ([TagNotGiven]) goes to [tagUnknown], as read.
   Future<void> _readGraphs(
     List<String> ids,
     Future<void> Function(String id, Map<String, Object?>? c) place, {
     bool withTag = false,
+    Future<void> Function(String id, Map<String, Object?> c)? tagUnknown,
   }) async {
     const most = GraphContactsApi.batchLimit;
+    var unknown = 0;
     for (var start = 0; start < ids.length; start += most) {
       final asking = ids.sublist(start, min(start + most, ids.length));
       _checkStop();
@@ -1683,9 +1691,22 @@ class _Run {
           await place(id, null);
         } else {
           _checkStop();
-          await place(id, await graph((a) => a.get(id, withTag: withTag)));
+          final Map<String, Object?>? c;
+          try {
+            c = await graph((a) => a.get(id, withTag: withTag));
+          } on TagNotGiven catch (e) {
+            if (tagUnknown == null) rethrow;
+            unknown++;
+            await tagUnknown(id, e.contact);
+            continue;
+          }
+          await place(id, c);
         }
       }
+    }
+    if (unknown > 0) {
+      debugPrint('[myemail] contacts: Microsoft gave $unknown contacts '
+          'without their tags');
     }
   }
 
@@ -2190,14 +2211,16 @@ class _Run {
     // stopped after them does not, for planned again it would write the
     // side Ron chose over an edit he made since. Its plans are those that
     // write a contact it names. One with nothing to write is carried out
-    // by this transaction, and not kept.
+    // by this transaction, and not kept. A use answer or a Retry carried
+    // out by one plan keeps its item with it ([_Held.item]), to be put
+    // back should that write be refused.
     final pending = <Map<String, Object?>>[];
     final dropReviews = <int>{};
     final writing = [
       for (final p in plan.links)
         if (p.writes) p,
     ];
-    void keep(Map<String, Object?> answer) {
+    void keep(Map<String, Object?> answer, {ContactReview? from}) {
       final g = answer['googleName'];
       final h = answer['graphId'];
       final name = g is String ? plan.reKeys[g] ?? g : null;
@@ -2213,7 +2236,12 @@ class _Run {
       for (final p in by) {
         (_answersOf[p] ??= {}).add(mark);
       }
-      pending.add({...answer, _Held.writing: mark});
+      final item = by.length == 1 && _Held.asksAgain.contains(answer['kind'])
+          ? (from == null ? answer[_Held.item] : _Held.itemOf(from))
+          : null;
+      final kept = {...answer, _Held.writing: mark}..remove(_Held.item);
+      if (item != null) kept[_Held.item] = item;
+      pending.add(kept);
     }
 
     for (final (i, source) in answerSources.indexed) {
@@ -2224,7 +2252,7 @@ class _Run {
         dropReviews.add(id);
         if (outcome == ContactAnswerOutcome.applied) {
           final r = reviews.firstWhereOrNull((r) => r.reviewId == id);
-          if (_decode(r?.answer) case final answer?) keep(answer);
+          if (_decode(r?.answer) case final answer?) keep(answer, from: r);
         }
       }
       if (source.pendingIndex case final at? when at < held.pending.length) {
@@ -2340,20 +2368,65 @@ class _Run {
   /// done once [p]'s result is saved: taken off the pair in the same
   /// transaction, so that a run stopped later never plans them again. One
   /// that waits on another plan's writes as well stays until those are
-  /// saved too.
-  Future<void> _carriedOut(ContactLinkPlan p) async {
+  /// saved too. Those taken off are returned.
+  Future<List<Map<String, Object?>>> _carriedOut(ContactLinkPlan p) async {
     final marks = _answersOf.remove(p);
-    if (marks == null) return;
+    if (marks == null) return const [];
     final done = {
       for (final mark in marks)
         if ((_writesLeft[mark]?..remove(p))?.isEmpty ?? false) mark,
     };
-    if (done.isEmpty) return;
+    if (done.isEmpty) return const [];
+    final off = <Map<String, Object?>>[];
     await store.updatePair(pairId, (pair) {
       final h = _Held.parse(pair.held);
-      h.pending.removeWhere((a) => done.contains(a[_Held.writing]));
+      off.clear();
+      h.pending.removeWhere((a) {
+        final gone = done.contains(a[_Held.writing]);
+        if (gone) off.add(a);
+        return gone;
+      });
       return pair.copyWith(held: h.encode());
     });
+    return off;
+  }
+
+  /// [answers], just taken off the pair ([_carriedOut]) with the server
+  /// refusing the write that carried them out and nothing written: the
+  /// item each was given on is put back as Ron saw it ([_Held.item]),
+  /// unanswered, beside the refusal's own item (which offers only Retry),
+  /// so that he can choose again, the other side for one; a Retry's item
+  /// is the refusal's own, kept in its place. Nothing is queued again:
+  /// only his next answer, a Retry or a change on either side tries again.
+  /// Before the refusal's item is saved, in the same transaction.
+  Future<void> _askAgain(List<Map<String, Object?>> answers) async {
+    var back = 0;
+    for (final a in answers) {
+      final item = a[_Held.item];
+      if (item is! Map) continue;
+      final id = item['reviewId'];
+      final kind = item['kind'];
+      final data = item['data'];
+      final g = item['googleName'];
+      final h = item['graphId'];
+      if (id is! int || kind is! String || data is! Map) continue;
+      final put = await store.putReviewBack(
+        ContactReview(
+          reviewId: id,
+          pairId: pairId,
+          kind: kind,
+          googleName: g is String ? g : null,
+          graphId: h is String ? h : null,
+          data: jsonEncode(data),
+          createdAt: _time(item['createdAt']),
+        ),
+      );
+      if (put) back++;
+    }
+    if (back > 0) {
+      debugPrint('[myemail] contacts: $back answered items listed again, '
+          'their writes refused');
+    }
   }
 
   /// The refusals' items (Could not copy …, with Retry) as the run read
@@ -2717,6 +2790,8 @@ class _Run {
     await store.transaction(() async {
       await store.dropOps([op.opId]);
       await store.saveLink(_linkOf(held));
+      // Nothing made: an answer it carried out is asked again.
+      await _askAgain(await _carriedOut(p));
       await _saveReview(
         ContactReviewItem(
           kind: ContactReviewKind.refused,
@@ -2726,7 +2801,6 @@ class _Run {
           title: p.title,
         ),
       );
-      await _carriedOut(p);
     });
     tally.refused++;
     debugPrint('[myemail] contacts: a new contact was refused by '
@@ -2783,6 +2857,7 @@ class _Run {
           gAnswer: gAnswer,
           hAnswer: hAnswer,
           planned: planned,
+          wrote: googleWritten || graphWritten,
         );
         return;
       }
@@ -2902,12 +2977,14 @@ class _Run {
   /// A server would not take a pair's change: the pair is held as refused
   /// with both ids, under Needs a look, and is tried again when it changes.
   /// [planned] is the pair's plan as the run made it, before any plan made
-  /// again ([_update]): the answers it carries out are done with.
+  /// again ([_update]): the answers it carries out are done with, and
+  /// asked again where [wrote] says nothing reached either side this run.
   Future<void> _refusedPair(
     ContactLinkPlan p, {
     Map<String, Object?>? gAnswer,
     Map<String, Object?>? hAnswer,
     required ContactLinkPlan planned,
+    required bool wrote,
   }) async {
     final bases = p.basesAfter(
       googleAnswer: gAnswer == null ? null : syncedFromPerson(gAnswer),
@@ -2933,6 +3010,9 @@ class _Run {
     await store.transaction(() async {
       await store.deleteLinks(p.alsoRemove);
       await store.saveLink(_linkOf(held, googleWritten: gAnswer != null));
+      // An answer one side took is partly carried out: not asked again.
+      final answers = await _carriedOut(planned);
+      if (!wrote) await _askAgain(answers);
       await _saveReview(
         ContactReviewItem(
           kind: ContactReviewKind.refused,
@@ -2942,7 +3022,6 @@ class _Run {
           title: p.title,
         ),
       );
-      await _carriedOut(planned);
     });
     tally.refused++;
     debugPrint('[myemail] contacts: a change was refused by '
@@ -3101,6 +3180,9 @@ class _Run {
     } on ContactGone {
       return;
     } on ContactRefused {
+      debugPrint('[myemail] contacts: a hidden tag was not moved');
+    } on TagNotGiven {
+      // Whether it has one to move is not known: left as it is.
       debugPrint('[myemail] contacts: a hidden tag was not moved');
     }
   }
@@ -3997,6 +4079,35 @@ class _Held {
   /// is planned as any.
   static const writing = 'writing';
 
+  /// Under this key in a pending answer kept for its write ([writing]),
+  /// the Needs a look item it was given on, as the screen showed it: its
+  /// id, kind, contacts, data (as JSON, where a re-key reaches its ids)
+  /// and time. Should the server refuse that write with nothing written,
+  /// the item is put back, unanswered, for Ron to choose again
+  /// ([_Run._askAgain]); after a run that stopped first too. Only for the
+  /// answers in [asksAgain], each carried out by one plan. One kept
+  /// before 3.23.0 has none, and nothing is put back for it.
+  static const item = 'item';
+
+  /// The answers whose item is put back when their write is refused: Use
+  /// Gmail's, Use Hadco's and Use the other value, which leave a pair's
+  /// other side a tap away, and Retry, whose item is the refusal's own.
+  static const asksAgain = {'useGoogle', 'useGraph', 'useValue', 'retry'};
+
+  /// [r] as kept under [item]; null when its data is not JSON.
+  static Map<String, Object?>? itemOf(ContactReview r) {
+    final data = _Run._decode(r.data);
+    if (r.reviewId == null || data == null) return null;
+    return {
+      'reviewId': r.reviewId,
+      'kind': r.kind,
+      'googleName': ?r.googleName,
+      'graphId': ?r.graphId,
+      'data': data,
+      'createdAt': ?_ms(r.createdAt),
+    };
+  }
+
   /// A brake raised this run: added to its kind's open question, or asked
   /// anew where that one already has an answer queued. An item already
   /// asked about (the same contacts) is not asked about twice: it stays
@@ -4471,6 +4582,7 @@ class _Copies {
     extras: extras,
     notSynced: notSynced,
     asked: asked != null,
+    partWay: !pass.isEmpty,
     shortStops: shortStops,
     last: switch ((last, lastAt)) {
       (final l?, final at?) => l.shown(at),

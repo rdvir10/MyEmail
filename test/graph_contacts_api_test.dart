@@ -639,7 +639,7 @@ void main() {
       expect(
         q[r'$expand'],
         "singleValueExtendedProperties(\$filter=id eq "
-        "'$graphLinkPropertyId')",
+        "'$graphLinkPropertyId' or id eq 'String 0x001A')",
       );
 
       graph.purgeFromOutlook(ann);
@@ -839,7 +839,7 @@ void main() {
         expect(
           url.queryParameters[r'$expand'],
           "singleValueExtendedProperties(\$filter=id eq "
-          "'$graphLinkPropertyId')",
+          "'$graphLinkPropertyId' or id eq 'String 0x001A')",
         );
       }
 
@@ -854,6 +854,112 @@ void main() {
         Uri.parse('${part['url']}').queryParameters.containsKey(r'$expand'),
         isFalse,
       );
+    });
+
+    test('a read with the tag asks for the message class beside it, and a '
+        'contact answered without it is never taken for one without a tag',
+        () async {
+      final ann = graph.seed(
+        contact('Ann', 'Lee', 'ann@example.com'),
+        tag: 'people/c1',
+      );
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+      final cat = graph.seed(
+        contact('Cat', 'Fox', 'cat@example.com'),
+        tag: 'people/c3',
+      );
+      graph.expandDropped.add(cat);
+      final client = api();
+      const expand = "singleValueExtendedProperties(\$filter=id eq "
+          "'$graphLinkPropertyId' or id eq "
+          "'${GraphContactsApi.outlookOnlyCanary}')";
+
+      // In a batch: each part asks for both; the message class is taken
+      // out again, and one answered without it is not known, to be read
+      // alone.
+      final read = await client.getBatch([ann, bob, cat], withTag: true);
+      final batch = graph.requestsTo(r'$batch').single;
+      for (final part in (jsonDecode(batch.body) as Map)['requests'] as List) {
+        expect(
+          Uri.parse('${part['url']}').queryParameters[r'$expand'],
+          expand,
+        );
+      }
+      expect(read.found.keys.toSet(), {ann, bob});
+      expect(read.unknown, {cat});
+      expect(GraphContactsApi.tagOf(read.found[ann]!), 'people/c1');
+      expect(GraphContactsApi.tagOf(read.found[bob]!), isNull);
+      expect(read.found[ann]!['singleValueExtendedProperties'], [
+        {'id': graphLinkPropertyId, 'value': 'people/c1'},
+      ]);
+      expect(
+        read.found[bob]!.containsKey('singleValueExtendedProperties'),
+        isFalse,
+      );
+
+      // Alone: the same, and one answered without it throws, with the
+      // contact as read.
+      final alone = (await client.get(ann, withTag: true))!;
+      expect(graph.requests.last.url.queryParameters[r'$expand'], expand);
+      expect(alone['singleValueExtendedProperties'], [
+        {'id': graphLinkPropertyId, 'value': 'people/c1'},
+      ]);
+      expect(
+        (await client.get(bob, withTag: true))!
+            .containsKey('singleValueExtendedProperties'),
+        isFalse,
+      );
+      await expectLater(
+        client.get(cat, withTag: true),
+        throwsA(
+          isA<TagNotGiven>().having(
+            (e) => e.contact['givenName'],
+            'contact',
+            'Cat',
+          ),
+        ),
+      );
+      // A read that does not ask for the tag is as it was.
+      expect(await client.get(cat), isNotNull);
+      expect(graph.requests.last.url.queryParameters[r'$expand'], isNull);
+    });
+
+    test('every read with the tag stays under 2,000 characters, each part of '
+        'a batch as Graph would make it whole', () async {
+      final long = '${'AAMkAGI2T-_x' * 13}AAA=';
+      final sent = <http.Request>[];
+      final client = api(
+        client: MockClient((r) async {
+          sent.add(r);
+          return r.url.path.endsWith(r'$batch')
+              ? http.Response(
+                  '{"responses":[]}',
+                  200,
+                  headers: {'content-type': 'application/json'},
+                )
+              : http.Response('', 404);
+        }),
+      );
+      await client.get(long, whole: true, withTag: true);
+      await client.get(long, withTag: true);
+      expect((await client.getBatch([long], withTag: true)).unknown, {long});
+      final urls = [
+        for (final r in sent)
+          if (r.url.path.endsWith(r'$batch'))
+            for (final part
+                in (jsonDecode(r.body) as Map)['requests'] as List)
+              Uri.parse('${GraphContactsApi.base}${part['url']}')
+          else
+            r.url,
+      ];
+      expect(urls, hasLength(3));
+      for (final u in urls) {
+        expect('$u'.length, lessThan(2000), reason: u.path);
+        expect(
+          u.queryParameters[r'$expand'],
+          contains(GraphContactsApi.outlookOnlyCanary),
+        );
+      }
     });
   });
 

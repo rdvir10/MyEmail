@@ -2112,6 +2112,18 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
 
   String _versionOf(ContactSyncLook l) => _versions[l] ??= l.version;
 
+  /// The items the last status listed: one listed again after it went has
+  /// been put back, the server having refused the write its answer made,
+  /// to be answered again ([_shown]).
+  Set<int> _listedLast = const {};
+
+  /// Items gone that a status has shown gone with no sync running: the
+  /// run that took them is over, and they are done for the visit. One a
+  /// running sync took to carry out its answer is said to be carried out
+  /// until then, never done: its write may yet be refused, and the item
+  /// put back.
+  final Set<int> _over = {};
+
   /// Where the box for all stands this visit, settled by the first status:
   /// above the items if two or more pairs differed then; one that comes
   /// later goes under them, so that its coming pushes nothing down.
@@ -2129,12 +2141,26 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   }
 
   List<({ContactSyncLook look, bool listed})> _shown(
-    List<ContactSyncLook> looks,
-  ) {
+    List<ContactSyncLook> looks, {
+    required ContactSyncStatus? status,
+  }) {
     final listed = {for (final l in looks) l.id: l};
     for (final l in looks) {
-      if (!_seen.containsKey(l.id)) _order.add(l.id);
+      if (!_seen.containsKey(l.id)) {
+        _order.add(l.id);
+      } else if (!_listedLast.contains(l.id)) {
+        // Put back: the answer given here is no longer its, nor is the
+        // item done.
+        _gaveHere.remove(l.id);
+        _over.remove(l.id);
+      }
       _seen[l.id] = l;
+    }
+    if (status != null) {
+      _listedLast = listed.keys.toSet();
+      if (status.running == null) {
+        _over.addAll(_seen.keys.where((id) => !listed.containsKey(id)));
+      }
     }
     return [
       for (final id in _order)
@@ -2173,7 +2199,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
     final graphName =
         contactSyncAccountName(_byId(accounts, status?.graphAccountId));
     final looks = status?.needsALook ?? const <ContactSyncLook>[];
-    final shown = _shown(looks);
+    final shown = _shown(looks, status: status);
     final differing = [
       for (final l in looks)
         if (l.kind == ContactReviewKind.differing && l.answer == null) l,
@@ -2214,6 +2240,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
               graphName: graphName,
               done: !listed,
               doneWith: listed ? null : _doneWith(look),
+              carrying: !listed && !_over.contains(look.id),
               onAnswer: (choice, {candidateId}) => _act(
                 context,
                 () async {
@@ -2361,6 +2388,7 @@ class _LookTile extends StatelessWidget {
     required this.onAnswer,
     this.done = false,
     this.doneWith,
+    this.carrying = false,
   });
 
   final ContactSyncLook look;
@@ -2372,6 +2400,17 @@ class _LookTile extends StatelessWidget {
   /// done; with none, that it no longer needs a look.
   final bool done;
   final ContactSyncChoice? doneWith;
+
+  /// Done while a sync runs, which may be carrying out [doneWith]: an
+  /// answer a run carries out is said to be carried out, and not yet
+  /// done, for the server may refuse its write.
+  final bool carrying;
+
+  /// The answers that need no run: the item just goes.
+  static const _doneAtOnce = {
+    ContactSyncChoice.leaveAsTheyAre,
+    ContactSyncChoice.keepNewer,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -2403,6 +2442,12 @@ class _LookTile extends StatelessWidget {
           // it wraps as that one did and moves nothing under it.
           if (done)
             switch (doneWith) {
+              final choice? when carrying && !_doneAtOnce.contains(choice) =>
+                Text(
+                  'You chose ${_lookChoiceLabel(l, choice, graphName)}: '
+                  'the sync is carrying it out.',
+                  style: TextStyle(color: theme.colorScheme.primary),
+                ),
               final choice? => Text(
                   'You chose ${_lookChoiceLabel(l, choice, graphName)}: '
                   'done. No longer needs a look.',
@@ -3033,9 +3078,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 final m? when m.total > 0 => 'Merging: ${m.done} of '
                     '${_count(m.total, 'person', 'people')}',
                 _? => 'Merging…',
+                // One stopped part way (a sign-in Hadco asked for during
+                // it, after the sync's end) has begun: it carries on.
+                null when running != null && c.partWay =>
+                  'Merge stopped part way: it carries on once the sync has '
+                      'made its changes.',
                 null when running != null =>
                   'Merge asked for: it starts once the sync has made its '
                       'changes.',
+                null when stop != null && c.partWay =>
+                  'Merge stopped part way: it carries on once the sync can.',
                 null when stop != null =>
                   'Merge asked for: it starts once the sync can carry on.',
                 // The pass before stopped short, and the next waits the
@@ -3459,16 +3511,20 @@ class _DeletedScreen extends ConsumerWidget {
         children: [
           // The sync's deletes in Outlook are Graph's ordinary delete, as
           // the merge's are: where they land is said true either way
-          // ([_deletedCopiesKept]), and shorter, above the list.
+          // ([_deletedCopiesKept]), and shorter, above the list. The bin's
+          // copy is read without any of the details only Outlook keeps
+          // (outlook_only_details.dart), so a Restore brings none back.
+          // Kept short: at the largest text on a phone, a longer one puts
+          // the first Restore below the screen.
           const _Para(
             'Every contact the sync deleted in the last 30 days. Restore '
             'makes it again where it was deleted, with every detail that '
             'can be written, and on the other side too unless it is back '
-            'there already; the two are then paired. Photos, and '
-            "Outlook's fax, pager and anniversary, come back only from "
-            "Google's Trash or, for a while, from Outlook: in Deleted Items, "
-            'or under Recover items deleted from this folder at the top of '
-            'it.',
+            'there already; the two are then paired. Photos, and the '
+            'details only Outlook keeps (faxes and the like), come back '
+            "only from Google's Trash or, for a while, from Outlook: in "
+            'Deleted Items, or under Recover items deleted from this folder '
+            'at the top of it.',
             top: 16,
           ),
           if (deleted.isEmpty)

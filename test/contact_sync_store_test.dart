@@ -742,6 +742,40 @@ void main() {
 
           expect(await store.reviews(pair.pairId), isEmpty);
         });
+
+        test('taken away to be carried out, is put back in its place, with '
+            'its id and time and no answer', () async {
+          final pair = await pairOf();
+          final first = await store.saveReview(review(pair.pairId));
+          final answered =
+              await store.answerReview(first.reviewId!, 'useGoogle');
+          now = now.add(const Duration(minutes: 5));
+          final later = await store.saveReview(ContactReview(
+            pairId: pair.pairId,
+            kind: 'refused',
+            googleName: 'people/c1',
+            graphId: 'AAMk-1',
+            data: '{}',
+          ));
+          await store.dropReviews([first.reviewId!]);
+
+          expect(await store.putReviewBack(answered!), isTrue);
+          final back = await store.reviews(pair.pairId);
+          expect(back.map((r) => r.reviewId), [first.reviewId, later.reviewId]);
+          expect(back.first.answer, isNull);
+          expect(back.first.answeredAt, isNull);
+          expect(back.first.createdAt, first.createdAt);
+          expect(back.first.data, first.data);
+          // Once only, and never over one raised since in its stead.
+          expect(await store.putReviewBack(answered), isFalse);
+          await store.dropReviews([first.reviewId!]);
+          final raised = await store.saveReview(review(pair.pairId));
+          expect(await store.putReviewBack(answered), isFalse);
+          expect(
+            (await store.reviews(pair.pairId)).map((r) => r.reviewId),
+            [later.reviewId, raised.reviewId],
+          );
+        });
       });
 
       group('Recently deleted', () {
