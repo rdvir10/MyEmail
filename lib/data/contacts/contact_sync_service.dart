@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter/foundation.dart' show immutable;
 
 import '../../domain/error_report.dart';
@@ -133,17 +136,30 @@ abstract interface class ContactSyncService {
   /// several. Leave as they are, and keeping a clash's newer value, need no
   /// run: the item just goes. Delete it here too and Keep it only here act
   /// on the contact that is left: the one on the other side from
-  /// [ContactSyncLook.side].
-  Future<void> answerLook(
+  /// [ContactSyncLook.side]. True when the answer was taken; false when the
+  /// item was no longer listed (a run took it away meanwhile), and nothing
+  /// was answered.
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
   });
 
-  /// The same answer (Use Gmail's, Use Hadco's, Leave as they are) for
-  /// every new pair whose details differ that has no answer queued yet: an
-  /// answer given to one item stands.
-  Future<void> answerAllDiffering(ContactSyncChoice choice);
+  /// The same answer (Use Gmail's, Use Hadco's, Leave as they are) for the
+  /// new pairs whose details differ that the screen showed ([looks]: each
+  /// one's [ContactSyncLook.id] to the [ContactSyncLook.version] shown),
+  /// all saved in one step and queued for a run that starts at once
+  /// (Leave as they are needs none: the items just go). Only those still
+  /// listed, with no answer yet, and as they were shown, are answered: an
+  /// answer given to one item stands, and an item listed since the screen
+  /// was drawn, or planned again since with other details, is never
+  /// answered by it. The ids of those it answered, for the screen to say
+  /// so of them alone. Throws [ContactSyncRefused] when none could be
+  /// answered, for the screen to read the status again.
+  Future<Set<int>> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  );
 
   /// Restore a contact from Recently deleted ([ContactSyncDeleted.id]),
   /// queued for a run that starts at once.
@@ -163,12 +179,13 @@ abstract interface class ContactSyncService {
   /// ([ContactSyncStatus.copies]), queued for a run that starts at once:
   /// for each person whose synced Microsoft copy is paired and has held
   /// copies beside it, the synced copy stays, takes any detail only
-  /// another copy has, and the other copies are deleted (Outlook keeps
-  /// them in Deleted Items). People whose copies differ are listed
-  /// ([ContactSyncCopies.differing]) and touched only on Ron's answer.
-  /// Gmail's copies are not touched. The screen calls this only once
-  /// Hadco's backup file is saved. Before the first sync is done, or with
-  /// nothing to merge, it does nothing.
+  /// another copy has, and the other copies are deleted (Graph's ordinary
+  /// delete: Outlook keeps them for a while, in Deleted Items or among the
+  /// mailbox's recoverable items; which of the two is not yet checked).
+  /// People whose copies differ are listed ([ContactSyncCopies.differing])
+  /// and touched only on Ron's answer. Gmail's copies are not touched.
+  /// The screen calls this only once Hadco's backup file is saved. Before
+  /// the first sync is done, or with nothing to merge, it does nothing.
   Future<void> mergeCopies();
 
   /// Ron's answer for a person whose copies differ
@@ -246,14 +263,19 @@ class NoContactSync implements ContactSyncService {
   }) async {}
 
   @override
-  Future<void> answerLook(
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
-  }) async {}
+  }) async =>
+      false;
 
   @override
-  Future<void> answerAllDiffering(ContactSyncChoice choice) async {}
+  Future<Set<int>> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  ) async =>
+      const {};
 
   @override
   Future<void> restore(int deletedId) async {}
@@ -838,6 +860,28 @@ class ContactSyncLook {
   /// The answer queued, waiting for a run.
   final ContactSyncChoice? answer;
   final DateTime? createdAt;
+
+  /// What the item shows, in a short stable form (the first 16 hex of a
+  /// SHA-256, so no contact's values are in it): an answer for every pair
+  /// whose details differ ([ContactSyncService.answerAllDiffering]) counts
+  /// only on an item still as it was shown, never on one planned again
+  /// since with other details or other values.
+  String get version {
+    final shown = jsonEncode([
+      kind.name,
+      reason?.name,
+      side?.name,
+      title,
+      for (final c in candidates) [c.id, c.title],
+      for (final f in fields) [f.name, googleValues[f], graphValues[f]],
+      losing,
+      losingSide?.name,
+    ]);
+    final hash = const DartSha256().hashSync(utf8.encode(shown));
+    return [
+      for (final b in hash.bytes.take(8)) b.toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
 }
 
 @immutable
@@ -969,6 +1013,7 @@ class ContactSyncCopies {
     this.extras = 0,
     this.notSynced = 0,
     this.asked = false,
+    this.partWay = false,
     this.shortStops = 0,
     this.last,
     this.differing = const [],
@@ -989,6 +1034,10 @@ class ContactSyncCopies {
   /// A merge is queued or running: from [ContactSyncService.mergeCopies]
   /// until one pass has dealt with every person.
   final bool asked;
+
+  /// The pass under way has dealt with some people already, in a run that
+  /// stopped part way: the merge carries on from there.
+  final bool partWay;
 
   /// How many passes in a row stopped short because Hadco could not be
   /// read, while the merge is asked. After one, the next pass waits the
@@ -1060,10 +1109,15 @@ class ContactSyncCopiesPerson {
     this.copies = const [],
     this.answer,
     this.version = '',
+    this.tries = 0,
   });
 
   /// [answer] when Ron chose to leave them as they are.
   static const leave = 'leave';
+
+  /// After this many [tries], an answer no longer starts a sync each time
+  /// MyEmail is opened.
+  static const quietAfter = 3;
 
   /// Names the person for [ContactSyncService.answerCopies].
   final String key;
@@ -1082,6 +1136,12 @@ class ContactSyncCopiesPerson {
   /// ([ContactSyncService.answerCopies], [ContactSyncService
   /// .answerAllCopies]) counts only on these.
   final String version;
+
+  /// Syncs in a row that could not carry [answer] out: a copy changed or
+  /// gone from Contacts meanwhile, a write that did not hold, Hadco not
+  /// read. From [quietAfter] on, the answer waits for a sync that runs
+  /// anyway; each one still tries it.
+  final int tries;
 }
 
 /// One copy of a person whose copies differ.

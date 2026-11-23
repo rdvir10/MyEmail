@@ -69,7 +69,23 @@ class FakeContactSync implements ContactSyncService {
   final List<Set<String>?> questionItems = [];
   final List<({int id, ContactSyncChoice choice, String? candidateId})>
       lookAnswers = [];
-  final List<ContactSyncChoice> allDiffering = [];
+
+  /// Needs a look items [answerLook] finds gone, as a run takes one away
+  /// meanwhile: it answers nothing, and says so.
+  final Set<int> lookGone = {};
+
+  /// Each [answerAllDiffering] call: the answer, and the items shown, id
+  /// to version.
+  final List<({ContactSyncChoice choice, Map<int, String> looks})>
+      allDiffering = [];
+
+  /// What [answerAllDiffering] throws, as the runner refuses an answer
+  /// when none of the items shown is still as it was shown.
+  Object? allDifferingFailure;
+
+  /// The items [answerAllDiffering] says it answered, as the runner skips
+  /// those gone or changed since they were shown; null: all it was given.
+  Set<int>? allDifferingAnswered;
   final List<int> restored = [];
 
   /// Each [answerCopies] call: the person, the copy kept (null: leave
@@ -192,19 +208,25 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerLook(
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
   }) async {
     calls.add('answerLook');
     lookAnswers.add((id: lookId, choice: choice, candidateId: candidateId));
+    return !lookGone.contains(lookId);
   }
 
   @override
-  Future<void> answerAllDiffering(ContactSyncChoice choice) async {
+  Future<Set<int>> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  ) async {
     calls.add('answerAllDiffering');
-    allDiffering.add(choice);
+    if (allDifferingFailure case final failure?) throw failure;
+    allDiffering.add((choice: choice, looks: looks));
+    return allDifferingAnswered ?? looks.keys.toSet();
   }
 
   @override

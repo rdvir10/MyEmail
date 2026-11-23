@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 
+import 'outlook_only_details.dart';
+
 /// The two files contact sync's backup is saved as, before the first sync
 /// changes anything: the Google account's contacts as a vCard file, which
 /// Google Contacts imports, and the Microsoft account's as Outlook's CSV,
@@ -11,6 +13,8 @@ import 'package:html/parser.dart' as html_parser;
 /// Both are written from full listings, raw JSON as each server returned
 /// it, so that the files hold everything readable, not only what the sync
 /// copies: the fourth email, the fax, the anniversary, the custom field.
+/// Outlook's are listed with the details only it keeps
+/// ([outlookOnlyDetails]), which Graph gives only to a read that asks.
 /// Photos are not in either.
 abstract final class ContactBackup {
   /// The types the files are saved as. Android names a saved file by its
@@ -61,15 +65,19 @@ abstract final class ContactBackup {
   /// The header is Outlook on the web's own export's, followed by the
   /// columns of Outlook's desktop export that hold the rest of what Graph
   /// reads (initials, profession, children and categories, the last two
-  /// separated by semicolons, and each email's name), then two of this
-  /// file's own, Display Name and File As, so that neither is lost even
-  /// where Outlook's import has no place for it. A contact with no name
-  /// parts at all (one saved from a sender, or a company) has its display
-  /// name as its first name too, or its row would carry no name. Every
-  /// field is quoted, as Outlook quotes them; rows end in CRLF; the text
-  /// starts with a byte order mark, without which Outlook and Excel read
-  /// UTF-8 as the PC's own code page and every accent and Hebrew letter
-  /// comes out wrong.
+  /// separated by semicolons, the ISDN number, the PO boxes, the ID fields,
+  /// the user fields, and each email's name), then this file's own, so
+  /// that none is lost even where Outlook's import has no place for it:
+  /// Display Name, File As, and the customer ID, computer network name and
+  /// FTP site Outlook's form shows. The details only Outlook keeps (a fax,
+  /// a PO box, the anniversary: `outlookOnlyDetails`) fill their columns
+  /// where the contact was read with them. A contact with no name parts
+  /// at all (one saved from a sender, or a company) has its display name
+  /// as its first name too, or its row would carry no name. Every field is
+  /// quoted, as Outlook quotes them; rows end in CRLF; the text starts
+  /// with a byte order mark, without which Outlook and Excel read UTF-8 as
+  /// the PC's own code page and every accent and Hebrew letter comes out
+  /// wrong.
   static String outlookCsv(Iterable<Map<String, Object?>> contacts) {
     final out = StringBuffer('\u{FEFF}');
     out
@@ -153,11 +161,27 @@ abstract final class ContactBackup {
     'Profession',
     'Children',
     'Categories',
+    'ISDN',
+    'Business Address PO Box',
+    'Home Address PO Box',
+    'Other Address PO Box',
+    'Account',
+    'Government ID Number',
+    'Organizational ID Number',
+    'Referred By',
+    'Language',
+    'User 1',
+    'User 2',
+    'User 3',
+    'User 4',
     'E-mail Display Name',
     'E-mail 2 Display Name',
     'E-mail 3 Display Name',
     'Display Name',
     'File As',
+    'Customer ID',
+    'Computer Network Name',
+    'FTP Site',
   ];
 
   // --- vCard ----------------------------------------------------------------
@@ -818,6 +842,13 @@ abstract final class ContactBackup {
       row['$kind State'] = _str(a['state']);
       row['$kind Postal Code'] = _str(a['postalCode']);
       row['$kind Country/Region'] = _str(a['countryOrRegion']);
+    }
+    // The details only Outlook keeps, where the contact was read with
+    // them: the anniversary as the date it is, as the birthday.
+    for (final MapEntry(key: d, :value) in outlookOnlyValuesOf(c).entries) {
+      row[d.column] = d.kind == OutlookOnlyKind.date
+          ? _birthday(value)
+          : _str(value);
     }
     return row;
   }

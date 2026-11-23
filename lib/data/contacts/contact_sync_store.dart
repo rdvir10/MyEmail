@@ -748,6 +748,13 @@ abstract class ContactSyncStore {
 
   Future<void> dropReviews(Iterable<int> reviewIds);
 
+  /// Put back [review], which a run took away to carry out its answer,
+  /// with its id, kind, contacts, data and time, and no answer: the server
+  /// refused the write that answer made. False, and nothing changed, when
+  /// its id is in use, or when a review of its kind about the same
+  /// contacts is there now, raised since, which stands for it.
+  Future<bool> putReviewBack(ContactReview review);
+
   // --- Recently deleted -----------------------------------------------------
 
   Future<List<ContactBinEntry>> bin(int pairId);
@@ -1292,6 +1299,35 @@ class DriftContactSyncStore implements ContactSyncStore {
         .go();
   }
 
+  @override
+  Future<bool> putReviewBack(ContactReview review) =>
+      db.transaction(() async {
+        final reviewId = review.reviewId;
+        if (reviewId == null || await _review(reviewId) != null) return false;
+        final same = await (db.select(db.contactReviews)
+              ..where((t) =>
+                  t.pairId.equals(review.pairId) &
+                  t.kind.equals(review.kind) &
+                  t.googleName.equalsNullable(review.googleName) &
+                  t.graphId.equalsNullable(review.graphId)))
+            .get();
+        if (same.isNotEmpty) return false;
+        // Its own id, which no other review is given (AUTOINCREMENT), so
+        // that it is listed in its place and the screen knows it again.
+        await db.into(db.contactReviews).insert(
+              ContactReviewsCompanion.insert(
+                reviewId: Value(reviewId),
+                pairId: review.pairId,
+                kind: review.kind,
+                googleName: Value(review.googleName),
+                graphId: Value(review.graphId),
+                data: review.data,
+                createdAt: (review.createdAt ?? _now()).millisecondsSinceEpoch,
+              ),
+            );
+        return true;
+      });
+
   // --- Recently deleted -----------------------------------------------------
 
   @override
@@ -1613,7 +1649,7 @@ class MemoryContactSyncStore implements ContactSyncStore {
   DateTime _now() => _kept(_clock())!;
 
   // Each by its id, which only ever rises, so a map's order is the order
-  // the rows were added in.
+  // the rows were added in (a review put back goes back into its place).
   final Map<int, ContactPair> _pairs = {};
   final Map<int, ContactLink> _links = {};
   final Map<int, ContactSyncOp> _ops = {};
@@ -1960,6 +1996,36 @@ class MemoryContactSyncStore implements ContactSyncStore {
   @override
   Future<void> dropReviews(Iterable<int> reviewIds) async =>
       reviewIds.forEach(_reviews.remove);
+
+  @override
+  Future<bool> putReviewBack(ContactReview review) async {
+    final reviewId = review.reviewId;
+    if (reviewId == null || _reviews.containsKey(reviewId)) return false;
+    if (_reviews.values.any((r) =>
+        r.pairId == review.pairId &&
+        r.kind == review.kind &&
+        r.googleName == review.googleName &&
+        r.graphId == review.graphId)) {
+      return false;
+    }
+    // Back in its place by its id, as the database lists it.
+    final all = {
+      ..._reviews,
+      reviewId: ContactReview(
+        reviewId: reviewId,
+        pairId: review.pairId,
+        kind: review.kind,
+        googleName: review.googleName,
+        graphId: review.graphId,
+        data: review.data,
+        createdAt: review.createdAt ?? _now(),
+      ),
+    };
+    _reviews
+      ..clear()
+      ..addEntries(all.entries.sortedBy<num>((e) => e.key));
+    return true;
+  }
 
   // --- Recently deleted -----------------------------------------------------
 

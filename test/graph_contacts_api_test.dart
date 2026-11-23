@@ -9,6 +9,7 @@ import 'package:myemail/data/answer_limit.dart';
 import 'package:myemail/data/auth/microsoft_oauth.dart';
 import 'package:myemail/data/contacts/contact_mapping.dart';
 import 'package:myemail/data/contacts/contact_wire_errors.dart';
+import 'package:myemail/data/contacts/outlook_only_details.dart';
 import 'package:myemail/data/graph/graph_contacts_api.dart';
 import 'package:myemail/data/mail_engine.dart';
 import 'package:myemail/domain/error_report.dart';
@@ -208,6 +209,203 @@ void main() {
       );
       expect(graph.requests[3].url.queryParameters.containsKey(r'$select'),
           isFalse);
+    });
+
+    test('whole with the details only Outlook keeps: one filter names them '
+        'all, and only they come back, in the form Exchange gives', () async {
+      graph.seed({
+        ...contact('Ann', 'Lee', 'ann@example.com'),
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '212 555 0101'},
+          {'id': 'SystemTime 0x3A41', 'value': '2001-05-05T11:59:00Z'},
+          // Billing information: not asked for.
+          {
+            'id': 'String {00062008-0000-0000-C000-000000000046} Id 0x8535',
+            'value': 'not asked for',
+          },
+        ],
+      }, tag: 'people/c1');
+      graph.maxPageSize = 1;
+      graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+
+      final listed = await api().listAll(
+        folderId: main,
+        whole: true,
+        withOutlookOnly: true,
+      );
+      expect(listed, hasLength(2));
+      final expand = graph.requests.first.url.queryParameters[r'$expand']!;
+      final each = [
+        for (final d in outlookOnlyDetails) "id eq '${d.id}'",
+        "id eq '${GraphContactsApi.outlookOnlyCanary}'",
+      ];
+      expect(
+        expand,
+        "singleValueExtendedProperties(\$filter=${each.join(' or ')})",
+      );
+      expect(expand, contains("id eq 'String 0x3A24'"));
+      expect(expand, contains("id eq 'SystemTime 0x3A41'"));
+      // The message class asked for beside them is taken out again: only
+      // the details come back, and a contact holding none has no list.
+      expect(expand, contains("id eq 'String 0x001A'"));
+      expect(listed.first['singleValueExtendedProperties'], [
+        {'id': 'String 0x3a24', 'value': '212 555 0101'},
+        {'id': 'SystemTime 0x3a41', 'value': '2001-05-05T11:59:00Z'},
+      ]);
+      expect(listed.last.containsKey('singleValueExtendedProperties'), isFalse);
+      expect(listed.first.containsKey('fileAs'), isTrue);
+      expect(outlookOnlyValuesOf(listed.first), {
+        outlookOnlyDetails.firstWhere((d) => d.label == 'Business fax'):
+            '212 555 0101',
+        outlookOnlyDetails.firstWhere((d) => d.label == 'Anniversary'):
+            '2001-05-05T11:59:00Z',
+      });
+      expect(outlookOnlyValuesOf(listed.last), isEmpty);
+    });
+
+    test('a contact Graph answers without the details only Outlook keeps is '
+        'never read as holding none: the read throws', () async {
+      final ann = graph.seed({
+        ...contact('Ann', 'Lee', 'ann@example.com'),
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '212 555 0101'},
+        ],
+      });
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+      graph.expandDropped.add(bob);
+      final client = api();
+
+      await expectLater(
+        client.listAll(folderId: main, whole: true, withOutlookOnly: true),
+        throwsA(isA<OutlookOnlyRefused>()),
+      );
+      await expectLater(
+        client.get(bob, whole: true, withOutlookOnly: true),
+        throwsA(isA<OutlookOnlyRefused>()),
+      );
+      final one = (await client.get(ann, withOutlookOnly: true))!;
+      expect(one['singleValueExtendedProperties'], [
+        {'id': 'String 0x3a24', 'value': '212 555 0101'},
+      ]);
+      // A read that does not ask for them is as it was.
+      expect(await client.listAll(folderId: main, whole: true), hasLength(2));
+    });
+
+    test('every read with the details only Outlook keeps stays under 2,000 '
+        'characters, as sent and as Graph may write it in a next link',
+        () async {
+      // Ids as long as Exchange's run, and longer.
+      final long = '${'AAMkAGI2T-_x' * 13}AAA=';
+      expect(long, hasLength(160));
+      final sent = <Uri>[];
+      final client = api(
+        client: MockClient((r) async {
+          sent.add(r.url);
+          return r.url.path.endsWith('/contacts')
+              ? http.Response(
+                  '{"value":[]}',
+                  200,
+                  headers: {'content-type': 'application/json'},
+                )
+              : http.Response('', 404);
+        }),
+      );
+      // The merge's and the backup's listing, the merge's reads by id and
+      // its read-back after a write.
+      await client.listAll(folderId: long, whole: true, withOutlookOnly: true);
+      await client.get(long, whole: true, withOutlookOnly: true);
+      expect(sent, hasLength(2));
+
+      // Every byte but letters, digits and -_.~ percent-encoded.
+      String encodedAll(String s) => [
+        for (final b in utf8.encode(s))
+          RegExp(r'[A-Za-z0-9\-_.~]').hasMatch(String.fromCharCode(b))
+              ? String.fromCharCode(b)
+              : '%${b.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+      ].join();
+      // Some of Microsoft's front ends refuse a longer address.
+      const bound = 2000;
+      for (final u in sent) {
+        expect('$u'.length, lessThan(bound), reason: u.path);
+        final next = '${u.scheme}://${u.host}${u.path}?'
+            '${[
+              for (final MapEntry(:key, :value) in u.queryParameters.entries)
+                '${encodedAll(key)}=${encodedAll(value)}',
+            ].join('&')}&%24skip=3000';
+        expect(next.length, lessThan(bound), reason: u.path);
+      }
+      // With every detail in it.
+      final expand = sent.first.queryParameters[r'$expand']!;
+      for (final d in outlookOnlyDetails) {
+        expect(expand, contains("id eq '${d.id}'"));
+      }
+    });
+
+    test('a later page Graph answers without them throws too', () async {
+      for (final (i, name) in ['Ann', 'Bob', 'Cat'].indexed) {
+        graph.seed(contact(name, 'Lee', 'p$i@example.com'));
+      }
+      graph
+        ..maxPageSize = 2
+        ..expandOnFirstPageOnly = true;
+
+      await expectLater(
+        api().listAll(folderId: main, whole: true, withOutlookOnly: true),
+        throwsA(isA<OutlookOnlyRefused>()),
+      );
+      expect(graph.requests, hasLength(2));
+      // Kept on every page, the listing reads whole.
+      graph.expandOnFirstPageOnly = false;
+      expect(
+        await api().listAll(folderId: main, whole: true, withOutlookOnly: true),
+        hasLength(3),
+      );
+    });
+
+    test('a refusal of the details only Outlook keeps throws; nothing is '
+        'read without them', () async {
+      graph.seed(contact('Ann', 'Lee', 'ann@example.com'));
+      final asked = <http.Request>[];
+      final client = api(
+        client: MockClient((r) async {
+          asked.add(r);
+          if (r.url.queryParameters.containsKey(r'$expand')) {
+            return http.Response(
+              '{"error":{"code":"ErrorInvalidRequest","message":"x"}}',
+              400,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return graph.handle(r);
+        }),
+      );
+
+      // Said as what it is: the details not given, not a contact refused.
+      final refused = isA<OutlookOnlyRefused>()
+          .having((e) => e.status, 'status', 400)
+          .having((e) => e.reason, 'reason', 'ErrorInvalidRequest')
+          .having((e) => e.message, 'message', isNot(contains('take')));
+      await expectLater(
+        client.listAll(folderId: main, whole: true, withOutlookOnly: true),
+        throwsA(refused),
+      );
+      expect(asked, hasLength(1));
+      final ann = graph.idWithEmail('ann@example.com')!;
+      await expectLater(
+        client.get(ann, whole: true, withOutlookOnly: true),
+        throwsA(refused),
+      );
+      // A read that does not ask for them is refused as before.
+      await expectLater(
+        client.get(ann, withTag: true),
+        throwsA(
+          isA<ContactRefused>().having(
+            (e) => e,
+            'kind',
+            isNot(isA<OutlookOnlyRefused>()),
+          ),
+        ),
+      );
     });
   });
 
@@ -441,11 +639,46 @@ void main() {
       expect(
         q[r'$expand'],
         "singleValueExtendedProperties(\$filter=id eq "
-        "'$graphLinkPropertyId')",
+        "'$graphLinkPropertyId' or id eq 'String 0x001A')",
       );
 
       graph.purgeFromOutlook(ann);
       expect(await client.get(ann), isNull);
+    });
+
+    test('with the details only Outlook keeps, and the tag beside them in '
+        'one filter', () async {
+      final ann = graph.seed({
+        ...contact('Ann', 'Lee', 'ann@example.com'),
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A25', 'value': '212 555 0102'},
+        ],
+      }, tag: 'people/c1');
+      final client = api();
+
+      final read = (await client.get(ann, withOutlookOnly: true))!;
+      expect(read['singleValueExtendedProperties'], [
+        {'id': 'String 0x3a25', 'value': '212 555 0102'},
+      ]);
+      expect(
+        graph.requests.last.url.queryParameters[r'$select'],
+        graphContactSelect,
+      );
+      final both = (await client.get(
+        ann,
+        whole: true,
+        withTag: true,
+        withOutlookOnly: true,
+      ))!;
+      expect(GraphContactsApi.tagOf(both), 'people/c1');
+      expect(outlookOnlyValuesOf(both).values, ['212 555 0102']);
+      expect(
+        graph.requests.last.url.queryParameters[r'$expand'],
+        startsWith(
+          "singleValueExtendedProperties(\$filter=id eq "
+          "'$graphLinkPropertyId' or id eq 'String 0x3A24' or ",
+        ),
+      );
     });
 
     test('a contact Outlook deleted is found in Deleted Items', () async {
@@ -584,6 +817,149 @@ void main() {
         client.getBatch([ann]),
         throwsA(isA<ConnectionFailed>()),
       );
+    });
+
+    test('getBatch with the tag expands it in each part, as get does',
+        () async {
+      final ann = graph.seed(
+        contact('Ann', 'Lee', 'ann@example.com'),
+        tag: 'people/c1',
+      );
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+
+      final read = await api().getBatch([ann, bob], withTag: true);
+
+      expect(GraphContactsApi.tagOf(read.found[ann]!), 'people/c1');
+      expect(GraphContactsApi.tagOf(read.found[bob]!), isNull);
+      expect(read.found[ann]!.containsKey('fileAs'), isFalse);
+      final batch = graph.requestsTo(r'$batch').single;
+      for (final part in (jsonDecode(batch.body) as Map)['requests'] as List) {
+        final url = Uri.parse('${part['url']}');
+        expect(url.queryParameters[r'$select'], graphContactSelect);
+        expect(
+          url.queryParameters[r'$expand'],
+          "singleValueExtendedProperties(\$filter=id eq "
+          "'$graphLinkPropertyId' or id eq 'String 0x001A')",
+        );
+      }
+
+      // Without it, as before: no expand.
+      graph.requests.clear();
+      final plain = await api().getBatch([ann]);
+      expect(GraphContactsApi.tagOf(plain.found[ann]!), isNull);
+      final part = ((jsonDecode(graph.requestsTo(r'$batch').single.body)
+              as Map)['requests'] as List)
+          .single;
+      expect(
+        Uri.parse('${part['url']}').queryParameters.containsKey(r'$expand'),
+        isFalse,
+      );
+    });
+
+    test('a read with the tag asks for the message class beside it, and a '
+        'contact answered without it is never taken for one without a tag',
+        () async {
+      final ann = graph.seed(
+        contact('Ann', 'Lee', 'ann@example.com'),
+        tag: 'people/c1',
+      );
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+      final cat = graph.seed(
+        contact('Cat', 'Fox', 'cat@example.com'),
+        tag: 'people/c3',
+      );
+      graph.expandDropped.add(cat);
+      final client = api();
+      const expand = "singleValueExtendedProperties(\$filter=id eq "
+          "'$graphLinkPropertyId' or id eq "
+          "'${GraphContactsApi.outlookOnlyCanary}')";
+
+      // In a batch: each part asks for both; the message class is taken
+      // out again, and one answered without it is not known, to be read
+      // alone.
+      final read = await client.getBatch([ann, bob, cat], withTag: true);
+      final batch = graph.requestsTo(r'$batch').single;
+      for (final part in (jsonDecode(batch.body) as Map)['requests'] as List) {
+        expect(
+          Uri.parse('${part['url']}').queryParameters[r'$expand'],
+          expand,
+        );
+      }
+      expect(read.found.keys.toSet(), {ann, bob});
+      expect(read.unknown, {cat});
+      expect(GraphContactsApi.tagOf(read.found[ann]!), 'people/c1');
+      expect(GraphContactsApi.tagOf(read.found[bob]!), isNull);
+      expect(read.found[ann]!['singleValueExtendedProperties'], [
+        {'id': graphLinkPropertyId, 'value': 'people/c1'},
+      ]);
+      expect(
+        read.found[bob]!.containsKey('singleValueExtendedProperties'),
+        isFalse,
+      );
+
+      // Alone: the same, and one answered without it throws, with the
+      // contact as read.
+      final alone = (await client.get(ann, withTag: true))!;
+      expect(graph.requests.last.url.queryParameters[r'$expand'], expand);
+      expect(alone['singleValueExtendedProperties'], [
+        {'id': graphLinkPropertyId, 'value': 'people/c1'},
+      ]);
+      expect(
+        (await client.get(bob, withTag: true))!
+            .containsKey('singleValueExtendedProperties'),
+        isFalse,
+      );
+      await expectLater(
+        client.get(cat, withTag: true),
+        throwsA(
+          isA<TagNotGiven>().having(
+            (e) => e.contact['givenName'],
+            'contact',
+            'Cat',
+          ),
+        ),
+      );
+      // A read that does not ask for the tag is as it was.
+      expect(await client.get(cat), isNotNull);
+      expect(graph.requests.last.url.queryParameters[r'$expand'], isNull);
+    });
+
+    test('every read with the tag stays under 2,000 characters, each part of '
+        'a batch as Graph would make it whole', () async {
+      final long = '${'AAMkAGI2T-_x' * 13}AAA=';
+      final sent = <http.Request>[];
+      final client = api(
+        client: MockClient((r) async {
+          sent.add(r);
+          return r.url.path.endsWith(r'$batch')
+              ? http.Response(
+                  '{"responses":[]}',
+                  200,
+                  headers: {'content-type': 'application/json'},
+                )
+              : http.Response('', 404);
+        }),
+      );
+      await client.get(long, whole: true, withTag: true);
+      await client.get(long, withTag: true);
+      expect((await client.getBatch([long], withTag: true)).unknown, {long});
+      final urls = [
+        for (final r in sent)
+          if (r.url.path.endsWith(r'$batch'))
+            for (final part
+                in (jsonDecode(r.body) as Map)['requests'] as List)
+              Uri.parse('${GraphContactsApi.base}${part['url']}')
+          else
+            r.url,
+      ];
+      expect(urls, hasLength(3));
+      for (final u in urls) {
+        expect('$u'.length, lessThan(2000), reason: u.path);
+        expect(
+          u.queryParameters[r'$expand'],
+          contains(GraphContactsApi.outlookOnlyCanary),
+        );
+      }
     });
   });
 
@@ -997,6 +1373,39 @@ void main() {
         () => graph.seed({'givenName': 'Ann', 'gender': 'f'}),
         throwsArgumentError,
       );
+    });
+
+    test('an extended property needs an id in a form Graph takes and a text '
+        'value, and an expand filters on ids alone', () async {
+      final ann = graph.seed(contact('Ann', 'Lee', 'ann@example.com'));
+      final client = api();
+      for (final bad in <Map<String, Object?>>[
+        {'id': 'String 0x3A24', 'value': 42},
+        {'id': 'String 0x3A24'},
+        {'id': 'Business fax', 'value': '212 555 0101'},
+      ]) {
+        await expectLater(
+          client.update(ann, {
+            'singleValueExtendedProperties': [bad],
+          }),
+          throwsA(isA<ContactRefused>()),
+          reason: '$bad',
+        );
+      }
+      expect(graph.contact(ann)!['singleValueExtendedProperties'], isEmpty);
+      final response = await graph.client.get(
+        Uri.parse('https://graph.microsoft.com/v1.0/me/contacts/$ann').replace(
+          queryParameters: {
+            r'$expand':
+                "singleValueExtendedProperties(\$filter=startswith(id,'S'))",
+          },
+        ),
+        headers: {
+          'Authorization': 'Bearer t',
+          'Prefer': GraphContactsApi.prefer,
+        },
+      );
+      expect(response.statusCode, 400);
     });
 
     test('a whole read shows the three email slots', () async {

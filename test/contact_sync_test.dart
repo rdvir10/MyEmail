@@ -161,15 +161,40 @@ class Harness {
 
   List<http.Request> writesTo(String host) => [
     for (final r in requests)
-      if (r.url.host == host && r.method != 'GET') r,
+      if (r.url.host == host && !readsOnly(r)) r,
   ];
 
   /// Requests that change contacts, either side (the claim's PATCH on the
   /// folder left out).
   List<http.Request> get contactWrites => [
     for (final r in requests)
-      if (r.method != 'GET' && !r.url.path.contains('contactFolders')) r,
+      if (!readsOnly(r) && !r.url.path.contains('contactFolders')) r,
   ];
+
+  /// The parts of a Graph `$batch`, or none.
+  static List<Map<Object?, Object?>> partsOf(http.Request r) {
+    if (!r.url.path.endsWith(r'$batch')) return const [];
+    return [
+      for (final p in (jsonDecode(r.body) as Map)['requests'] as List)
+        if (p is Map) p,
+    ];
+  }
+
+  /// Whether [r] only reads: a GET, or a Graph `$batch` of GETs (Hadco's
+  /// contacts read by id twenty at a time, or their photos checked).
+  static bool readsOnly(http.Request r) =>
+      r.method == 'GET' ||
+      (partsOf(r).isNotEmpty && partsOf(r).every((p) => p['method'] == 'GET'));
+
+  /// Whether [r] reads the Outlook contact [id] by its id: alone, or as a
+  /// part of a `$batch`.
+  static bool readsContact(http.Request r, String id) =>
+      (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$id')) ||
+      partsOf(r).any(
+        (p) =>
+            p['method'] == 'GET' &&
+            Uri.parse('${p['url']}').path == '/me/contacts/$id',
+      );
 }
 
 Map<String, Object?> person(
@@ -261,6 +286,21 @@ String? companyOf(Map<String, Object?>? contact) {
   final orgs = contact['organizations'];
   if (orgs is List && orgs.isNotEmpty) return (orgs.first as Map)['name'] as String?;
   return null;
+}
+
+/// The Memory store, whose [failAt]th answer to a Needs a look item fails,
+/// as a write the database could not make.
+class _AnswersFailing extends MemoryContactSyncStore {
+  _AnswersFailing({super.clock});
+
+  int? failAt;
+  int _answers = 0;
+
+  @override
+  Future<ContactReview?> answerReview(int reviewId, String answer) {
+    if (++_answers == failAt) throw StateError('not saved');
+    return super.answerReview(reviewId, answer);
+  }
 }
 
 void main() {
@@ -424,6 +464,140 @@ void main() {
       expect(h.graph.count, 3);
     });
 
+    // Gmail as 3.22.1 read it: an address held only as text read as none.
+    http.Response? readAsBefore(http.Request r, http.Response response) {
+      if (r.method != 'GET' || r.url.host != 'people.googleapis.com') {
+        return null;
+      }
+      final json = jsonDecode(response.body);
+      if (json is! Map<String, Object?>) return null;
+      const textOnly = {'type', 'formattedType', 'formattedValue', 'metadata'};
+      void strip(Object? person) {
+        if (person is! Map) return;
+        final addresses = person['addresses'];
+        if (addresses is! List) return;
+        addresses.removeWhere(
+          (a) => a is Map && a.keys.every(textOnly.contains),
+        );
+      }
+
+      strip(json);
+      for (final c in json['connections'] as List? ?? const []) {
+        strip(c);
+      }
+      for (final found in json['responses'] as List? ?? const []) {
+        if (found is Map) strip(found['person']);
+      }
+      return http.Response(
+        jsonEncode(json),
+        response.statusCode,
+        headers: response.headers,
+      );
+    }
+
+    // Ann's Gmail home address is only text; Hadco's Ann has none.
+    Future<({String google, String graph})> annReadAsBefore() async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'addresses': [
+          {'type': 'home', 'formattedValue': '12 Elm Rd\nSpringfield'},
+        ],
+      });
+      final o = h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com'));
+      h.reshape = readAsBefore;
+      await h.firstSync();
+      h.reshape = null;
+      expect((h.graph.contact(o)!['homeAddress'] as Map?)?['street'], isNull);
+      return (google: g, graph: o);
+    }
+
+    test('the first run after the update lists Gmail whole: an address an '
+        'older build read as none reaches Hadco, Gmail untouched', () async {
+      final ann = await annReadAsBefore();
+      await h.store.updatePair(
+        (await h.pair()).pairId,
+        (p) => p.copyWith(googleMask: 1),
+      );
+      final full = h.google.fullListings;
+      h.requests.clear();
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.google.fullListings, full + 1);
+      expect(
+        (h.graph.contact(ann.graph)!['homeAddress'] as Map?)?['street'],
+        '12 Elm Rd\nSpringfield',
+      );
+      expect(h.writesTo('people.googleapis.com'), isEmpty);
+      expect(status.needsALook, isEmpty);
+      // Once: the run after takes changes again.
+      await h.later();
+      expect(h.google.fullListings, full + 1);
+    });
+
+    test('a Gmail detail the plan did not see is never written over: the '
+        'pair is planned again from the Person read', () async {
+      // Stored as read before, at the version Gmail still has; the feed
+      // brings nothing of Ann's in Gmail when Hadco gains an address.
+      final ann = await annReadAsBefore();
+      h.pass(const Duration(minutes: 30));
+      h.graph.editFromOutlook(ann.graph, {
+        'homeAddress': {'street': '4 Oak St', 'city': 'Leeds'},
+      });
+      final status = await h.later();
+      expect(status.halt, isNull);
+      // Changed on both sides as read now: Hadco's newer address won, and
+      // Gmail's is a tap away rather than gone.
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.losingSide, ContactSide.google);
+      expect(look.losing, '12 Elm Rd, Springfield');
+    });
+
+    test('a Gmail birthday kept only as text is never sent back: a change '
+        'with nothing else to write sends nothing', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'birthdays': [
+          {'text': 'Spring 1960'},
+        ],
+      });
+      final o = h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com'));
+      await h.firstSync();
+      // Google asks for a date on every change of a birthday: this one
+      // refuses an update with a birthday that has none.
+      h.google.refuse = (p) => (p['birthdays'] as List? ?? const []).any(
+        (b) => b is Map && b['date'] == null,
+      );
+      String? text() =>
+          ((h.google.person(g)!['birthdays']! as List).single as Map)['text']
+              as String?;
+
+      h.graph.editFromOutlook(o, {'birthday': '1960-03-05T11:59:00Z'});
+      h.requests.clear();
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty, reason: 'nothing refused');
+      expect(h.requestsTo(':updateContact'), isEmpty);
+      expect(text(), 'Spring 1960');
+
+      // With a job title to write as well, only that is sent.
+      h.graph.editFromOutlook(o, {
+        'birthday': '1960-03-06T11:59:00Z',
+        'jobTitle': 'Buyer',
+      });
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      final sent = h.requestsTo(':updateContact').single;
+      expect(sent.url.queryParameters['updatePersonFields'], 'organizations');
+      expect(text(), 'Spring 1960');
+
+      // And then nothing more.
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+
     test('an expired Outlook delta starts a new one, reconciled with the '
         'rows: nothing doubled, a change still synced', () async {
       final pairs = seedPairs(h, 3);
@@ -439,6 +613,67 @@ void main() {
         h.requests.where((r) => r.url.path.endsWith('/delta')).length,
         greaterThanOrEqualTo(2),
       );
+    });
+
+    test('the Hadco contacts a run reads by id go twenty to a batch: tags, '
+        'candidates, a contact a listing says was removed', () async {
+      // Twenty-five people in both books under other addresses: each Gmail
+      // one waits under Needs a look, its Hadco namesake held as its
+      // candidate, read again at every run.
+      for (var i = 0; i < 25; i++) {
+        h.google.seed(person('Jo$i', 'Smith', email: 'g$i@example.com'));
+        h.graph.seed(outlook('Jo$i', 'Smith', email: 'h$i@example.com'));
+      }
+      final pairs = seedPairs(h, 2);
+      bool alone(http.Request r) =>
+          r.method == 'GET' &&
+          r.url.host == 'graph.microsoft.com' &&
+          RegExp(r'/me/contacts/[^/]+$').hasMatch(r.url.path);
+      bool batch(http.Request r) =>
+          r.url.host == 'graph.microsoft.com' &&
+          r.url.path.endsWith(r'$batch');
+      await h.firstSync();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      final looks = status.needsALook.length;
+      expect(looks, greaterThanOrEqualTo(25));
+      // Each of the 27 contacts read with its tag: two batches.
+      expect(h.requests.where(alone), isEmpty);
+      expect(h.requests.where(batch), hasLength(2));
+
+      // A contact deleted in Outlook is confirmed in a batch of its own,
+      // the candidates in two. A part throttled past the wait and a part
+      // that failed are each read alone, as every read was.
+      h.graph
+        ..deleteFromOutlook(pairs[1].graph)
+        ..throttleInBatch(1, retryAfter: 60)
+        ..throttleInBatch(1, status: 500);
+      h.requests.clear();
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.requests.where(batch), hasLength(3));
+      expect(h.requests.where(alone), hasLength(2));
+      expect(status.needsALook, hasLength(looks));
+      expect(h.google.person(pairs[1].google), isNull);
+      expect(h.google.person(pairs[0].google), isNotNull);
+
+      // A batch refused as a whole: each contact in it is read alone.
+      var refused = false;
+      h.answer = (r) {
+        if (refused || !batch(r)) return null;
+        refused = true;
+        return http.Response(
+          '{"error":{"code":"BadRequest","message":"x"}}',
+          400,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      h.requests.clear();
+      status = await h.later();
+      h.answer = null;
+      expect(status.halt, isNull);
+      expect(h.requests.where(alone), hasLength(20));
+      expect(status.needsALook, hasLength(looks));
     });
   });
 
@@ -495,6 +730,39 @@ void main() {
       expect(await h.paired(), hasLength(1));
     });
 
+    test("Copy it anyway cut short before Outlook made the contact is kept, "
+        'and carried out once its create is given up', () async {
+      h.google.seed(person('Jo', 'Smith', email: 'jo@home.example'));
+      h.graph.seed(outlook('Jo', 'Smith', email: 'jo@work.example'));
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.side, ContactSide.google);
+      // The connection drops before Outlook makes anything.
+      h.before = (r) async {
+        if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+          throw http.ClientException('connection lost');
+        }
+      };
+      await h.sync.answerLook(look.id, ContactSyncChoice.copyAnyway);
+      await h.sync.syncNow();
+      h.before = null;
+      expect(h.graph.count, 1);
+      expect(await h.store.ops((await h.pair()).pairId), hasLength(1));
+
+      // Within the hour the copy may still show: Ron's answer is kept.
+      var status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 1);
+
+      // An hour on and not found: made, and paired.
+      status = await h.later(after: const Duration(minutes: 70));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 2);
+      final jo = h.google.nameWithEmail('jo@home.example');
+      expect((await h.paired()).where((l) => l.googleName == jo), hasLength(1));
+      expect(await h.store.ops((await h.pair()).pairId), isEmpty);
+    });
+
     test('an interrupted Outlook create is settled by the tag read with '
         'the copy, where nothing else would pair them', () async {
       // A name and a landline: no email to look the copy up by, and no
@@ -522,6 +790,98 @@ void main() {
       status = await h.later();
       expect(h.graph.count, 1);
       expect(h.google.count, 1);
+    });
+
+    group('a tag read Graph answers without the tag', () {
+      /// Solo Name, a name and a landline, copied to Outlook by the first
+      /// sync, whose create's answer is lost: the copy's id.
+      Future<String> copyCutShort() async {
+        h.google.seed({
+          'names': [
+            {'givenName': 'Solo', 'familyName': 'Name'},
+          ],
+          'phoneNumbers': [
+            {'value': '+1 202 555 0101', 'type': 'home'},
+          ],
+        });
+        String? copy;
+        h.reshape = (r, response) {
+          if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+            copy = (jsonDecode(response.body) as Map)['id'] as String;
+            throw http.ClientException('connection lost');
+          }
+          return null;
+        };
+        await h.firstSync();
+        h.reshape = null;
+        expect(h.graph.count, 1);
+        return copy!;
+      }
+
+      test('in a batch: the copy is read again alone, found by its tag, and '
+          'not made twice', () async {
+        final copy = await copyCutShort();
+        // Dropped in the batch; given to the copy read alone.
+        h.graph.expandDropped.add(copy);
+        h.before = (r) async {
+          if (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$copy')) {
+            h.graph.expandDropped.clear();
+          }
+        };
+        var status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt, isNull);
+        expect(status.needsALook, isEmpty);
+        expect(await h.paired(), hasLength(1));
+        h.before = null;
+        status = await h.later();
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+      });
+
+      test('alone too, for good: the run goes on with the copy as read, and '
+          'nothing is made twice, past the hour either', () async {
+        final copy = await copyCutShort();
+        h.graph.expandDropped.add(copy);
+        var status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt, isNull);
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+        // Its create given up, the two are asked about as two of one name.
+        status = await h.later();
+        expect(status.halt, isNull);
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+        expect(
+          status.needsALook.map((l) => l.reason),
+          everyElement(ContactReviewReason.sameName),
+        );
+      });
+
+      test('alone too, in a run that then stops: never kept as having none, '
+          'so read with its tag once Graph gives it', () async {
+        final copy = await copyCutShort();
+        h.graph.expandDropped.add(copy);
+        // MyEmail is put away as the copy is read alone: the run stops
+        // once its reads are done, before anything is planned.
+        h.before = (r) async {
+          if (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$copy')) {
+            unawaited(h.sync.stop());
+          }
+        };
+        var status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+
+        // The copy, listed again as it was, is read with its tag.
+        h.graph.expandDropped.clear();
+        h.before = null;
+        status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt, isNull);
+        expect(status.needsALook, isEmpty);
+        expect(await h.paired(), hasLength(1));
+        status = await h.later();
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+      });
     });
 
     test('a delete cut short between the bin and the server is finished '
@@ -564,6 +924,30 @@ void main() {
       expect(status.halt, isNull);
       expect(status.recentlyDeleted.single.state,
           ContactSyncDeletedState.deleted);
+      expect(await h.links(), hasLength(1));
+      expect(h.graph.count, 1);
+    });
+
+    test('...and so is one Microsoft keeps in Deleted Items, where a read '
+        'by its id still finds it: not taken for moved by Ron', () async {
+      h.graph.deletesToDeletedItems = true;
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.after = (r) {
+        if (r.method == 'DELETE') throw http.ClientException('lost');
+      };
+      await h.later();
+      h.after = null;
+      expect(
+        h.graph.contact(pairs[0].graph)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+      final status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect(status.needsALook, isEmpty);
       expect(await h.links(), hasLength(1));
       expect(h.graph.count, 1);
     });
@@ -638,6 +1022,197 @@ void main() {
       expect(h.graph.count, 2);
       expect(status.needsALook, hasLength(1));
     });
+
+    /// Ann's company differs between the two (Acme in Gmail, Acme Corp in
+    /// Hadco), listed under Needs a look by the first sync, beside a pair
+    /// whose Gmail contact Ron deletes: the next run's delete of its
+    /// partner fails, after that run's other writes.
+    Future<({String ann, String annH, ContactSyncLook look})>
+    differingThenFailedDelete() async {
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'DELETE') throw http.ClientException('lost');
+      };
+      h.pass(const Duration(hours: 2));
+      return (ann: ann, annH: annH, look: look);
+    }
+
+    /// After a run stopped by [differingThenFailedDelete]'s delete, Ron
+    /// puts his own company in Gmail: the next run copies it to Hadco.
+    Future<void> hisEditStands(String ann, String annH) async {
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.failed);
+      expect(companyOf(h.google.person(ann)), 'Acme Corp');
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Inc'},
+        ],
+      });
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Inc');
+      expect(companyOf(h.graph.contact(annH)), 'Acme Inc');
+      expect(status.needsALook, isEmpty);
+    }
+
+    test('an answer written by a run that then stops is carried out once: '
+        'an edit Ron makes before the next run stands', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      // Off the pair as soon as its write came back.
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('an answer 3.22.1 kept for a stopped run, stored as it stored it, '
+        'is carried out once too', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      // As 3.22.1 left a run that planned Use Hadco's and stopped before
+      // its write: the item gone, the answer on the pair.
+      final pairId = (await h.pair()).pairId;
+      await h.store.dropReviews([look.id]);
+      await h.store.updatePair(
+        pairId,
+        (p) => p.copyWith(
+          held: jsonEncode({
+            ...?jsonDecode(p.held ?? '{}') as Map<String, Object?>?,
+            'pending': [
+              {
+                'kind': 'useGraph',
+                'googleName': ann,
+                'graphId': annH,
+                'fields': [for (final f in look.fields) f.name],
+              },
+            ],
+          }),
+        ),
+      );
+      await h.sync.syncNow();
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('an answer that needs no write is done with at once, not kept for '
+        'a later run', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      // Ron makes Gmail's company Hadco's himself before he answers Use
+      // Hadco's: nothing is left to write.
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Corp'},
+        ],
+      });
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('answers whose run stops before their writes stay on the pair, '
+        'and the next run carries each out once', () async {
+      // Use Hadco's on a pair that differs, Same person on a new contact,
+      // Delete it here too on a contact kept at its delete.
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      final jo = h.google.seed(
+        person('Jo', 'Smith', email: 'jo@home.example'),
+      );
+      final joH = h.graph.seed(
+        outlook('Jo', 'Smith', email: 'jo@work.example'),
+      );
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      // Ron deletes P0 in Gmail, and edits its Hadco contact just as the
+      // sync reads it ahead of the delete: kept.
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+        }
+      };
+      var status = await h.later();
+      expect(status.halt, isNull);
+      ContactSyncLook lookOf(ContactReviewKind kind) =>
+          status.needsALook.singleWhere((l) => l.kind == kind);
+      final answers = {
+        lookOf(ContactReviewKind.differing).id: ContactSyncChoice.useGraph,
+        lookOf(ContactReviewKind.newContact).id: ContactSyncChoice.samePerson,
+        lookOf(ContactReviewKind.kept).id: ContactSyncChoice.deleteHereToo,
+      };
+      // Each answered with no run carrying it out yet.
+      for (final MapEntry(key: id, value: choice) in answers.entries) {
+        await h.sync.answerLook(id, choice);
+        await h.sync.stop();
+      }
+
+      // The run that plans them stops at its first write, before any of
+      // theirs lands.
+      h.before = (r) async {
+        if (!Harness.readsOnly(r) && !r.url.path.contains('contactFolders')) {
+          throw http.ClientException('lost');
+        }
+      };
+      h.pass(const Duration(minutes: 1));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.failed);
+      expect(companyOf(h.google.person(ann)), 'Acme');
+      expect(await h.paired(), hasLength(2));
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      expect(status.needsALook, isEmpty);
+      final held = jsonDecode((await h.pair()).held ?? '{}') as Map;
+      final kept = held['pending'] as List? ?? const [];
+      expect(
+        [for (final a in kept) (a as Map)['kind']],
+        unorderedEquals(['useGraph', 'samePerson', 'deleteHereToo']),
+      );
+      expect(kept.every((a) => (a as Map).containsKey('writing')), isTrue);
+
+      // The next run carries out all three.
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Corp');
+      expect(
+        (await h.paired()).where((l) => l.googleName == jo && l.graphId == joH),
+        hasLength(1),
+      );
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect((await h.pair()).held ?? '', isNot(contains('pending')));
+      expect(status.needsALook, isEmpty);
+
+      // Once: Ron's next edit of Ann's company stands.
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Inc'},
+        ],
+      });
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Inc');
+      expect(companyOf(h.graph.contact(annH)), 'Acme Inc');
+    });
   });
 
   group('refusals and failures', () {
@@ -666,6 +1241,57 @@ void main() {
       expect(h.google.count, 3);
       expect(status.needsALook, isEmpty);
       expect(await h.paired(), hasLength(3));
+    });
+
+    test("a refusal's item goes once what was refused goes through without "
+        'a Retry: Ron changes the contact', () async {
+      final ann = h.google.seed(person('Ann', 'Lee', email: 'ann@example.com'));
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com'),
+      );
+      final cy = h.google.seed(person('Cy', 'Day', email: 'cy@example.com'));
+      final cyH = h.graph.seed(outlook('Cy', 'Day', email: 'cy@example.com'));
+      final bad = h.google.seed(
+        person('Bad', 'Apple', email: 'bad@example.com'),
+      );
+      // Outlook takes no note over 40 characters, nor Bad Apple.
+      h.graph.refuse = (c) =>
+          '${c['personalNotes'] ?? ''}'.length > 40 || c['surname'] == 'Apple';
+      await h.firstSync();
+      Map<String, Object?> note(String text) => {
+        'biographies': [
+          {'value': text, 'contentType': 'TEXT_PLAIN'},
+        ],
+      };
+      const long = 'Met at the fair, and again at the trade show in May';
+      h.google.editFromGmail(ann, note(long));
+      h.google.editFromGmail(cy, note(long));
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(
+        [for (final l in status.needsALook) l.kind],
+        List.filled(3, ContactReviewKind.refused),
+      );
+
+      // Ron shortens Ann's note, which then goes to Outlook; gives Cy the
+      // same short note on both sides, which leaves nothing to write; and
+      // edits Bad Apple, whom Outlook now takes. All three go through at
+      // the next sync, with no Retry.
+      h.graph.refuse = (c) => '${c['personalNotes'] ?? ''}'.length > 40;
+      h.google.editFromGmail(ann, note('Met at the fair'));
+      h.google.editFromGmail(cy, note('Met at the fair'));
+      h.graph.editFromOutlook(cyH, {'personalNotes': 'Met at the fair'});
+      h.google.editFromGmail(bad, {
+        'organizations': [
+          {'name': 'Orchard Ltd'},
+        ],
+      });
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.contact(annH)!['personalNotes'], 'Met at the fair');
+      expect(h.graph.idWithEmail('bad@example.com'), isNotNull);
+      expect(await h.paired(), hasLength(3));
+      expect(status.needsALook, isEmpty);
     });
 
     test('a batch refused whole is sent one at a time', () async {
@@ -994,6 +1620,42 @@ void main() {
       expect(mobileOf(h.graph.contact(pairs[0].graph)), isNull);
     });
 
+    test("Use Hadco's on a pair the change brake holds waits for Apply them, "
+        'then is carried out', () async {
+      final pairs = seedPairs(h, 11, mobiles: true);
+      h.google.editFromGmail(pairs[0].google, {
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      h.graph.editFromOutlook(pairs[0].graph, {'companyName': 'Hadco'});
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {'phoneNumbers': null});
+      }
+      var status = await h.later();
+      expect(status.questions.single.items, hasLength(11));
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.needsALook.single.answer, ContactSyncChoice.useGraph);
+      expect(companyOf(h.google.person(pairs[0].google)), 'Acme');
+
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+      );
+      await h.sync.syncNow();
+      status = await h.later();
+      expect(status.questions, isEmpty);
+      expect(status.needsALook, isEmpty);
+      expect(companyOf(h.google.person(pairs[0].google)), 'Hadco');
+      expect(companyOf(h.graph.contact(pairs[0].graph)), 'Hadco');
+    });
+
     test('a listing with far fewer contacts stops the run before any '
         "write; That's right, carry on accepts it", () async {
       final pairs = seedPairs(h, 12);
@@ -1052,6 +1714,23 @@ void main() {
       h.requests.clear();
       await h.later();
       expect(h.contactWritesOf(), isEmpty);
+    });
+
+    test('...and leaves it as it is where Graph answers the read before the '
+        'move without it: nothing written, the run goes on', () async {
+      final made = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com'),
+      );
+      await h.firstSync();
+      final copy = h.graph.idWithEmail('ann@example.com')!;
+      final annNow = h.google.rekeyFromGmail(made);
+      h.graph.expandDropped.add(copy);
+      h.requests.clear();
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.tagOf(copy), made);
+      expect(h.contactWritesOf(), isEmpty);
+      expect((await h.paired()).single.googleName, annNow);
     });
 
     test("an Outlook edit made as the tag moves still reads as one: the "
@@ -1160,9 +1839,7 @@ void main() {
       var reads = 0;
       var edited = false;
       h.before = (r) async {
-        if (r.method == 'GET' &&
-            r.url.path.endsWith('/me/contacts/$annH') &&
-            ++reads == 2) {
+        if (Harness.readsContact(r, annH) && ++reads == 2) {
           edited = true;
           h.graph.editFromOutlook(annH, {'jobTitle': 'Boss'});
         }
@@ -1502,6 +2179,396 @@ void main() {
       expect((await h.status()).needsALook, isEmpty);
       expect(h.requests, isEmpty);
     });
+
+    test('a detail left as it was, then changed on one side: copied, and '
+        "the value it replaced listed, Use Hadco's instead a tap away",
+        () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      var look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair\nCall in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(
+        h.graph.contact(o)!['personalNotes'],
+        'Met at the fair\nCall in May',
+      );
+      look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, ContactReviewReason.notInStep);
+      expect(look.losingSide, ContactSide.graph);
+      expect(look.losing, 'Prefers email after 5');
+      // Each side as the sync left it.
+      expect(look.googleValues, {
+        ContactField.notes: 'Met at the fair\nCall in May',
+      });
+      expect(look.graphValues, {
+        ContactField.notes: 'Met at the fair\nCall in May',
+      });
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+      await h.sync.syncNow();
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      final notes = h.google.person(g)!['biographies']! as List;
+      expect((notes.single as Map)['value'], 'Prefers email after 5');
+      expect((await h.status()).needsALook, isEmpty);
+    });
+
+    test("Use Hadco's instead on a pair held as refused is carried out at "
+        'once, ending the refusal', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      var look = (await h.status()).needsALook.single;
+      await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+
+      // Ron edits the Gmail note into one Outlook will not take.
+      h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair, and again at the trade show in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      expect(
+        status.needsALook.map((l) => l.kind),
+        unorderedEquals([ContactReviewKind.clash, ContactReviewKind.refused]),
+      );
+      look = status.needsALook.firstWhere(
+        (l) => l.kind == ContactReviewKind.clash,
+      );
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      final notes = h.google.person(g)!['biographies']! as List;
+      expect((notes.single as Map)['value'], 'Prefers email after 5');
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      // The clash answered, and the refusal over: its item goes too.
+      expect(status.needsALook, isEmpty);
+      expect(
+        (await h.links()).single.state,
+        ContactLinkState.paired,
+        reason: 'no longer held as refused',
+      );
+    });
+
+    group('an answer whose write is refused', () {
+      const long = 'Met at the fair, and again at the trade show in May';
+      const hadcos = 'Prefers email after 5';
+
+      /// Ann, paired by the first sync, her notes differing: Gmail's one
+      /// that Outlook will not take.
+      Future<({String ann, String annH, ContactSyncLook shown})>
+          annDiffering() async {
+        final ann = h.google.seed({
+          ...person('Ann', 'Lee', email: 'a@example.com'),
+          'biographies': [
+            {'value': long, 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+        final annH = h.graph.seed({
+          ...outlook('Ann', 'Lee', email: 'a@example.com'),
+          'personalNotes': hadcos,
+        });
+        await h.firstSync();
+        final shown = (await h.status()).needsALook.single;
+        expect(shown.kind, ContactReviewKind.differing);
+        return (ann: ann, annH: annH, shown: shown);
+      }
+
+      /// The item answered is listed again as it was shown, unanswered,
+      /// beside the refusal's, and the answer is not kept to be done again.
+      Future<void> askedAgain(ContactSyncStatus status, ContactSyncLook shown)
+          async {
+        expect(status.halt, isNull);
+        expect(
+          status.needsALook.map((l) => l.kind),
+          unorderedEquals(
+            [ContactReviewKind.differing, ContactReviewKind.refused],
+          ),
+        );
+        final back = status.needsALook.first;
+        expect(back.kind, ContactReviewKind.differing);
+        expect(back.id, shown.id, reason: 'the same item, in its place');
+        expect(back.version, shown.version);
+        expect(back.answer, isNull);
+        expect((await h.pair()).held ?? '', isNot(contains('useGoogle')));
+      }
+
+      test("Use Gmail's: the item comes back as it was, beside the "
+          "refusal, and only an answer of Ron's tries again", () async {
+        final (:ann, :annH, :shown) = await annDiffering();
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        await h.sync.answerLook(shown.id, ContactSyncChoice.useGoogle);
+        await h.sync.syncNow();
+        var status = await h.status();
+        expect(h.graph.contact(annH)!['personalNotes'], hadcos);
+        await askedAgain(status, shown);
+
+        // Nothing loops by itself: the next run writes nothing.
+        h.requests.clear();
+        status = await h.later();
+        expect(status.halt, isNull);
+        expect(h.contactWrites, isEmpty);
+        expect(status.needsALook.map((l) => l.id), contains(shown.id));
+
+        // Ron chooses the other side: carried out at once, the refusal
+        // over with it.
+        await h.sync.answerLook(shown.id, ContactSyncChoice.useGraph);
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(status.halt, isNull);
+        final notes = h.google.person(ann)!['biographies']! as List;
+        expect((notes.single as Map)['value'], hadcos);
+        expect(status.needsALook, isEmpty);
+        expect((await h.links()).single.state, ContactLinkState.paired);
+      });
+
+      test("Use Gmail's for all: the one refused comes back, the others "
+          'are done', () async {
+        final (ann: _, :annH, shown: _) = await annDiffering();
+        h.google.seed(
+          person('Bob', 'Ray', email: 'b@example.com', company: 'GB'),
+        );
+        final bobH = h.graph.seed(
+          outlook('Bob', 'Ray', email: 'b@example.com', company: 'HB'),
+        );
+        var status = await h.later();
+        final looks = status.needsALook;
+        expect(looks, hasLength(2));
+        final ann = looks.firstWhere((l) => l.title == 'Ann Lee');
+
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        final answered = await h.sync.answerAllDiffering(
+          ContactSyncChoice.useGoogle,
+          {for (final l in looks) l.id: l.version},
+        );
+        expect(answered, hasLength(2));
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(companyOf(h.graph.contact(bobH)), 'GB');
+        expect(h.graph.contact(annH)!['personalNotes'], hadcos);
+        await askedAgain(status, ann);
+      });
+
+      test('one a stopped run left to the next comes back as well', () async {
+        final (ann: _, :annH, :shown) = await annDiffering();
+        await h.sync.answerLook(shown.id, ContactSyncChoice.useGoogle);
+        await h.sync.stop();
+        // The run that plans it stops at its write, before it is sent.
+        h.before = (r) async {
+          if (!Harness.readsOnly(r) && !r.url.path.contains('contactFolders')) {
+            throw http.ClientException('lost');
+          }
+        };
+        h.pass(const Duration(minutes: 1));
+        await h.sync.syncNow();
+        var status = await h.status();
+        expect(status.halt!.kind, ContactSyncHaltKind.failed);
+        expect(status.needsALook, isEmpty);
+
+        // The next run sends it, and Outlook refuses it.
+        h.before = null;
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        status = await h.later(after: const Duration(minutes: 6));
+        expect(h.graph.contact(annH)!['personalNotes'], hadcos);
+        await askedAgain(status, shown);
+      });
+
+      test('one a side took is partly carried out, and is not asked again',
+          () async {
+        final g = h.google.seed({
+          ...person('Ann', 'Lee', email: 'a@example.com'),
+          'biographies': [
+            {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+        final o = h.graph.seed({
+          ...outlook('Ann', 'Lee', email: 'a@example.com'),
+          'personalNotes': hadcos,
+        });
+        await h.firstSync();
+        var look = (await h.status()).needsALook.single;
+        await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+        h.google.editFromGmail(g, {
+          'biographies': [
+            {
+              'value': 'Met at the fair\nCall in May',
+              'contentType': 'TEXT_PLAIN',
+            },
+          ],
+        });
+        var status = await h.later();
+        look = status.needsALook.single;
+        expect(look.kind, ContactReviewKind.clash);
+
+        // Use Hadco's instead: Outlook takes its note back, Gmail will not.
+        h.google.refuse = (p) => '${p['biographies']}'.contains('Prefers');
+        await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(status.halt, isNull);
+        expect(h.graph.contact(o)!['personalNotes'], hadcos);
+        expect(status.needsALook.single.kind, ContactReviewKind.refused);
+        expect((await h.pair()).held ?? '', isNot(contains('useValue')));
+      });
+
+      test('Retry refused again: the refusal keeps its item, in its place',
+          () async {
+        final pairs = seedPairs(h, 1);
+        await h.firstSync();
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        h.google.editFromGmail(pairs[0].google, {
+          'biographies': [
+            {'value': long, 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+        var status = await h.later();
+        final refused = status.needsALook.single;
+        expect(refused.kind, ContactReviewKind.refused);
+
+        await h.sync.answerLook(refused.id, ContactSyncChoice.retry);
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(status.halt, isNull);
+        expect(h.graph.contact(pairs[0].graph)!['personalNotes'], isNull);
+        final again = status.needsALook.single;
+        expect(again.kind, ContactReviewKind.refused);
+        expect(again.id, refused.id);
+        expect(again.answer, isNull);
+      });
+
+      test("...and a new contact's, Retry refused again", () async {
+        h.graph.seed(outlook('Bad', 'Apple', email: 'bad@example.com'));
+        h.google.refuse = (p) => '${p['names']}'.contains('Bad');
+        await h.firstSync();
+        final refused = (await h.status()).needsALook.single;
+        expect(refused.kind, ContactReviewKind.refused);
+
+        await h.sync.answerLook(refused.id, ContactSyncChoice.retry);
+        await h.sync.syncNow();
+        final status = await h.status();
+        expect(status.halt, isNull);
+        expect(h.google.count, 0);
+        final again = status.needsALook.single;
+        expect(again.id, refused.id);
+        expect(again.answer, isNull);
+      });
+    });
+
+    test("a value written over in Outlook stays listed when Gmail's write "
+        'is planned again', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      final differing = (await h.status()).needsALook.single;
+      await h.sync.answerLook(differing.id, ContactSyncChoice.leaveAsTheyAre);
+
+      // A write each way: Gmail's note over Hadco's, never in step, and
+      // Hadco's new job title to Gmail. Ron adds a nickname in Gmail as
+      // the run reads it before its write.
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair\nCall in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      h.graph.editFromOutlook(o, {'jobTitle': 'Buyer'});
+      var edited = false;
+      h.before = (r) async {
+        if (!edited && r.method == 'GET' && r.url.path == '/v1/$g') {
+          edited = true;
+          h.google.editFromGmail(g, {
+            'nicknames': [
+              {'value': 'Annie'},
+            ],
+          });
+        }
+      };
+      final status = await h.later();
+      h.before = null;
+      expect(status.halt, isNull);
+      expect(edited, isTrue);
+      expect(
+        h.graph.contact(o)!['personalNotes'],
+        'Met at the fair\nCall in May',
+      );
+      final organizations = h.google.person(g)!['organizations']! as List;
+      expect((organizations.single as Map)['title'], 'Buyer');
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, ContactReviewReason.notInStep);
+      expect(look.losing, 'Prefers email after 5');
+    });
+
+    test('a clash item shows each side as the sync left it, beside the '
+        'value that lost', () async {
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      h.google.editFromGmail(pairs[0].google, {
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      h.pass(const Duration(minutes: 5));
+      h.graph.editFromOutlook(pairs[0].graph, {'companyName': 'Acme Ltd'});
+      final status = await h.later();
+      expect(status.halt, isNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, isNull, reason: 'changed on both sides');
+      expect(look.fields, [ContactField.company]);
+      // Outlook's is the newer edit: on both sides now, Gmail's the one
+      // that lost.
+      expect(look.googleValues, {ContactField.company: 'Acme Ltd'});
+      expect(look.graphValues, {ContactField.company: 'Acme Ltd'});
+      expect(look.losing, 'Acme');
+      expect(look.losingSide, ContactSide.google);
+    });
   });
 
   group('Outlook entries read short', () {
@@ -1516,10 +2583,7 @@ void main() {
       expect(status.halt, isNull);
       expect(status.last!.passedOver, 1);
       expect(
-        h.requests.where(
-          (r) => r.method == 'GET' &&
-              r.url.path.endsWith('/me/contacts/${pairs[0].graph}'),
-        ),
+        h.requests.where((r) => Harness.readsContact(r, pairs[0].graph)),
         isNotEmpty,
       );
       // Nothing it left out was cleared in Gmail.
@@ -1584,6 +2648,26 @@ void main() {
       );
       expect(row.reason, ContactHeldReason.kept);
       expect(row.googleName, isNull);
+    });
+
+    test('changed in Outlook and deleted in Gmail before a run: kept, and '
+        'Delete it in Hadco too deletes it the first time', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+      h.google.deleteFromGmail(pairs[0].google);
+      var status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      expect(look.reason, ContactReviewReason.changedSince);
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      expect(status.needsALook, isEmpty);
+      expect(status.recentlyDeleted.single.side, ContactSide.graph);
     });
 
     test('kept at its delete, the contact is kept as it is now: Delete it '
@@ -1676,6 +2760,161 @@ void main() {
       expect(h.graph.contact(pairs[0].graph), isNotNull);
       expect(status.recentlyDeleted, isEmpty);
       expect(status.needsALook.single.kind, ContactReviewKind.kept);
+    });
+
+    test('a contact deleted in Outlook just before its delete is deleted on '
+        'both sides already: not kept, and nothing more sent', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.deleteFromOutlook(pairs[0].graph);
+        }
+      };
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      // Ron's delete, not the sync's: nothing to bring back from here.
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.requests.where((r) => r.method == 'DELETE'), isEmpty);
+      expect(
+        h.graph.contact(pairs[0].graph)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+      expect(await h.links(), hasLength(1));
+    });
+
+    /// What 3.22.1 could leave when Microsoft's answer to the sync's delete
+    /// of a Hadco contact was lost and the contact lay in Deleted Items:
+    /// the next run kept it as moved out (a kept row, and its item under
+    /// Needs a look), and the one after marked its bin row done, the
+    /// contact not being in Contacts. P0's Gmail contact is the one Ron
+    /// deleted.
+    Future<({String gmail, String hadco, int binId})> keptBy3221() async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      final g = pairs[0].google;
+      final o = pairs[0].graph;
+      final pairId = (await h.pair()).pairId;
+      final row = (await h.links()).firstWhere((l) => l.graphId == o);
+      // A detail only Outlook keeps, in the bin's full copy.
+      h.graph.editFromOutlook(o, {'profession': 'Pilot'});
+      final raw = jsonEncode(h.graph.contact(o));
+      h.google.deleteFromGmail(g);
+      h.graph.deleteFromOutlook(o);
+      final entry = await h.store.addToBin(
+        ContactBinEntry(
+          pairId: pairId,
+          side: ContactSide.graph,
+          contactId: o,
+          partnerId: g,
+          raw: raw,
+          partnerBase: row.googleBase,
+          title: 'P0 Fam0',
+        ),
+      );
+      await h.store.markBinDone(entry.binId!);
+      await h.store.saveLink(
+        row.copyWith(
+          googleName: null,
+          googleEtag: null,
+          googleBase: null,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.kept,
+          partnerId: g,
+          partnerBase: row.googleBase,
+        ),
+      );
+      await h.store.saveReview(
+        ContactReview(
+          pairId: pairId,
+          kind: ContactReviewKind.kept.name,
+          graphId: o,
+          data: jsonEncode({
+            'kind': ContactReviewKind.kept.name,
+            'reason': ContactReviewReason.changedSince.name,
+            'graphId': o,
+            'samePerson': true,
+            'goneSide': ContactSide.google.name,
+            'title': 'P0 Fam0',
+          }),
+        ),
+      );
+      return (gmail: g, hadco: o, binId: entry.binId!);
+    }
+
+    test("3.22.1's kept contact lying in Deleted Items: Delete it in Hadco "
+        'too takes the item and the row away, and deletes nothing more',
+        () async {
+      final (:gmail, :hadco, binId: _) = await keptBy3221();
+      var status = await h.later();
+      expect(status.halt, isNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(
+        (await h.links()).where(
+          (l) => l.graphId == hadco || l.partnerId == gmail,
+        ),
+        isEmpty,
+      );
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect(h.graph.count, 1);
+      expect(h.google.count, 1);
+      expect(
+        h.graph.contact(hadco)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+    });
+
+    test("Restore of 3.22.1's kept contact lying in Deleted Items makes it "
+        "again in Contacts from Recently deleted's full copy, never pairs "
+        'with the one in Deleted Items, and the kept item then clears',
+        () async {
+      final (gmail: _, :hadco, :binId) = await keptBy3221();
+      await h.later();
+      await h.sync.restore(binId);
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      // Both sides made again, and paired with each other.
+      final g = h.google.nameWithEmail('p0@example.com');
+      final o = h.graph.idWithEmail('p0@example.com');
+      expect(g, isNotNull);
+      expect(o, isNotNull);
+      expect(o, isNot(hadco));
+      expect(h.graph.contact(o!)!['profession'], 'Pilot');
+      expect(
+        (await h.paired()).where((l) => l.googleName == g && l.graphId == o),
+        hasLength(1),
+      );
+      expect((await h.paired()).where((l) => l.graphId == hadco), isEmpty);
+      expect(status.recentlyDeleted, isEmpty);
+
+      // The kept item names the contact in Deleted Items, which no row
+      // holds now: Delete it in Hadco too takes it away, and nothing else.
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(h.graph.contact(o), isNotNull);
+      expect(h.google.person(g!), isNotNull);
+      expect(
+        (await h.paired()).where((l) => l.googleName == g && l.graphId == o),
+        hasLength(1),
+      );
     });
 
     test('an Outlook contact moved to another folder is held, not deleted, '
@@ -2028,6 +3267,13 @@ void main() {
   });
 
   group('the backup', () {
+    /// What Ron reads when Hadco would not give the details only Outlook
+    /// keeps.
+    const withoutOutlookOnly =
+        'Hadco would not give the details only Outlook keeps (fax numbers, '
+        'an anniversary and the like), so the backup was not saved and '
+        'nothing was merged.';
+
     test('both address books, whole, as a vCard and an Outlook CSV',
         () async {
       h.google.seed({
@@ -2062,6 +3308,89 @@ void main() {
       // Nothing changed, and nothing kept.
       expect(h.contactWritesOf(), isEmpty);
       expect((await h.status()).firstStarted, isFalse);
+    });
+
+    test("Hadco's file holds the details only Outlook keeps; refused them, "
+        'no file is made without them', () async {
+      h.graph.seed({
+        ...outlook('Cy', 'Day', email: 'cy@example.com'),
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '+1 212 555 0199'},
+          {'id': 'SystemTime 0x3A41', 'value': '2001-05-05T11:59:00Z'},
+        ],
+      });
+      await h.choose();
+      final csv = (await h.sync.backup(only: ContactSide.graph)).single;
+      expect(csv.contents, contains('"+1 212 555 0199"'));
+      expect(csv.contents, contains('"2001-05-05"'));
+
+      h.answer = (r) => r.url.queryParameters.containsKey(r'$expand')
+          ? http.Response(
+              '{"error":{"code":"ErrorInvalidRequest","message":"x"}}',
+              400,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      for (final only in [ContactSide.graph, null]) {
+        h.requests.clear();
+        // Said plainly, with the account's own name.
+        await expectLater(
+          h.sync.backup(only: only),
+          throwsA(
+            isA<ContactSyncRefused>().having(
+              (e) => e.message,
+              'message',
+              withoutOutlookOnly,
+            ),
+          ),
+        );
+        // Hadco listed whole once, with them, and not again without.
+        expect(
+          [
+            for (final r in h.requests)
+              if (r.url.host == 'graph.microsoft.com' &&
+                  r.url.path.endsWith('/contacts') &&
+                  !r.url.queryParameters.containsKey(r'$select'))
+                r.url.queryParameters.containsKey(r'$expand'),
+          ],
+          [true],
+        );
+      }
+      h.answer = null;
+    });
+
+    test("a later page of Hadco's answered without the details only Outlook "
+        'keeps: no file is made without them', () async {
+      for (var i = 0; i < 3; i++) {
+        h.graph.seed({
+          ...outlook('P$i', 'Fam$i', email: 'p$i@example.com'),
+          'singleValueExtendedProperties': [
+            {'id': 'String 0x3A24', 'value': '+1 212 555 01${10 + i}'},
+          ],
+        });
+      }
+      await h.choose();
+      h.graph
+        ..maxPageSize = 2
+        ..expandOnFirstPageOnly = true;
+      for (final only in [ContactSide.graph, null]) {
+        await expectLater(
+          h.sync.backup(only: only),
+          throwsA(
+            isA<ContactSyncRefused>().having(
+              (e) => e.message,
+              'message',
+              withoutOutlookOnly,
+            ),
+          ),
+        );
+      }
+      // Kept on every page, the file holds every fax.
+      h.graph.expandOnFirstPageOnly = false;
+      final csv = (await h.sync.backup(only: ContactSide.graph)).single;
+      for (var i = 0; i < 3; i++) {
+        expect(csv.contents, contains('"+1 212 555 01${10 + i}"'));
+      }
     });
 
     test('needs the accounts chosen first', () async {
@@ -2668,13 +3997,164 @@ void main() {
       final looks = (await h.status()).needsALook;
       expect(looks, hasLength(2));
       final annLook = looks.firstWhere((l) => l.title == 'Ann Lee');
+      // Both shown, and Ann answered before the screen showed it.
+      final shown = {for (final l in looks) l.id: l.version};
       await h.sync.answerLook(annLook.id, ContactSyncChoice.useGraph);
-      await h.sync.answerAllDiffering(ContactSyncChoice.useGoogle);
+      await h.sync.answerAllDiffering(ContactSyncChoice.useGoogle, shown);
       await h.sync.syncNow();
       expect(companyOf(h.google.person(a)), 'HA');
       expect(companyOf(h.graph.contact(aH)), 'HA');
       expect(companyOf(h.graph.contact(bH)), 'GB');
       expect(companyOf(h.google.person(b)), 'GB');
+    });
+
+    test("Use Hadco's for all answers only the pairs shown: one listed "
+        'since waits for an answer of its own', () async {
+      final a = h.google.seed(
+        person('Ann', 'Lee', email: 'a@example.com', company: 'GA'),
+      );
+      final aH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'a@example.com', company: 'HA'),
+      );
+      final b = h.google.seed(
+        person('Bob', 'Ray', email: 'b@example.com', company: 'GB'),
+      );
+      h.graph.seed(
+        outlook('Bob', 'Ray', email: 'b@example.com', company: 'HB'),
+      );
+      await h.firstSync();
+      final shown = {
+        for (final l in (await h.status()).needsALook) l.id: l.version,
+      };
+      expect(shown, hasLength(2));
+      // A pair a later run makes, whose details differ too, listed while
+      // the question for all was open.
+      final c = h.google.seed(
+        person('Cy', 'Fox', email: 'c@example.com', company: 'GC'),
+      );
+      h.graph.seed(outlook('Cy', 'Fox', email: 'c@example.com', company: 'HC'));
+      expect((await h.later()).needsALook, hasLength(3));
+
+      await h.sync.answerAllDiffering(ContactSyncChoice.useGraph, shown);
+      await h.sync.syncNow();
+      expect(companyOf(h.google.person(a)), 'HA');
+      expect(companyOf(h.google.person(b)), 'HB');
+      expect(companyOf(h.graph.contact(aH)), 'HA');
+      expect(companyOf(h.google.person(c)), 'GC', reason: 'never shown');
+      final left = (await h.status()).needsALook.single;
+      expect(left.title, 'Cy Fox');
+      expect(left.answer, isNull);
+    });
+
+    test('Leave all as they are takes away only the pairs shown', () async {
+      h.google.seed(person('Ann', 'Lee', email: 'a@example.com', company: 'A'));
+      h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com', company: 'B'));
+      h.google.seed(person('Bob', 'Ray', email: 'b@example.com', company: 'C'));
+      h.graph.seed(outlook('Bob', 'Ray', email: 'b@example.com', company: 'D'));
+      await h.firstSync();
+      final shown = {
+        for (final l in (await h.status()).needsALook) l.id: l.version,
+      };
+      h.google.seed(person('Cy', 'Fox', email: 'c@example.com', company: 'E'));
+      h.graph.seed(outlook('Cy', 'Fox', email: 'c@example.com', company: 'F'));
+      await h.later();
+      h.requests.clear();
+
+      await h.sync.answerAllDiffering(ContactSyncChoice.leaveAsTheyAre, shown);
+      expect((await h.status()).needsALook.single.title, 'Cy Fox');
+      expect(h.requests, isEmpty, reason: 'nothing to write');
+    });
+
+    test('a pair planned again since it was shown is not answered by the '
+        'answer for all, and with none left as shown it is refused',
+        () async {
+      final a = h.google.seed(
+        person('Ann', 'Lee', email: 'a@example.com', company: 'GA'),
+      );
+      h.graph.seed(
+        outlook('Ann', 'Lee', email: 'a@example.com', company: 'HA'),
+      );
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      // The same item, planned again with another detail that differs, as
+      // a pair made again is.
+      final pairId = (await h.pair()).pairId;
+      final review = (await h.store.reviews(pairId)).single;
+      final data = jsonDecode(review.data) as Map<String, Object?>;
+      data['fields'] = [...data['fields']! as List, 'jobTitle'];
+      await h.store.saveReview(review.copyWith(data: jsonEncode(data)));
+      expect((await h.status()).needsALook.single.id, look.id);
+
+      await expectLater(
+        h.sync.answerAllDiffering(
+          ContactSyncChoice.useGraph,
+          {look.id: look.version},
+        ),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      expect((await h.store.reviews(pairId)).single.isAnswered, isFalse);
+      await h.sync.syncNow();
+      expect(companyOf(h.google.person(a)), 'GA');
+    });
+
+    test('the answers for all are saved together: one that cannot be saved '
+        'leaves every pair unanswered', () async {
+      late _AnswersFailing store;
+      h = Harness(store: (clock) => store = _AnswersFailing(clock: clock));
+      for (final (i, name) in ['Ann', 'Bob', 'Cy'].indexed) {
+        h.google.seed(
+          person(name, 'Lee', email: '$i@example.com', company: 'G$i'),
+        );
+        h.graph.seed(
+          outlook(name, 'Lee', email: '$i@example.com', company: 'H$i'),
+        );
+      }
+      await h.firstSync();
+      final shown = {
+        for (final l in (await h.status()).needsALook) l.id: l.version,
+      };
+      expect(shown, hasLength(3));
+      store.failAt = 2;
+
+      await expectLater(
+        h.sync.answerAllDiffering(ContactSyncChoice.useGraph, shown),
+        throwsA(isA<StateError>()),
+      );
+      final pairId = (await h.pair()).pairId;
+      expect(
+        [for (final r in await h.store.reviews(pairId)) r.isAnswered],
+        [false, false, false],
+      );
+    });
+
+    test('an answer says whether it was taken, and the answer for all which '
+        'pairs it answered', () async {
+      h.google.seed(person('Ann', 'Lee', email: 'a@example.com', company: 'A'));
+      h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com', company: 'B'));
+      h.google.seed(person('Bob', 'Ray', email: 'b@example.com', company: 'C'));
+      h.graph.seed(outlook('Bob', 'Ray', email: 'b@example.com', company: 'D'));
+      await h.firstSync();
+      final looks = (await h.status()).needsALook;
+      final shown = {for (final l in looks) l.id: l.version};
+      final ann = looks.firstWhere((l) => l.title == 'Ann Lee').id;
+      final bob = looks.firstWhere((l) => l.title == 'Bob Ray').id;
+
+      // Ann answered on her own before the answer for all: it leaves her
+      // answer be, and says it answered Bob alone.
+      expect(await h.sync.answerLook(ann, ContactSyncChoice.useGraph), isTrue);
+      expect(
+        await h.sync.answerAllDiffering(
+          ContactSyncChoice.leaveAsTheyAre,
+          shown,
+        ),
+        {bob},
+      );
+      // Bob, left as he is, is gone: an answer to him now takes nothing.
+      expect(
+        await h.sync.answerLook(bob, ContactSyncChoice.useGoogle),
+        isFalse,
+      );
+      expect([for (final l in (await h.status()).needsALook) l.id], [ann]);
     });
 
     test('noticeSeen fires changed', () async {
@@ -4302,6 +5782,29 @@ void main() {
       return (orgs.first as Map)['title'] as String?;
     }
 
+    /// [id]'s value in Hadco of the extended property [property], its id
+    /// matched whatever the case of its letters, as Exchange matches it.
+    String? extended(String id, String property) {
+      final props = h.graph.contact(id)?['singleValueExtendedProperties'];
+      for (final p in props is List ? props : const []) {
+        if (p is Map &&
+            '${p['id']}'.toLowerCase() == property.toLowerCase()) {
+          return p['value'] as String?;
+        }
+      }
+      return null;
+    }
+
+    /// Give [id] in Hadco details only Outlook keeps, [values] by their
+    /// ids, as Ron would in Outlook.
+    void outlookOnly(String id, Map<String, String> values) =>
+        h.graph.editFromOutlook(id, {
+          'singleValueExtendedProperties': [
+            for (final MapEntry(:key, :value) in values.entries)
+              {'id': key, 'value': value},
+          ],
+        });
+
     test('the tablet pattern: copies the same are deleted, a detail only '
         'another copy has is added first, copies that differ are listed, '
         'and Gmail loses nothing', () async {
@@ -4650,6 +6153,74 @@ void main() {
       final status = await h.later();
       expect(status.copies.differing, isEmpty);
       expect(status.copies.people, 0);
+    });
+
+    test('a person whose copies no longer share an email or mobile goes from '
+        'the list, answer and all: nothing is merged, and no sync is left '
+        'due', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // Ron gives the other copy another email in Outlook: it now shares
+      // only the name with the synced copy. Then he answers from the list.
+      h.graph.editFromOutlook(c.others.single, {
+        'emailAddresses': [
+          {'address': 'cat.fox@other.example', 'name': 'Cat Fox'},
+        ],
+      });
+      await h.later();
+      expect((await h.status()).copies.differing.single.key, listed.key);
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
+      h.pass(const Duration(minutes: 10));
+      expect(await h.sync.startIfDue(), isFalse);
+    });
+
+    test("Leave them stands when no copy is the merge's any more: kept as a "
+        'leave on the differences Ron saw, the person stays left when the '
+        'copies are joined again', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // The other copy shares only the name for a while; Ron leaves them.
+      final email = h.graph.contact(c.others.single)!['emailAddresses'];
+      h.graph.editFromOutlook(c.others.single, {
+        'emailAddresses': [
+          {'address': 'cat.fox@other.example', 'name': 'Cat Fox'},
+        ],
+      });
+      await h.later();
+      await h.sync.answerCopies(listed.key, null, listed.version);
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, isEmpty);
+      h.pass(const Duration(minutes: 10));
+      expect(await h.sync.startIfDue(), isFalse);
+      // The email back: a merge asked for another person passes Cat over,
+      // as she was left, neither listed nor merged.
+      h.graph.editFromOutlook(c.others.single, {'emailAddresses': email});
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.differing, isEmpty);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
     });
 
     test('a copy whose photo cannot be checked passes its person over this '
@@ -5025,6 +6596,62 @@ void main() {
       }
     });
 
+    test('a detail the merge replaces where Gmail held something else is '
+        "never Hadco's answer: it goes by the usual rules, which the change "
+        'brake counts', () async {
+      final people = [
+        for (var i = 0; i < 12; i++)
+          copiesOf('P$i', 'Fam$i', notes: 'Met at the fair.'),
+      ];
+      // Eleven whose notes in Gmail differ from Hadco's, left so at the
+      // first sync; the twelfth's agree.
+      for (final p in people.take(11)) {
+        h.google.editFromGmail(p.google, {
+          'biographies': [
+            {'value': 'Lives in Leeds.', 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+      }
+      await h.firstSync();
+      for (final p in people) {
+        final x = await hadcoOf(p);
+        h.graph.editFromOutlook(x.others.single, {
+          'personalNotes': 'Met at the fair. Likes tea.',
+        });
+      }
+      await h.later();
+      expect((await h.status()).questions, isEmpty);
+      String? pendingAtDelete;
+      h.before = (r) async {
+        if (pendingAtDelete == null &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          pendingAtDelete = (await h.pair()).held;
+        }
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      // Hadco's answer for the twelfth alone.
+      expect(RegExp('useGraph').allMatches(pendingAtDelete!).length, 1);
+      final status = await h.status();
+      expect(status.copies.last!.people, 12);
+      String? gmailNote(String name) =>
+          ((h.google.person(name)!['biographies']! as List).single
+                  as Map)['value']
+              as String?;
+      // Eleven of Gmail's notes to replace: more than the change brake lets
+      // through, so it holds them for Ron.
+      expect(
+        [for (final q in status.questions) q.kind],
+        [ContactSyncQuestionKind.changes],
+      );
+      for (final p in people.take(11)) {
+        expect(gmailNote(p.google), 'Lives in Leeds.');
+      }
+      expect(gmailNote(people.last.google), 'Met at the fair. Likes tea.');
+    });
+
     test('passes that keep stopping short wait the usual hour, and after '
         'three the merge is given up, as its result says', () async {
       copiesOf('Ann', 'Cole');
@@ -5056,6 +6683,104 @@ void main() {
       expect(status.copies.asked, isFalse);
       expect(status.copies.last!.stoppedShort, isTrue);
       expect(h.graph.count, 2);
+    });
+
+    test('a read of the details only Outlook keeps refused: the merge stops '
+        'short with nothing deleted, never read without them', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      h.requests.clear();
+      // Graph turns away any read that asks for the business fax.
+      h.answer = (r) =>
+          (r.url.queryParameters[r'$expand'] ?? '').toLowerCase().contains(
+            '0x3a24',
+          )
+          ? http.Response(
+              '{"error":{"code":"BadRequest","message":"x"}}',
+              400,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.answer = null;
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isTrue);
+      expect(status.copies.shortStops, 1);
+      expect(h.graph.count, 2);
+      expect(
+        h.requests.where((r) => r.body.contains('"method":"DELETE"')),
+        isEmpty,
+      );
+      // The folder was asked for whole once, with them, and not again
+      // without.
+      expect(
+        [
+          for (final r in h.requests)
+            if (r.method == 'GET' &&
+                r.url.path.contains('/contactFolders/') &&
+                r.url.path.endsWith('/contacts') &&
+                !r.url.queryParameters.containsKey(r'$select'))
+              r.url.queryParameters.containsKey(r'$expand'),
+        ],
+        [true],
+      );
+    });
+
+    test('a copy Graph answers without the details only Outlook keeps is '
+        'never read as holding none: the merge stops short, nothing deleted',
+        () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      // Graph answers 200 with the other copy, but not its fax.
+      h.graph.expandDropped.add(a.others.single);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isTrue);
+      expect(status.copies.shortStops, 1);
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(extended(a.others.single, 'String 0x3A24'), '+1 212 555 0199');
+      expect(extended(a.synced, 'String 0x3A24'), isNull);
+    });
+
+    test("the merge reads every page of Hadco's with the details only "
+        'Outlook keeps: a later page without them stops the pass; kept, a '
+        'fax there is seen', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      // Bob's copies, on the listing's second page, hold different faxes.
+      outlookOnly(b.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(b.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      h.graph
+        ..maxPageSize = 2
+        ..expandOnFirstPageOnly = true;
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.copies.shortStops, 1);
+      expect(h.graph.count, 4);
+      // Kept on every page: Bob listed for his faxes, Ann merged.
+      h.graph.expandOnFirstPageOnly = false;
+      h.pass(const Duration(hours: 2));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.asked, isFalse);
+      expect(status.copies.differing.single.key, b.synced);
+      expect(h.graph.contact(b.others.single), isNotNull);
+      expect(h.graph.contact(a.others.single), isNull);
     });
 
     test("a photo Graph did not keep fails its person: the copy with it "
@@ -5105,6 +6830,188 @@ void main() {
       final status = await h.status();
       expect(status.copies.last!.failed, 0);
       expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(a.others.single), isNull);
+    });
+
+    test('a detail only Outlook keeps, a business fax on the other copy '
+        'alone, is written to the synced copy and read back there before '
+        'that copy is deleted', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      h.requests.clear();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.last!.added, 1);
+      expect(status.copies.last!.failed, 0);
+      expect(extended(a.synced, 'String 0x3A24'), '+1 212 555 0199');
+      expect(h.graph.contact(a.others.single), isNull);
+      // Written, read back with it, and only then the copy deleted.
+      int at(bool Function(http.Request r) test) => h.requests.indexWhere(test);
+      final written = at(
+        (r) =>
+            r.method == 'PATCH' &&
+            r.url.pathSegments.last == a.synced &&
+            r.body.contains('+1 212 555 0199'),
+      );
+      final readBack = at(
+        (r) =>
+            r.method == 'GET' &&
+            r.url.pathSegments.last == a.synced &&
+            (r.url.queryParameters[r'$expand'] ?? '').toLowerCase().contains(
+              '0x3a24',
+            ),
+      );
+      final deleted = at((r) => r.body.contains('"method":"DELETE"'));
+      expect(written, isNonNegative);
+      expect(readBack, greaterThan(written));
+      expect(deleted, greaterThan(readBack));
+      // Not a detail the sync copies: Gmail is not given it.
+      expect(jsonEncode(h.google.person(ann.google)), isNot(contains('0199')));
+    });
+
+    test('a detail only Outlook keeps that the synced copy does not show '
+        'when read back fails the person: the copy with it stays', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      // Graph answers the synced copy's reads by id without the fax, all
+      // else as asked.
+      h.reshape = (r, response) {
+        if (r.method != 'GET' ||
+            r.url.pathSegments.last != a.synced ||
+            !(r.url.queryParameters[r'$expand'] ?? '').toLowerCase().contains(
+              '0x3a24',
+            )) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>;
+        json['singleValueExtendedProperties'] = [
+          for (final p in json['singleValueExtendedProperties']! as List)
+            if (!'${(p as Map)['id']}'.toLowerCase().contains('0x3a24')) p,
+        ];
+        return http.Response(
+          jsonEncode(json),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.copies.last!.people, 0);
+      expect(status.copies.last!.failed, 1);
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(extended(a.others.single, 'String 0x3A24'), '+1 212 555 0199');
+      // Still to merge, for another try.
+      expect(status.copies.people, 1);
+    });
+
+    test('an anniversary only the other copy has holds when read back as '
+        "the same day in a form of Exchange's own", () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      // Joined by a mobile too: taken as a birthday would be.
+      for (final id in [a.synced, ...a.others]) {
+        h.graph.editFromOutlook(id, {'mobilePhone': '+1 202 555 0150'});
+      }
+      outlookOnly(a.others.single, {
+        'SystemTime 0x3A41': '2001-05-05T11:59:00Z',
+      });
+      await h.later();
+      h.reshape = (r, response) {
+        if (r.method != 'GET' || r.url.pathSegments.last != a.synced) {
+          return null;
+        }
+        return http.Response(
+          response.body.replaceAll(
+            '2001-05-05T11:59:00Z',
+            '2001-05-05T11:59:00.0000000Z',
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.copies.last!.failed, 0);
+      expect(status.copies.last!.people, 1);
+      expect(extended(a.synced, 'SystemTime 0x3A41'), '2001-05-05T11:59:00Z');
+      expect(h.graph.contact(a.others.single), isNull);
+    });
+
+    test('a work PO box only the other copy has is written and read back '
+        'before that copy goes; user fields that differ are listed', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      // Named properties of Outlook's own, in its contact property set.
+      const box = 'String {00062004-0000-0000-C000-000000000046} Id 0x804A';
+      const user1 = 'String {00062004-0000-0000-C000-000000000046} Id 0x804F';
+      outlookOnly(a.others.single, {box: 'PO Box 77'});
+      outlookOnly(b.synced, {user1: 'Gold'});
+      outlookOnly(b.others.single, {user1: 'Silver'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(extended(a.synced, box), 'PO Box 77');
+      expect(h.graph.contact(a.others.single), isNull);
+      final listed = status.copies.differing.single;
+      expect(listed.key, b.synced);
+      expect(
+        [
+          for (final x in listed.copies)
+            for (final d in x.details) (d.label, d.value),
+        ],
+        [('User 1', 'Gold'), ('User 1', 'Silver')],
+      );
+      expect(h.graph.contact(b.others.single), isNotNull);
+    });
+
+    test('copies holding different business faxes are listed, nothing '
+        'deleted; Keep these on the other copy brings its fax', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      expect(listed.key, a.synced);
+      expect(
+        [
+          for (final x in listed.copies)
+            for (final d in x.details) (d.label, d.value),
+        ],
+        [
+          ('Business fax', '+1 212 555 0100'),
+          ('Business fax', '+1 212 555 0199'),
+        ],
+      );
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(extended(a.synced, 'String 0x3A24'), '+1 212 555 0100');
+
+      await h.sync.answerCopies(listed.key, a.others.single, listed.version);
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(extended(a.synced, 'String 0x3A24'), '+1 212 555 0199');
       expect(h.graph.contact(a.others.single), isNull);
     });
 
@@ -5215,6 +7122,51 @@ void main() {
       expect(status.copies.asked, isTrue);
       expect(status.copies.shortStops, 1);
       expect(status.copies.last?.stoppedShort ?? false, isFalse);
+    });
+
+    test('an answer no sync can carry out stops starting one each time '
+        'MyEmail opens after three tries; every sync still tries it',
+        () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // Cat's copies cannot be read just now.
+      h.answer = (r) =>
+          r.method == 'GET' &&
+              [c.synced, ...c.others].contains(r.url.pathSegments.last)
+          ? http.Response(
+              '{"error":{"code":"x","message":"x"}}',
+              503,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
+      await h.sync.syncNow();
+      // Two more openings within the hour start a sync for it; then none.
+      for (final due in [true, true, false]) {
+        h.pass(const Duration(minutes: 10));
+        expect(await h.sync.startIfDue(), due);
+        await h.sync.syncNow();
+      }
+      final waiting = (await h.status()).copies.differing.single;
+      expect(waiting.answer, c.others.single);
+      expect(
+        waiting.tries,
+        greaterThanOrEqualTo(ContactSyncCopiesPerson.quietAfter),
+      );
+      // The usual hour's sync still tries it, and carries it out.
+      h.answer = null;
+      h.pass(const Duration(hours: 2));
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, isEmpty);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Manager');
+      expect(h.graph.contact(c.others.single), isNull);
     });
 
     test("the tablet's photos (3.22.1): copies with a photo each merge as "
@@ -5613,7 +7565,7 @@ void main() {
       expect(h.graph.contact(e.synced)!['officeLocation'], isNull);
       final left = ((jsonDecode((await h.pair()).held!) as Map)['copies']
           as Map)['left'] as Map;
-      expect(left[e.synced], {'fingerprint': '', 'rules': 2});
+      expect(left[e.synced], {'fingerprint': '', 'rules': 3});
       expect(status.copies.people, 0);
       // A real difference appears: the next pass lifts the leave and
       // lists Eve for Ron, nothing written or deleted.
@@ -5724,6 +7676,159 @@ void main() {
       expect(h.graph.photoOf(c.synced)!.bytes, [1]);
     });
 
+    test('an answer on a 3.22.0 listing, where a fax now differs, is dropped '
+        'and the person listed again: nothing written or deleted', () async {
+      final cat = copiesOf('Cat', 'Fox');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.setPhotoFromOutlook(c.synced, [1]);
+      h.graph.setPhotoFromOutlook(c.others.single, [2]);
+      outlookOnly(c.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(c.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      // As 3.22.0 left her: listed for her photos, which never read a fax,
+      // and answered with the other copy's.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final copies =
+            (held['copies'] as Map<String, Object?>?) ?? <String, Object?>{};
+        copies['differing'] = [
+          {
+            'key': c.synced,
+            'title': 'Cat Fox',
+            'fingerprint': '0' * 64,
+            'answer': c.others.single,
+            'copies': [
+              {
+                'key': c.synced,
+                'synced': true,
+                'details': [
+                  {'label': 'Photo', 'value': 'a photo'},
+                ],
+              },
+              {
+                'key': c.others.single,
+                'details': [
+                  {'label': 'Photo', 'value': 'another photo'},
+                ],
+              },
+            ],
+          },
+        ];
+        held['copies'] = copies;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      final status = await h.later();
+      final again = status.copies.differing.single;
+      expect(again.key, c.synced);
+      expect(again.answer, isNull);
+      expect(
+        {
+          for (final x in again.copies)
+            for (final d in x.details) d.label,
+        },
+        {'Business fax'},
+      );
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(extended(c.synced, 'String 0x3A24'), '+1 212 555 0100');
+      expect(h.graph.photoOf(c.synced)!.bytes, [1]);
+    });
+
+    test("an answer on 3.22.1's listing counts only while what differs is "
+        'what Ron saw: a fax that differs too lists the person again, '
+        'nothing deleted; a fax only the other copy has comes with it',
+        () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      final dan = copiesOf('Dan', 'Lee', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      final d = await hadcoOf(dan);
+      for (final x in [c, d]) {
+        h.graph.editFromOutlook(x.others.single, {'jobTitle': 'Manager'});
+      }
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, hasLength(2));
+      // As 3.22.1 kept them: listed under its rules, by the job titles
+      // alone, and answered with the other copy's.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        for (final l in (held['copies']! as Map)['differing']! as List) {
+          final listing = l as Map;
+          listing['rules'] = 2;
+          listing['answer'] = ((listing['copies']! as List)[1] as Map)['key'];
+        }
+        return p.copyWith(held: jsonEncode(held));
+      });
+      // Faxes 3.22.1 never read: Cat's copies hold different business
+      // faxes; only Dan's other copy has a home fax.
+      outlookOnly(c.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(c.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      outlookOnly(d.others.single, {'String 0x3A25': '+1 212 555 0177'});
+      final status = await h.later();
+      // Cat: listed again as she now is, the fax shown; nothing written or
+      // deleted.
+      final again = status.copies.differing.single;
+      expect(again.key, c.synced);
+      expect(again.answer, isNull);
+      expect(
+        {
+          for (final x in again.copies)
+            for (final detail in x.details) detail.label,
+        },
+        {'Job title', 'Business fax'},
+      );
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
+      expect(extended(c.synced, 'String 0x3A24'), '+1 212 555 0100');
+      // Dan: carried out, the home fax added and read back with his
+      // answer, then his other copy deleted.
+      expect(h.graph.contact(d.synced)!['jobTitle'], 'Manager');
+      expect(extended(d.synced, 'String 0x3A25'), '+1 212 555 0177');
+      expect(h.graph.contact(d.others.single), isNull);
+    });
+
+    test("a person Ron left under 3.22.1's rules stays left, stamped anew, "
+        'though a fax now differs too', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      await h.sync.answerCopies(listed.key, null, listed.version);
+      await h.sync.syncNow();
+      // As 3.22.1 kept the leave: the differences it was left on, under
+      // its rules.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final left = (held['copies']! as Map)['left']! as Map;
+        (left[c.synced]! as Map)['rules'] = 2;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      outlookOnly(c.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(c.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      // Not asked again: left, and its copies as they were.
+      expect(status.copies.differing, isEmpty);
+      expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      final left = ((jsonDecode((await h.pair()).held!) as Map)['copies']
+          as Map)['left'] as Map;
+      expect((left[c.synced] as Map)['rules'], 3);
+    });
+
     test('a person no longer listed, or a copy not its own, is refused',
         () async {
       final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
@@ -5817,11 +7922,14 @@ void main() {
         }
       };
       await h.sync.mergeCopies();
+      // Asked for, not begun.
+      expect((await h.status()).copies.partWay, isFalse);
       await h.sync.syncNow();
       h.before = null;
       var status = await h.status();
       expect(status.halt!.kind, ContactSyncHaltKind.putAway);
       expect(status.copies.asked, isTrue);
+      expect(status.copies.partWay, isTrue, reason: 'carried on, not begun');
       expect(status.copies.last, isNull);
       // A batch of twenty went, and what was queued before the stop.
       expect(h.graph.count, inInclusiveRange(30, 40));
@@ -5830,10 +7938,49 @@ void main() {
       status = await h.later();
       expect(status.halt, isNull);
       expect(status.copies.asked, isFalse);
+      expect(status.copies.partWay, isFalse);
       expect(status.copies.last!.people, 30);
       expect(status.copies.last!.deleted, 30);
       expect(h.graph.count, 30);
       expect(status.copies.people, 0);
+    });
+
+    test("a merge stopped part way leaves the sync's own end recorded: its "
+        'positions, its time and its counts, beside the stop', () async {
+      for (var i = 0; i < 30; i++) {
+        copiesOf('P$i', 'Fam$i');
+      }
+      await h.firstSync();
+      final first = await h.pair();
+      // A contact Ron adds in Gmail: the run that merges copies it first.
+      h.google.addFromGmail(person('Dee', 'New', email: 'dee@example.com'));
+      var stopped = false;
+      h.before = (r) async {
+        if (!stopped &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          stopped = true;
+          unawaited(h.sync.stop());
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      final status = await h.status();
+      final pair = await h.pair();
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      expect(status.copies.asked, isTrue);
+      // Read past: the next run reads only what changes after.
+      expect(pair.lastDoneAt, h.now);
+      expect(pair.googleSyncToken, isNot(first.googleSyncToken));
+      expect(pair.graphDeltaLink, isNot(first.graphDeltaLink));
+      expect(status.last!.complete, isTrue);
+      expect(status.last!.addedToGraph, 1);
+      expect(h.graph.idWithEmail('dee@example.com'), isNotNull);
+      // Counted once: Dee's copy, and the copies the merge deleted.
+      expect(status.graphCount, h.graph.count);
+      expect(status.googleCount, h.google.count);
     });
 
     test('a write that is refused, or does not hold, fails that person: '
@@ -5884,6 +8031,64 @@ void main() {
       expect(h.graph.contact(c.others.single), isNotNull);
       // Still to merge, for another try.
       expect(status.copies.people, 2);
+    });
+
+    test("every merge write sends the synced copy's display name, so Outlook "
+        'never puts one of its own in its place', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      // A display name Ron set by hand, and an added detail to write.
+      h.graph.editFromOutlook(a.synced, {'displayName': 'Cole, Ann (Hadco)'});
+      h.graph.editFromOutlook(a.others.single, {'jobTitle': 'Buyer'});
+      await h.later();
+      // Graph making one of its own on a write that leaves it out.
+      h.graph.remakeDisplayName = true;
+      h.requests.clear();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.last!.failed, 0);
+      final now = h.graph.contact(a.synced)!;
+      expect(now['jobTitle'], 'Buyer');
+      expect(now['displayName'], 'Cole, Ann (Hadco)');
+      final write = h.requests.firstWhere(
+        (r) => r.method == 'PATCH' && r.url.pathSegments.last == a.synced,
+      );
+      expect(
+        (jsonDecode(write.body) as Map)['displayName'],
+        'Cole, Ann (Hadco)',
+      );
+    });
+
+    test('a merge write answered with another display name fails the '
+        'person: nothing of theirs is deleted', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      h.graph.editFromOutlook(a.others.single, {'jobTitle': 'Buyer'});
+      await h.later();
+      h.reshape = (r, response) {
+        if (r.method != 'PATCH' || r.url.pathSegments.last != a.synced) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>;
+        json['displayName'] = 'Cole';
+        return http.Response(
+          jsonEncode(json),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.copies.last!.people, 0);
+      expect(status.copies.last!.failed, 1);
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(status.copies.people, 1);
     });
 
     test("the drop in Hadco's count does not trip the empty-answers guard "

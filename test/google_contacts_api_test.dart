@@ -96,7 +96,9 @@ void main() {
         'organizations,birthdays,biographies,relations,urls,imClients,'
         'memberships,clientData,metadata',
       );
-      expect(googleContactFieldsVersion, 1);
+      // 2: the same fields, an address held only as text read as the
+      // street (see googleContactFieldsVersion).
+      expect(googleContactFieldsVersion, 2);
     });
 
     test('a listing of every field asks for no token', () async {

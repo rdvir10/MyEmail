@@ -284,7 +284,8 @@ class _AppShellState extends ConsumerState<AppShell>
   /// "Contact sync has stopped: 12 deletions need your OK", with Open, and
   /// never a notification. Once per stop: the runner is told it was seen
   /// once it has been, or once the Contact sync screen, which shows it
-  /// already, is open.
+  /// already, is in front ([ContactSyncScreen.isOpen]: not while Duplicates
+  /// to merge or another screen of its own is over it, which shows none).
   void _sayContactSyncNotice(ContactSyncNotice notice, ContactSyncStatus s) {
     if (!mounted || !ref.read(contactSyncOnProvider)) return;
     if (notice.at == _contactNoticeSaid) return;
@@ -321,7 +322,7 @@ class _AppShellState extends ConsumerState<AppShell>
         onShown: () {
           if (shown) return;
           shown = true;
-          // The Contact sync screen opened meanwhile, and shows it.
+          // The Contact sync screen came in front meanwhile, and shows it.
           if (ContactSyncScreen.isOpen) messenger.removeCurrentSnackBar();
           seen();
         },
@@ -331,6 +332,11 @@ class _AppShellState extends ConsumerState<AppShell>
         label: 'Open',
         onPressed: () {
           if (!mounted) return;
+          // Said over a screen of its own (Duplicates to merge, say): back
+          // to the Contact sync screen under it, never a second one. Said
+          // over any other (a reply being written, say), one goes on top,
+          // and nothing under it is closed.
+          if (ContactSyncScreen.showOpen()) return;
           unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
             builder: (_) => const ContactSyncScreen(),
           )));

@@ -16,7 +16,13 @@ const googleContactFields =
     'names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,'
     'birthdays,biographies,relations,urls,imClients,memberships,clientData,'
     'metadata';
-const googleContactFieldsVersion = 1;
+
+/// [googleContactFields]' version, and that of how they are read: a pair
+/// stored under another takes a full Gmail listing at its next run, so
+/// every stored Gmail base meets the reading of now before anything is
+/// written from it. 2: an address held only as text is read as the
+/// street (it was read as none).
+const googleContactFieldsVersion = 2;
 
 /// Every field a Person can be read with, beside [googleContactFields]:
 /// for the read just before a delete, which goes into Recently deleted
@@ -587,6 +593,13 @@ String googlePersonField(ContactField field) => switch (field) {
 /// rewritten address leaves out `formattedValue` for the same reason, and
 /// keeps its `poBox`. A rewritten note is plain text.
 ///
+/// A detail [person] holds that the sync cannot read
+/// ([googleUnreadFields]) is left out of the update: never written over
+/// nor cleared, nor sent back as it is (Google asks for a date on every
+/// change of a birthday). With nothing else to write, [updatePersonFields]
+/// is empty and there is nothing to send; the runner never gets that far
+/// with one (`ContactWrite.googleUpdate` has it planned again first).
+///
 /// [seen] is Gmail's side as the plan read it. A list value in [person]
 /// that the plan never saw (neither there nor in [target]) was added
 /// since, and is kept: only values the plan saw are ever removed. The
@@ -601,7 +614,7 @@ GooglePersonUpdate googlePersonUpdate(
   SyncedContact? seen,
 }) {
   final norm = normaliser;
-  final wanted = fields.toSet();
+  final wanted = fields.toSet().difference(googleUnreadFields(person));
   final personFields = wanted.map(googlePersonField).toSet();
   // Google checks the contact source's etag, so the body carries that
   // source as read; fields not named are not sent, since they are not
@@ -1412,16 +1425,25 @@ Map<String, Object?>? _chosenUrl(List<Map<String, Object?>> entries) =>
     entries.firstWhereOrNull((u) => _type(u) == 'homepage') ??
     entries.firstOrNull;
 
+/// An address entry's parts; or, where Gmail holds the address only as
+/// one block of text (`formattedValue`, every part empty, as an address
+/// typed in one field or imported from one can be), that text as the
+/// street, as the backup keeps it: read as no address, it would never
+/// reach Outlook, and a fill from Outlook would write over it unseen. A
+/// PO box alone is left unread as before: a write keeps the box where it
+/// is ([_googleAddress]), and its text would only repeat it.
 ContactAddress? _addressFromGoogle(Map<String, Object?> entry) {
   final street = _string(entry['streetAddress']);
   final extended = _string(entry['extendedAddress']);
-  return ContactAddress.of(
+  final parts = ContactAddress.of(
     street: [street, extended].nonNulls.join('\n'),
     city: _string(entry['city']),
     region: _string(entry['region']),
     postalCode: _string(entry['postalCode']),
     country: _string(entry['country']) ?? _string(entry['countryCode']),
   );
+  if (parts != null || _string(entry['poBox']) != null) return parts;
+  return ContactAddress.of(street: _string(entry['formattedValue']));
 }
 
 ContactBirthday? _birthdayFromGoogle(Map<String, Object?> entry) {
@@ -1435,6 +1457,24 @@ ContactBirthday? _birthdayFromGoogle(Map<String, Object?> entry) {
     month: month,
     day: day,
   );
+}
+
+/// The details [person] holds in a form the sync cannot read, so reads as
+/// none: a birthday with no date to read (text alone, or a year with no
+/// day). The sync never saw what they hold, so never writes over them
+/// (see [googlePersonUpdate]), and the planner leaves them as they are.
+Set<ContactField> googleUnreadFields(Map<String, Object?> person) => {
+  if (_contactEntries(person, 'birthdays').firstOrNull case final b?
+      when _unreadBirthday(b))
+    ContactField.birthday,
+};
+
+/// A birthday entry holding something, text or part of a date, but no
+/// month and day to read ([_birthdayFromGoogle]): read as none.
+bool _unreadBirthday(Map<String, Object?> entry) {
+  if (_birthdayFromGoogle(entry) != null) return false;
+  return _string(entry['text']) != null ||
+      _map(entry['date']).values.any((v) => v is int && v != 0);
 }
 
 String? _string(Object? v) => v is String && v.trim().isNotEmpty ? v : null;

@@ -25,6 +25,7 @@ import 'contact_sync_service.dart';
 import 'contact_sync_store.dart';
 import 'contact_wire_errors.dart';
 import 'google_contacts_api.dart';
+import 'outlook_only_details.dart';
 
 /// An account's token for [scopes]: `OAuthTokenRepository.accessToken`.
 typedef ContactSyncToken =
@@ -564,7 +565,10 @@ class ContactSync implements ContactSyncService {
           'at them again.',
         );
       }
-      listed['answer'] = keep ?? ContactSyncCopiesPerson.leave;
+      // A new answer starts its tries afresh.
+      listed
+        ..['answer'] = keep ?? ContactSyncCopiesPerson.leave
+        ..remove('tries');
       return p.copyWith(held: held.encode());
     });
     _changed();
@@ -588,7 +592,9 @@ class ContactSync implements ContactSyncService {
           continue;
         }
         // The person is named by its synced copy.
-        listed['answer'] = key;
+        listed
+          ..['answer'] = key
+          ..remove('tries');
         any = true;
       }
       if (!any) {
@@ -680,48 +686,83 @@ class ContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerLook(
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
   }) async {
-    if (await _queueLook(lookId, choice, candidateId: candidateId)) {
-      unawaited(_go(again: true));
-    }
+    final queued = await _queueLook(lookId, choice, candidateId: candidateId);
+    if (queued ?? false) unawaited(_go(again: true));
     _changed();
+    return queued != null;
   }
 
   @override
-  Future<void> answerAllDiffering(ContactSyncChoice choice) async {
+  Future<Set<int>> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  ) async {
     final pair = await _attachedPair();
-    if (pair == null) return;
-    var run = false;
-    for (final r in await store.reviews(pair.pairId)) {
-      // Only those not answered yet: an answer given item by item stands.
-      if (r.kind != ContactReviewKind.differing.name ||
-          r.reviewId == null ||
-          r.isAnswered) {
-        continue;
+    if (pair == null) return const {};
+    // One read, and every answer saved together or none: hundreds of them
+    // at once.
+    final (:run, :answered) = await store.transaction(() async {
+      final answered = <int>{};
+      var run = false;
+      for (final r in await store.reviews(pair.pairId)) {
+        // Only one shown, as it was shown, with no answer yet: one listed
+        // since the screen was drawn (a run's new pairs) is never answered
+        // by it, nor one planned again with other details, and an answer
+        // given item by item stands.
+        final id = r.reviewId;
+        if (id == null ||
+            r.kind != ContactReviewKind.differing.name ||
+            r.isAnswered ||
+            looks[id] == null ||
+            looks[id] != _Look.of(r)?.version) {
+          continue;
+        }
+        if (await _queueReview(r, choice)) run = true;
+        answered.add(id);
       }
-      if (await _queueLook(r.reviewId!, choice)) run = true;
-    }
+      if (answered.isEmpty) {
+        throw const ContactSyncRefused(
+          'Those contacts have changed since they were shown. Look at them '
+          'again.',
+        );
+      }
+      return (run: run, answered: answered);
+    });
     _changed();
     if (run) unawaited(_go(again: true));
+    return answered;
   }
 
-  /// Queue [choice] on the review [lookId]; true when a run must carry it
-  /// out, false when it was done here (an item that just goes).
-  Future<bool> _queueLook(
+  /// Queue [choice] on the review [lookId]: true when a run must carry it
+  /// out, false when it was done here (an item that just goes), null when
+  /// there is no such item any more and nothing was answered.
+  Future<bool?> _queueLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
   }) async {
     final pair = await _attachedPair();
-    if (pair == null) return false;
+    if (pair == null) return null;
     final review = (await store.reviews(
       pair.pairId,
     )).firstWhereOrNull((r) => r.reviewId == lookId);
-    if (review == null) return false;
+    if (review == null) return null;
+    return _queueReview(review, choice, candidateId: candidateId);
+  }
+
+  /// Queue [choice] on [review], as just read: true when a run must carry
+  /// it out, false when it was done here.
+  Future<bool> _queueReview(
+    ContactReview review,
+    ContactSyncChoice choice, {
+    String? candidateId,
+  }) async {
+    final lookId = review.reviewId!;
     final look = _Look.of(review);
     if (look == null || !look.choices.contains(choice)) {
       throw ArgumentError.value(choice, 'choice', 'not offered here');
@@ -903,8 +944,12 @@ class ContactSync implements ContactSyncService {
       if (only == null || only == ContactSide.graph) {
         final folder =
             pair.graphFolderId ?? await run.graph((a) => a.mainFolderId());
+        // With the details only Outlook keeps (a fax, the anniversary): the
+        // file is the way back for a copy the merge deletes. Refused them,
+        // no file is saved, rather than one without them.
         contacts = await run.graph(
-          (a) => a.listAll(folderId: folder, whole: true),
+          (a) =>
+              a.listAll(folderId: folder, whole: true, withOutlookOnly: true),
         );
       }
       final at = _now();
@@ -933,6 +978,20 @@ class ContactSync implements ContactSyncService {
           ),
       ];
     } catch (e) {
+      // Said as what it is, with the account's own name: not a contact
+      // Microsoft would not take.
+      if (e is OutlookOnlyRefused) {
+        final name = accounts()
+            .firstWhereOrNull((a) => a.id == pair.graphAccountId)
+            ?.displayName
+            .trim();
+        throw ContactSyncRefused(
+          '${name == null || name.isEmpty ? 'Microsoft' : name} would not '
+          'give the details only Outlook keeps (fax numbers, an anniversary '
+          'and the like), so the backup was not saved and nothing was '
+          'merged.',
+        );
+      }
       throw run.readable(e);
     } finally {
       run.close();
@@ -1364,7 +1423,8 @@ class _Run {
     deltaLink = delta.deltaLink;
   }
 
-  /// What the listings left to be read by id.
+  /// What the listings left to be read by id. Outlook's go twenty to a
+  /// `$batch` ([_readGraphs]).
   Future<void> _readMore() async {
     // Outlook: an entry that lacks a synced property is read whole, and a
     // contact with no row is read with its hidden tag (once per change),
@@ -1382,10 +1442,23 @@ class _Run {
             sync._tags[id]?.changeKey != c['changeKey'])
           id,
     };
-    for (final id in {...wanted, ...tagged}) {
-      _checkStop();
-      await _readGraphId(id, withTag: tagged.contains(id));
-    }
+    await _readGraphs(
+      [
+        for (final id in wanted)
+          if (!tagged.contains(id)) id,
+      ],
+      (id, c) => _placeWhole(id, c, withTag: false),
+    );
+    await _readGraphs(
+      [...tagged],
+      (id, c) => _placeWhole(id, c, withTag: true),
+      withTag: true,
+      // Answered without its tag even alone: read, as a read without the
+      // tag sees it, and not kept as having none, so that a later read
+      // asks again. Left out instead, a copy the sync made could be made
+      // again once its create is given up.
+      tagUnknown: (id, c) => _placeWhole(id, c, withTag: false),
+    );
 
     // Gmail: a listing lags behind writes by minutes, so a contact the
     // sync wrote in the last hour, listed with another version than the
@@ -1453,10 +1526,7 @@ class _Run {
       now: now,
     );
     await _confirmGoogle(confirm.google);
-    for (final id in confirm.graph) {
-      _checkStop();
-      await _confirmGraph(id);
-    }
+    await _readGraphs({...confirm.graph}.toList(), _confirmed);
 
     final toRead = contactsToRead(
       links: inputs,
@@ -1481,11 +1551,13 @@ class _Run {
     await _confirmGoogle(
       toRead.google.where((n) => !heldGoogle.contains(n) && unreadGoogle(n)),
     );
-    for (final id in toRead.graph) {
-      if (heldGraph.contains(id) || !unreadGraph(id)) continue;
-      _checkStop();
-      await _confirmGraph(id);
-    }
+    await _readGraphs(
+      {
+        for (final id in toRead.graph)
+          if (!heldGraph.contains(id) && unreadGraph(id)) id,
+      }.toList(),
+      _confirmed,
+    );
     await _readHeldPairs(
       [
         for (final n in toRead.google)
@@ -1571,14 +1643,71 @@ class _Run {
   /// An Outlook contact asked about by id: there, gone (not found, or in
   /// Deleted Items, where Outlook's own delete puts it), or moved to
   /// another folder.
-  Future<void> _confirmGraph(String id) async {
-    final c = await graph((a) => a.get(id));
+  Future<void> _confirmGraph(String id) async =>
+      _confirmed(id, await graph((a) => a.get(id)));
+
+  /// [c], the Outlook contact [id] asked about as read by id, or null when
+  /// not found: gone, or placed ([_placeGraph]).
+  Future<void> _confirmed(String id, Map<String, Object?>? c) async {
     if (c == null) {
       graphRead.remove(id);
       graphGone.add(id);
       return;
     }
     await _placeGraph(id, c);
+  }
+
+  /// The Outlook contacts [ids] read by id, each handed to [place] as read
+  /// (null when not found), [GraphContactsApi.batchLimit] to a `$batch`
+  /// ([GraphContactsApi.getBatch]) and with their tags where [withTag]:
+  /// candidates are read at every run, and a GET apiece made a hundred or
+  /// more requests one after another. A part left with no answer
+  /// (throttled past the wait, or failed on its own, or answered without
+  /// the tag asked for), and every part of a batch refused as a whole, is
+  /// read alone, as all were before: what that read finds is placed, and
+  /// its failure is the run's, as any read's is. One Graph answers alone
+  /// without its tag too ([TagNotGiven]) goes to [tagUnknown], as read.
+  Future<void> _readGraphs(
+    List<String> ids,
+    Future<void> Function(String id, Map<String, Object?>? c) place, {
+    bool withTag = false,
+    Future<void> Function(String id, Map<String, Object?> c)? tagUnknown,
+  }) async {
+    const most = GraphContactsApi.batchLimit;
+    var unknown = 0;
+    for (var start = 0; start < ids.length; start += most) {
+      final asking = ids.sublist(start, min(start + most, ids.length));
+      _checkStop();
+      GraphBatchRead? read;
+      try {
+        read = await graph((a) => a.getBatch(asking, withTag: withTag));
+      } on ContactRefused {
+        read = null;
+      }
+      for (final id in asking) {
+        if (read?.found[id] case final c?) {
+          await place(id, c);
+        } else if (read != null && read.notFound.contains(id)) {
+          await place(id, null);
+        } else {
+          _checkStop();
+          final Map<String, Object?>? c;
+          try {
+            c = await graph((a) => a.get(id, withTag: withTag));
+          } on TagNotGiven catch (e) {
+            if (tagUnknown == null) rethrow;
+            unknown++;
+            await tagUnknown(id, e.contact);
+            continue;
+          }
+          await place(id, c);
+        }
+      }
+    }
+    if (unknown > 0) {
+      debugPrint('[myemail] contacts: Microsoft gave $unknown contacts '
+          'without their tags');
+    }
   }
 
   /// Why the answer given to [item], a held change, waits: its Outlook
@@ -1688,9 +1817,13 @@ class _Run {
   static bool _failsAlone(Exception e) =>
       e is ConnectionFailed || e is ContactRefused || e is ContactGone;
 
-  /// An Outlook contact read whole by id, with its tag where asked.
-  Future<void> _readGraphId(String id, {required bool withTag}) async {
-    final c = await graph((a) => a.get(id, withTag: withTag));
+  /// [c], an Outlook contact read whole by [id], with its tag where asked,
+  /// or null when not found.
+  Future<void> _placeWhole(
+    String id,
+    Map<String, Object?>? c, {
+    required bool withTag,
+  }) async {
     if (c == null || !_inContacts(c)) {
       // Gone or moved since the listing: left to the next listing, which
       // says so.
@@ -1990,6 +2123,12 @@ class _Run {
   /// can replace its own.
   final savedReviews = <(String, String?, String?), int>{};
 
+  /// The answers kept on the pair for their writes ([_saveFirst]), by the
+  /// plan whose writes carry each out, and for each answer ([_Held.writing])
+  /// those of its plans whose results are not saved yet.
+  final _answersOf = Map<ContactLinkPlan, Set<int>>.identity();
+  final _writesLeft = <int, Set<ContactLinkPlan>>{};
+
   /// True when the run completed.
   Future<bool> go() async {
     watch.start();
@@ -2031,8 +2170,13 @@ class _Run {
         ..heldChanges = plan.counts.heldChanges;
       await _saveFirst();
       await _write();
-      await _copies();
+      // The sync's own end is recorded before the merge of Hadco's copies,
+      // which can take minutes: a merge cut short (MyEmail put away, a
+      // sign-in) leaves the feeds' positions, the counts and the answers
+      // carried out as they are, not read and planned again next time.
       await _finish();
+      await _copies();
+      await _countCopies();
       return true;
     } catch (e) {
       await _halted(e);
@@ -2061,11 +2205,45 @@ class _Run {
     ];
     final outcomes = plan.answers;
 
-    // Answers planned: their items go, and the answers are kept on the
-    // pair until the run is done, so a run stopped before their writes
-    // plans them again.
+    // Answers planned: their items go, and each answer whose plan writes
+    // is kept on the pair, marked, until those writes come back
+    // ([_carriedOut]): a run stopped before them plans it again, and one
+    // stopped after them does not, for planned again it would write the
+    // side Ron chose over an edit he made since. Its plans are those that
+    // write a contact it names. One with nothing to write is carried out
+    // by this transaction, and not kept. A use answer or a Retry carried
+    // out by one plan keeps its item with it ([_Held.item]), to be put
+    // back should that write be refused.
     final pending = <Map<String, Object?>>[];
     final dropReviews = <int>{};
+    final writing = [
+      for (final p in plan.links)
+        if (p.writes) p,
+    ];
+    void keep(Map<String, Object?> answer, {ContactReview? from}) {
+      final g = answer['googleName'];
+      final h = answer['graphId'];
+      final name = g is String ? plan.reKeys[g] ?? g : null;
+      final by = [
+        for (final p in writing)
+          if ((name != null && p.googleName == name) ||
+              (h is String && p.graphId == h))
+            p,
+      ];
+      if (by.isEmpty) return;
+      final mark = _writesLeft.length;
+      _writesLeft[mark] = Set.identity()..addAll(by);
+      for (final p in by) {
+        (_answersOf[p] ??= {}).add(mark);
+      }
+      final item = by.length == 1 && _Held.asksAgain.contains(answer['kind'])
+          ? (from == null ? answer[_Held.item] : _Held.itemOf(from))
+          : null;
+      final kept = {...answer, _Held.writing: mark}..remove(_Held.item);
+      if (item != null) kept[_Held.item] = item;
+      pending.add(kept);
+    }
+
     for (final (i, source) in answerSources.indexed) {
       final outcome = i < outcomes.length ? outcomes[i] : null;
       if (outcome == null) continue;
@@ -2074,13 +2252,21 @@ class _Run {
         dropReviews.add(id);
         if (outcome == ContactAnswerOutcome.applied) {
           final r = reviews.firstWhereOrNull((r) => r.reviewId == id);
-          if (_decode(r?.answer) case final answer?) pending.add(answer);
+          if (_decode(r?.answer) case final answer?) keep(answer, from: r);
         }
       }
-      if (source.pendingIndex case final at?
-          when outcome != ContactAnswerOutcome.dropped &&
-              at < held.pending.length) {
-        pending.add(held.pending[at]);
+      if (source.pendingIndex case final at? when at < held.pending.length) {
+        final answer = held.pending[at];
+        switch (outcome) {
+          case ContactAnswerOutcome.applied:
+            keep(answer);
+          case ContactAnswerOutcome.waiting:
+            // Kept for a run that reads its contacts, with no mark: a mark
+            // is the run's that made it.
+            pending.add({...answer}..remove(_Held.writing));
+          case ContactAnswerOutcome.dropped:
+            break;
+        }
       }
     }
     // Items about contacts gone this run go too, and those of rows a merge
@@ -2097,6 +2283,12 @@ class _Run {
           dropReviews.add(r.reviewId!);
         }
       }
+    }
+    // And those of refusals over: a row held as refused paired again with
+    // nothing to write. One with writes drops its own as they are saved.
+    for (final p in noWrite) {
+      if (p.removeRow || p.state != ContactLinkState.paired) continue;
+      dropReviews.addAll(_refusedFor(p));
     }
 
     await store.transaction(() async {
@@ -2171,6 +2363,92 @@ class _Run {
     final rekeyed = reKeys.length;
     if (rekeyed > 0) debugPrint('[myemail] contacts: $rekeyed Gmail re-keys');
   }
+
+  /// The answers kept on the pair for [p]'s writes ([_saveFirst]) are
+  /// done once [p]'s result is saved: taken off the pair in the same
+  /// transaction, so that a run stopped later never plans them again. One
+  /// that waits on another plan's writes as well stays until those are
+  /// saved too. Those taken off are returned.
+  Future<List<Map<String, Object?>>> _carriedOut(ContactLinkPlan p) async {
+    final marks = _answersOf.remove(p);
+    if (marks == null) return const [];
+    final done = {
+      for (final mark in marks)
+        if ((_writesLeft[mark]?..remove(p))?.isEmpty ?? false) mark,
+    };
+    if (done.isEmpty) return const [];
+    final off = <Map<String, Object?>>[];
+    await store.updatePair(pairId, (pair) {
+      final h = _Held.parse(pair.held);
+      off.clear();
+      h.pending.removeWhere((a) {
+        final gone = done.contains(a[_Held.writing]);
+        if (gone) off.add(a);
+        return gone;
+      });
+      return pair.copyWith(held: h.encode());
+    });
+    return off;
+  }
+
+  /// [answers], just taken off the pair ([_carriedOut]) with the server
+  /// refusing the write that carried them out and nothing written: the
+  /// item each was given on is put back as Ron saw it ([_Held.item]),
+  /// unanswered, beside the refusal's own item (which offers only Retry),
+  /// so that he can choose again, the other side for one; a Retry's item
+  /// is the refusal's own, kept in its place. Nothing is queued again:
+  /// only his next answer, a Retry or a change on either side tries again.
+  /// Before the refusal's item is saved, in the same transaction.
+  Future<void> _askAgain(List<Map<String, Object?>> answers) async {
+    var back = 0;
+    for (final a in answers) {
+      final item = a[_Held.item];
+      if (item is! Map) continue;
+      final id = item['reviewId'];
+      final kind = item['kind'];
+      final data = item['data'];
+      final g = item['googleName'];
+      final h = item['graphId'];
+      if (id is! int || kind is! String || data is! Map) continue;
+      final put = await store.putReviewBack(
+        ContactReview(
+          reviewId: id,
+          pairId: pairId,
+          kind: kind,
+          googleName: g is String ? g : null,
+          graphId: h is String ? h : null,
+          data: jsonEncode(data),
+          createdAt: _time(item['createdAt']),
+        ),
+      );
+      if (put) back++;
+    }
+    if (back > 0) {
+      debugPrint('[myemail] contacts: $back answered items listed again, '
+          'their writes refused');
+    }
+  }
+
+  /// The refusals' items (Could not copy …, with Retry) as the run read
+  /// them.
+  late final _refusals = [
+    for (final r in reviews)
+      if (r.kind == ContactReviewKind.refused.name && r.reviewId != null) r,
+  ];
+
+  /// The ids of the refusals' items about [p]'s contacts, [p] a row saved
+  /// paired: the refusal is over, whatever ended it (a Retry, an answer
+  /// carried out on the pair, a change on either side), and its item goes
+  /// with it, in the same transaction. Every id such an item names is
+  /// [p]'s: a pair's names both, a new contact's the one refused.
+  List<int> _refusedFor(ContactLinkPlan p) => [
+    for (final r in _refusals)
+      if ((r.googleName != null || r.graphId != null) &&
+          (r.googleName == null ||
+              (plan.reKeys[r.googleName] ?? r.googleName) == p.googleName) &&
+          (r.graphId == null || r.graphId == p.graphId))
+        r.reviewId!,
+  ];
 
   /// [item] saved, replacing one of the same kind about the same contacts.
   Future<void> _saveReview(ContactReviewItem item) async {
@@ -2432,7 +2710,8 @@ class _Run {
     }
   }
 
-  /// A create landed: its row saved and its journal entry cleared in one.
+  /// A create landed: its row saved, its journal entry cleared and the
+  /// answers it carries out done with, in one.
   Future<void> _created(
     ContactLinkPlan p,
     ContactSyncOp op,
@@ -2460,7 +2739,11 @@ class _Run {
           ? now
           : (p.linkId == null ? null : linkById[p.linkId]?.googleWrittenAt),
     );
-    await store.completeCreates({op.opId: link});
+    await store.transaction(() async {
+      await store.completeCreates({op.opId: link});
+      await store.dropReviews(_refusedFor(p));
+      await _carriedOut(p);
+    });
     copiedFrom.add((create.side.other, create.sourceId));
     if (onGoogle) {
       googleMade++;
@@ -2507,6 +2790,8 @@ class _Run {
     await store.transaction(() async {
       await store.dropOps([op.opId]);
       await store.saveLink(_linkOf(held));
+      // Nothing made: an answer it carried out is asked again.
+      await _askAgain(await _carriedOut(p));
       await _saveReview(
         ContactReviewItem(
           kind: ContactReviewKind.refused,
@@ -2567,7 +2852,13 @@ class _Run {
         // was written to the other side is kept.
         break;
       } on ContactRefused {
-        await _refusedPair(p, gAnswer: gAnswer, hAnswer: hAnswer);
+        await _refusedPair(
+          p,
+          gAnswer: gAnswer,
+          hAnswer: hAnswer,
+          planned: planned,
+          wrote: googleWritten || graphWritten,
+        );
         return;
       }
       if (attempt > 0) break;
@@ -2602,6 +2893,8 @@ class _Run {
             ? link
             : link.copyWith(googleName: googleName),
       );
+      if (link.isPaired) await store.dropReviews(_refusedFor(p));
+      await _carriedOut(planned);
     });
     if (googleWritten) tally.changedGoogle++;
     if (graphWritten) tally.changedGraph++;
@@ -2683,10 +2976,15 @@ class _Run {
 
   /// A server would not take a pair's change: the pair is held as refused
   /// with both ids, under Needs a look, and is tried again when it changes.
+  /// [planned] is the pair's plan as the run made it, before any plan made
+  /// again ([_update]): the answers it carries out are done with, and
+  /// asked again where [wrote] says nothing reached either side this run.
   Future<void> _refusedPair(
     ContactLinkPlan p, {
     Map<String, Object?>? gAnswer,
     Map<String, Object?>? hAnswer,
+    required ContactLinkPlan planned,
+    required bool wrote,
   }) async {
     final bases = p.basesAfter(
       googleAnswer: gAnswer == null ? null : syncedFromPerson(gAnswer),
@@ -2712,6 +3010,9 @@ class _Run {
     await store.transaction(() async {
       await store.deleteLinks(p.alsoRemove);
       await store.saveLink(_linkOf(held, googleWritten: gAnswer != null));
+      // An answer one side took is partly carried out: not asked again.
+      final answers = await _carriedOut(planned);
+      if (!wrote) await _askAgain(answers);
       await _saveReview(
         ContactReviewItem(
           kind: ContactReviewKind.refused,
@@ -2733,6 +3034,15 @@ class _Run {
   /// longer in Contacts, it is kept instead; otherwise the full copy goes
   /// into the bin, pending, before the delete is sent, and is marked done
   /// when the server answers.
+  ///
+  /// An Outlook contact out of Contacts is gone, as a 404 would say, where
+  /// it was deleted already and not moved by Ron: the sync's own delete,
+  /// which the bin holds (pending: a delete whose answer was lost; or
+  /// done), wherever Microsoft keeps what it deleted; or anyone's, in
+  /// Deleted Items, where Outlook's own delete puts it and a read by its
+  /// id still finds it ([_placeGraph]). Kept instead, its item would come
+  /// back at every Delete it here too, and a Restore would pair Gmail with
+  /// it. One in another folder that the bin does not hold is kept.
   Future<void> _delete(ContactLinkPlan p) async {
     final d = p.delete!;
     final onGoogle = d.side == ContactSide.google;
@@ -2740,7 +3050,14 @@ class _Run {
         ? await google((a) => a.get(d.contactId, everyField: true))
         : await graph((a) => a.get(d.contactId, whole: true));
     final already = await store.binEntry(pairId, d.side, d.contactId);
-    if (full == null) {
+    var deletedBefore = false;
+    if (full != null && !onGoogle && !_inContacts(full)) {
+      deletedBefore =
+          (already != null && already.state != ContactBinState.back) ||
+          full['parentFolderId'] ==
+              (_deletedItems ??= await graph((a) => a.deletedItemsFolderId()));
+    }
+    if (full == null || deletedBefore) {
       // Gone already: the delete before a crash, or by someone else.
       await store.transaction(() async {
         if (already != null && already.state == ContactBinState.pending) {
@@ -2752,6 +3069,7 @@ class _Run {
           await store.deleteLinks([p.linkId!]);
         }
         await store.deleteLinks(p.alsoRemove);
+        await _carriedOut(p);
       });
       return;
     }
@@ -2780,6 +3098,7 @@ class _Run {
           ),
         );
         await _saveReview(p.keptReview());
+        await _carriedOut(p);
       });
       debugPrint('[myemail] contacts: a contact due to be deleted had '
           'changed and was kept');
@@ -2814,6 +3133,7 @@ class _Run {
         dropLinkId: p.removeRow ? p.linkId : null,
       );
       await store.deleteLinks(p.alsoRemove);
+      await _carriedOut(p);
     });
   }
 
@@ -2861,6 +3181,9 @@ class _Run {
       return;
     } on ContactRefused {
       debugPrint('[myemail] contacts: a hidden tag was not moved');
+    } on TagNotGiven {
+      // Whether it has one to move is not known: left as it is.
+      debugPrint('[myemail] contacts: a hidden tag was not moved');
     }
   }
 
@@ -2881,12 +3204,32 @@ class _Run {
     ContactBinInput entry() => _binInput(stored);
     String? g = r.googleName;
     String? h = r.graphId;
+    var graphRaw = r.graphRaw;
+    // The plan found the Outlook contact back where the sync deleted it,
+    // through a row that still names it, and so gives no copy to make it
+    // from. One that reads outside Contacts (in Deleted Items, say) or not
+    // at all is not back: it is made again from the bin's full copy, as a
+    // contact not found is, and the pair takes the row over. 3.22.1 kept
+    // such a row when Microsoft's answer to the sync's delete was lost.
+    Map<String, Object?>? graphFound;
+    if (stored.side == ContactSide.graph &&
+        graphRaw == null &&
+        h != null &&
+        !graphRead.containsKey(h)) {
+      final read = await graph((a) => a.get(h!));
+      if (read != null && _inContacts(read)) {
+        graphFound = read;
+      } else {
+        graphRaw = _decode(stored.raw);
+        h = null;
+      }
+    }
     Map<String, Object?>? gMade;
     Map<String, Object?>? hMade;
     try {
       // Tagged with the ids the bin row names (the contacts made so far
       // standing in for them), which is how a later run finds them back.
-      if (r.graphRaw case final raw?) {
+      if (graphRaw case final raw?) {
         hMade = await _restoreCreate(
           r.binId,
           ContactSide.graph,
@@ -2929,12 +3272,15 @@ class _Run {
     tally.restored++;
     // One found back rather than made is paired as it is now.
     var googleNow = gMade ?? (g == null ? null : googleRead[g]);
-    var graphNow = hMade ?? (h == null ? null : graphRead[h]);
+    var graphNow = hMade ?? (h == null ? null : graphRead[h] ?? graphFound);
     if (googleNow == null && g != null) {
       googleNow = await google((a) => a.get(g!));
     }
     if (graphNow == null && h != null) {
-      graphNow = await graph((a) => a.get(h!));
+      // Only one in Contacts is paired: one read in Deleted Items, or in
+      // another folder, is not back, and a pair with it would never sync.
+      final read = await graph((a) => a.get(h!));
+      graphNow = read != null && _inContacts(read) ? read : null;
     }
     final googleName = g;
     final graphId = h;
@@ -3125,25 +3471,16 @@ class _Run {
 
   // --- the copies on the Microsoft side --------------------------------------
 
-  /// Copies the merge deleted this run (gone too where a delete found one
-  /// gone): the pair's Microsoft count is lowered by them, so the
-  /// empty-answers guard measures against what is left.
-  var copiesGone = 0;
-
   /// People the merge merged this run, by their synced copy: the count of
   /// people to merge leaves them out.
   final copiesMerged = <String>{};
 
-  /// Ron's choices of another copy's details, as answers for the next
-  /// run (Use Hadco's, for the details they replaced): his, so never held
-  /// by the change brake.
-  final copiesAnswers = <Map<String, Object?>>[];
-
   /// The merge of the Microsoft side's copies of one person
   /// ([ContactSyncService.mergeCopies]), when one is asked or Ron has
-  /// answered a person whose copies differ: after the plan's writes, so
-  /// the copies are read as they now are, and before the end, which
-  /// counts what is left.
+  /// answered a person whose copies differ: after the plan's writes and
+  /// the sync's own end ([_finish]), so the copies are read as they now
+  /// are, and before the count of the people left to merge
+  /// ([_countCopies]).
   ///
   /// For each person whose synced Microsoft copy is paired and has held
   /// copies beside it (this plan's duplicates), every copy is read whole,
@@ -3250,20 +3587,15 @@ class _Run {
   // --- the end ---------------------------------------------------------------
 
   /// Everything read was applied: the feeds' positions move on, with the
-  /// counts, the result and the claim.
+  /// counts, the result and the claim. Recorded before the merge of
+  /// Hadco's copies ([_copies]), which keeps its own progress as it goes
+  /// and lowers the Microsoft count itself; a stop in the merge then keeps
+  /// all this ([_halted]), and the people left to merge are counted after
+  /// it ([_countCopies]).
   Future<void> _finish() async {
     final firstSync = pair.firstDoneAt == null;
     final at = sync._now();
     final outcomes = plan.answers;
-    // Answers a stopped run had planned and this one could not: kept.
-    final waitingPending = <Map<String, Object?>>[
-      for (final (i, source) in answerSources.indexed)
-        if (source.pendingIndex case final at?
-            when i < outcomes.length &&
-                outcomes[i] == ContactAnswerOutcome.waiting &&
-                at < held.pending.length)
-          held.pending[at],
-    ];
     // Brake answers this run carried out (or found nothing left to act
     // on), by question and choice: their answers are cleared. Which items
     // stay is the rows' to say (prune): one still held under its brake is
@@ -3317,10 +3649,12 @@ class _Run {
       final rows = await store.links(pairId);
       await store.updatePair(pairId, (p) {
         final h = _Held.parse(p.held);
-        h.pending
-          ..clear()
-          ..addAll(waitingPending)
-          ..addAll(copiesAnswers);
+        // The answers this run planned came off the pair as their writes
+        // came back ([_carriedOut]); one still marked (none should be) goes
+        // with the run done. Those kept for a run that reads their
+        // contacts stay as they are kept, re-keys and all, and so do the
+        // merge's, kept as it wrote them.
+        h.pending.removeWhere((a) => a.containsKey(_Held.writing));
         h.questions.removeWhere(
           (q) => q.kind == ContactSyncQuestionKind.emptyAnswer,
         );
@@ -3359,7 +3693,6 @@ class _Run {
           ..addAll(
             plan.duplicates.map((d) => _Duplicates.of(d, made: copiedFrom)),
           );
-        h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
         return p.copyWith(
           googleSyncToken: googleToken ?? p.googleSyncToken,
           googleMask: googleContactFieldsVersion,
@@ -3369,7 +3702,7 @@ class _Run {
           graphFolderId: p.graphFolderId ?? folderId,
           normaliser: contactNormaliserVersion,
           googleCount: plan.googleCount + googleMade - googleDeleted,
-          graphCount: plan.graphCount + graphMade - graphDeleted - copiesGone,
+          graphCount: plan.graphCount + graphMade - graphDeleted,
           firstDoneAt: p.firstDoneAt ?? (firstSync ? at : null),
           lastDoneAt: at,
           lastResult: _LastResult(tally: tallyNow).encode(),
@@ -3377,6 +3710,7 @@ class _Run {
         );
       });
     });
+    _ended = true;
     await _writeClaim(at);
     debugPrint(
       '[myemail] contacts: read ${googleRead.length}+${graphRead.length}'
@@ -3389,6 +3723,23 @@ class _Run {
       '${tally.passedOver} passed over, '
       '${(watch.elapsedMilliseconds / 1000).toStringAsFixed(1)} s',
     );
+  }
+
+  /// The sync's own end is recorded ([_finish]): a stop after it is the
+  /// merge's.
+  bool _ended = false;
+
+  /// The people left to merge ([_Copies.count]), counted once the merge of
+  /// Hadco's copies is done with this run ([_copies]): from the rows as it
+  /// left them, without the people it merged. A merge cut short is counted
+  /// by the next run.
+  Future<void> _countCopies() async {
+    final rows = await store.links(pairId);
+    await store.updatePair(pairId, (p) {
+      final h = _Held.parse(p.held);
+      h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
+      return p.copyWith(held: h.encode());
+    });
   }
 
   Future<void> _writeClaim(DateTime at) async {
@@ -3429,6 +3780,9 @@ class _Run {
 
   /// The run stopped short: why, kept for the screen; the counts moved on
   /// by what was made and deleted; the feeds' positions left as they were.
+  /// Stopped in the merge of Hadco's copies, after the sync's own end was
+  /// recorded ([_ended]): that stands, its counts and its result (the
+  /// merge keeps its own as it goes), with why the run stopped.
   Future<void> _halted(Object e) async {
     final at = sync._now();
     final halt = haltFor(e, at);
@@ -3438,6 +3792,12 @@ class _Run {
         final h = _Held.parse(p.held);
         if (halt.kind == ContactSyncHaltKind.quota) h.quotaUntil = halt.until;
         final before = _LastResult.parse(p.lastResult);
+        if (_ended) {
+          return p.copyWith(
+            held: h.encode(),
+            lastResult: _LastResult(tally: before.tally, halt: halt).encode(),
+          );
+        }
         return p.copyWith(
           googleCount: p.googleCount == null
               ? null
@@ -3711,6 +4071,43 @@ class _Held {
   /// at the end of each run.
   static const waits = 'waits';
 
+  /// Under this key in a pending answer, a number the run that planned it
+  /// gives it while its writes are out: the run takes it off by that
+  /// number as soon as they come back ([_Run._carriedOut]). Only that run
+  /// marks answers; the next one, should this stop first, plans the
+  /// answer again and marks it anew. An answer 3.22.1 kept has none, and
+  /// is planned as any.
+  static const writing = 'writing';
+
+  /// Under this key in a pending answer kept for its write ([writing]),
+  /// the Needs a look item it was given on, as the screen showed it: its
+  /// id, kind, contacts, data (as JSON, where a re-key reaches its ids)
+  /// and time. Should the server refuse that write with nothing written,
+  /// the item is put back, unanswered, for Ron to choose again
+  /// ([_Run._askAgain]); after a run that stopped first too. Only for the
+  /// answers in [asksAgain], each carried out by one plan. One kept
+  /// before 3.23.0 has none, and nothing is put back for it.
+  static const item = 'item';
+
+  /// The answers whose item is put back when their write is refused: Use
+  /// Gmail's, Use Hadco's and Use the other value, which leave a pair's
+  /// other side a tap away, and Retry, whose item is the refusal's own.
+  static const asksAgain = {'useGoogle', 'useGraph', 'useValue', 'retry'};
+
+  /// [r] as kept under [item]; null when its data is not JSON.
+  static Map<String, Object?>? itemOf(ContactReview r) {
+    final data = _Run._decode(r.data);
+    if (r.reviewId == null || data == null) return null;
+    return {
+      'reviewId': r.reviewId,
+      'kind': r.kind,
+      'googleName': ?r.googleName,
+      'graphId': ?r.graphId,
+      'data': data,
+      'createdAt': ?_ms(r.createdAt),
+    };
+  }
+
   /// A brake raised this run: added to its kind's open question, or asked
   /// anew where that one already has an answer queued. An item already
   /// asked about (the same contacts) is not asked about twice: it stays
@@ -3888,14 +4285,27 @@ class _Copies {
     return copies;
   }
 
-  /// The rules a listing or a leave was made under (`rules`): 3.22.1's,
-  /// under which a photo is never a difference. One without was made by
-  /// 3.22.0, whose rules listed copies for their photos alone.
-  static const rules = 2;
+  /// The rules a listing or a leave was made under (`rules`): 3, under
+  /// which the details only Outlook keeps (a fax, the anniversary) are
+  /// read and compared too. 2 was 3.22.1's, which never saw them, and
+  /// under which a photo is never a difference, as now; one without was
+  /// made by 3.22.0, whose rules listed copies for their photos alone.
+  static const rules = 3;
 
   /// Whether [listing] was made under the rules of now.
   static bool current(Map<String, Object?> listing) =>
       listing['rules'] == rules;
+
+  /// Whether [listing]'s fingerprint is the one today's rules give the
+  /// differences it showed: one made under 3.22.1's rules or since. A
+  /// detail only Outlook keeps adds to a fingerprint only where it
+  /// differs, so an answer on a 3.22.1 listing is carried out while its
+  /// differences are still all there are, and never once such a detail
+  /// differs too.
+  static bool comparable(Map<String, Object?> listing) {
+    final made = listing['rules'];
+    return made is int && made >= 2;
+  }
 
   /// When a merge was asked; null when none is.
   DateTime? asked;
@@ -3919,21 +4329,35 @@ class _Copies {
 
   /// The people whose copies differ, listed for Ron: `key`, `title`, the
   /// `fingerprint` of the differences shown, the `rules` they were listed
-  /// under ([rules]), Ron's `answer` (a copy's key, or `leave`), and
-  /// `copies`, each with its `key`, whether `synced`, and its differing
-  /// values (`details`: `label`, `value`).
+  /// under ([rules]), Ron's `answer` (a copy's key, or `leave`), with it
+  /// the `tries` of passes in a row that could not carry it out
+  /// ([triesOf]), and `copies`, each with its `key`, whether `synced`, and
+  /// its differing values (`details`: `label`, `value`).
   final List<Map<String, Object?>> differing = [];
+
+  /// Passes in a row that may meet an answer they cannot carry out before
+  /// it stops making a run due ([dueNow]): each run that goes still tries
+  /// it, but MyEmail no longer starts one for it each time it is opened.
+  static const quietAfter = ContactSyncCopiesPerson.quietAfter;
+
+  /// The passes in a row that met [listing]'s answer and could not carry
+  /// it out: its person passed over (a copy changed or not in Contacts,
+  /// Hadco not read), failed, or not reached. None before Ron's answer.
+  static int triesOf(Map<String, Object?> listing) =>
+      listing['tries'] is int ? listing['tries']! as int : 0;
 
   /// People Ron chose to leave as they are, by key: the `fingerprint` of
   /// the differences as they were (empty where none was left) and the
   /// `rules` it was taken under. A merge passes them over while today's
-  /// fingerprint is the leave's. One left under 3.22.0 (its fingerprint
-  /// alone, of rules that counted photos) is stamped anew by the first
-  /// pass that meets it ([currentLeave]).
+  /// fingerprint is the leave's. One left under older rules (3.22.0's
+  /// fingerprint alone, of rules that counted photos; 3.22.1's, of rules
+  /// that never saw the details only Outlook keeps) is stamped anew by
+  /// the first pass that meets it ([currentLeave]): left still, never
+  /// asked again.
   final Map<String, Object> left = {};
 
   /// Whether a leave ([leftAs]) was taken under the rules of now: one
-  /// 3.22.0 kept was not.
+  /// 3.22.0 or 3.22.1 kept was not.
   static bool currentLeave(Object leftAs) =>
       leftAs is Map && leftAs['rules'] == rules;
 
@@ -3965,10 +4389,15 @@ class _Copies {
       differing.firstWhereOrNull((d) => d['key'] == key);
 
   /// A merge asked, or an answer waiting for a run: a run is due at once,
-  /// unless the last pass stopped short (then the usual hour applies).
+  /// unless the last pass stopped short (then the usual hour applies). An
+  /// answer the last [quietAfter] passes could not carry out waits for a
+  /// run that goes anyway, rather than start one at every opening.
   bool get dueNow =>
       shortStops == 0 &&
-      (asked != null || differing.any((d) => d['answer'] != null));
+      (asked != null ||
+          differing.any(
+            (d) => d['answer'] != null && triesOf(d) < quietAfter,
+          ));
 
   /// The people listed under the rules of now that Ron has not answered.
   int get unanswered =>
@@ -4042,16 +4471,13 @@ class _Copies {
           if (!paired.contains(id)) id: ?base[id],
       });
       if (ours.length < g.graphCopies.length) notSynced++;
-      // One left is not counted; nor one listed under the rules of now
-      // (a merge would only list it again), nor one answered and waiting
-      // for a run. One listed under 3.22.0's rules and not answered is: its
-      // differences may be no more (a photo), and a merge reads it again.
       // Never counted: one left (a pass asked for others finds whether
       // its differences are still those he left), one listed under the
       // rules of now (a merge would only list it again), one answered and
-      // waiting for a run. One listed under 3.22.0's rules and not
-      // answered is: its differences may be no more (a photo), and a
-      // merge reads it again.
+      // waiting for a run. One listed under older rules and not answered
+      // is: its differences may be no more (3.22.0's photo) or not all
+      // there are (3.22.1 never read the details only Outlook keeps), and
+      // a merge reads it again.
       final l = listed(synced);
       if (ours.isEmpty ||
           left.containsKey(synced) ||
@@ -4156,13 +4582,16 @@ class _Copies {
     extras: extras,
     notSynced: notSynced,
     asked: asked != null,
+    partWay: !pass.isEmpty,
     shortStops: shortStops,
     last: switch ((last, lastAt)) {
       (final l?, final at?) => l.shown(at),
       _ => null,
     },
-    // One listed by 3.22.0 and not answered is not shown: its
-    // differences may be no more (a photo); the next merge reads it again.
+    // One listed under older rules and not answered is not shown: its
+    // differences may be no more (3.22.0's photo) or not all there are
+    // (3.22.1's, without the details only Outlook keeps); the next merge
+    // reads it again.
     differing: [
       for (final d in differing)
         if (current(d) || d['answer'] != null) _personOf(d),
@@ -4194,6 +4623,7 @@ class _Copies {
       ],
       answer: d['answer'] is String ? d['answer']! as String : null,
       version: versionOf(d),
+      tries: triesOf(d),
     );
   }
 }
@@ -4378,11 +4808,20 @@ class _CopiesStep {
     _progress();
     if (groups.isEmpty) return;
 
+    // Each copy whole, with the details only Outlook keeps (the faxes and
+    // other numbers, the PO boxes, the ID and user fields, the
+    // anniversary: outlookOnlyDetails), which Graph gives only to a read
+    // that names them: read without them, a copy holding one would seem
+    // the same and be deleted. A refusal of them, or an answer without
+    // them, stops the pass short, nothing deleted; it is never taken for a
+    // read of copies holding none. Not read, and so gone with a copy that
+    // holds them (a known gap): files attached to a contact, gender,
+    // billing and mileage, and Outlook's rarer fields.
     final read = <String, Map<String, Object?>>{};
     if (whole) {
       final folder = run.folderId;
       for (final c in await run.graph(
-        (a) => a.listAll(folderId: folder, whole: true),
+        (a) => a.listAll(folderId: folder, whole: true, withOutlookOnly: true),
       )) {
         if (c['id'] case final String id) read[id] = c;
       }
@@ -4390,7 +4829,9 @@ class _CopiesStep {
       for (final g in groups) {
         for (final id in [g.graphSynced!, ...g.graphCopies]) {
           run._checkStop();
-          final c = await run.graph((a) => a.get(id, whole: true));
+          final c = await run.graph(
+            (a) => a.get(id, whole: true, withOutlookOnly: true),
+          );
           if (c != null && run._inContacts(c)) read[id] = c;
         }
       }
@@ -4448,16 +4889,29 @@ class _CopiesStep {
             if (read[id] case final c?) id: syncedFromGraph(c),
       });
       if (copies.isEmpty) {
+        // No copy is the merge's any more (one now shares only the name, is
+        // paired, or another person took it): a person listed goes from the
+        // list, and a Keep these with it, which nothing could carry out. A
+        // Leave them stands, kept as a leave on the differences Ron saw:
+        // should the copies be joined again, they stay as he left them.
+        final listing = seen.listed(key);
+        if (listing?['answer'] == ContactSyncCopiesPerson.leave) {
+          _leaveAsListed(key, listing!);
+        } else {
+          _unlisted.add(key);
+          _listed.remove(key);
+        }
         _personDone();
         continue;
       }
       // Ron's Leave them always stands: a person he left (or answered so)
       // stays so while the differences are those he left (the
       // fingerprint), whatever else a merge would now say; an added detail
-      // never changes them. A leave 3.22.0 kept is stamped with today's
-      // differences the first time a pass meets it, and stays. Once they
-      // are others, the person is read again as any other: listed for Ron
-      // where they differ, merged where none is left.
+      // never changes them. A leave kept under older rules (3.22.0's,
+      // 3.22.1's) is stamped with today's differences the first time a
+      // pass meets it, and stays. Once they are others, the person is read
+      // again as any other: listed for Ron where they differ, merged where
+      // none is left.
       final leftAs = seen.left[key];
       final leaving =
           seen.listed(key)?['answer'] == ContactSyncCopiesPerson.leave;
@@ -4527,16 +4981,17 @@ class _CopiesStep {
         : null;
     var merge = cp.mergeCopies(kept, others, norm: run.norm);
     // Ron's answer (Leave them is dealt with before) counts only on the
-    // differences he saw. Given on a listing under the rules of now, on
-    // those very differences (the fingerprint), and never on the photo.
-    // Given on one 3.22.0 made, whose differences may no longer be: the
-    // synced copy's leaves the rules of now to decide; another copy's, with
-    // nothing differing now, brings that copy's photo (the difference he
-    // saw); with something differing, the person is listed again as it
-    // is, the answer dropped.
+    // differences he saw. Given on a listing of 3.22.1's rules or since,
+    // on those very differences (the fingerprint: a detail only Outlook
+    // keeps that differs, which 3.22.1 never showed, lists the person
+    // again), and never on the photo. Given on one 3.22.0 made, whose
+    // differences may no longer be: the synced copy's leaves the rules of
+    // now to decide; another copy's, with nothing differing now, brings
+    // that copy's photo (the difference he saw); with something
+    // differing, the person is listed again as it is, the answer dropped.
     if (answer != null && (answer == key || copies.contains(answer))) {
-      final now = listed != null && _Copies.current(listed);
-      if (now
+      final comparable = listed != null && _Copies.comparable(listed);
+      if (comparable
           ? merge.outcome == cp.CopiesOutcome.differs &&
                 merge.fingerprint == listed['fingerprint']
           : merge.outcome != cp.CopiesOutcome.differs && answer != key) {
@@ -4547,7 +5002,7 @@ class _CopiesStep {
           kept,
           others,
           keep: answer,
-          keepsPhoto: !now && _Copies.showedPhoto(listed),
+          keepsPhoto: !comparable && _Copies.showedPhoto(listed),
           norm: run.norm,
         );
       }
@@ -4635,7 +5090,8 @@ class _CopiesStep {
   }
 
   /// Write what [merge] adds to the synced copy [key] ([before] as read),
-  /// check the answer holds each value, and give it a photo where the
+  /// with its display name, check the answer holds each value, the details
+  /// only Outlook keeps read back for it, and give it a photo where the
   /// merge says, read back before any copy goes. The details it replaced
   /// go to Gmail at the next run as an answer (Use Hadco's), kept on the
   /// pair at once: the merge's own, never held by the change brake. The
@@ -4649,17 +5105,41 @@ class _CopiesStep {
   ) async {
     var changeKey = before['changeKey'] as String?;
     if (merge.patch.isNotEmpty) {
-      final answer = await run.graph((a) => a.update(key, merge.patch));
-      for (final MapEntry(key: name, value: value) in merge.patch.entries) {
+      // The display name every time, as the sync's own writes send it
+      // (graphContactPatch): Microsoft's Update contact page warns that
+      // Outlook may otherwise put one of its own in its place, which for a
+      // contact with no name parts would go on to Gmail. One that comes
+      // back otherwise fails the person, nothing of theirs deleted.
+      final shown = before['displayName'];
+      final body = {
+        ...merge.patch,
+        if (shown is String && shown.trim().isNotEmpty) 'displayName': shown,
+      };
+      final answer = await run.graph((a) => a.update(key, body));
+      for (final MapEntry(key: name, value: value) in body.entries) {
+        if (name == _extended) continue;
         if (!_Run._holds(value, answer[name])) throw const _CopyNotHeld();
       }
       changeKey = answer['changeKey'] as String?;
+      if (merge.patch[_extended] case final List written
+          when written.isNotEmpty) {
+        changeKey = await _readBack(key, written);
+      }
       if (pair.googleName case final googleName?) {
         final was = syncedFromGraph(before);
         final now = syncedFromGraph(answer);
+        // Hadco's for a detail replaced only where Gmail held what the
+        // synced copy held before (by the pair's Gmail base): that is the
+        // merge carrying on what was already in step. Where Gmail held
+        // something else, its value was never Hadco's to replace unasked:
+        // the usual rules decide, and the change brake counts it.
+        final gmail = SyncedContact.fromJson(_Run._decode(pair.googleBase));
         final replaced = [
           for (final f in ContactField.values)
-            if (!_empty(was[f]) && !run.norm.same(f, was[f], now[f])) f.name,
+            if (!_empty(was[f]) &&
+                !run.norm.same(f, was[f], now[f]) &&
+                run.norm.same(f, gmail[f], was[f]))
+              f.name,
         ];
         if (replaced.isNotEmpty) {
           // With the Gmail contact's version as the write found it: should
@@ -4672,7 +5152,6 @@ class _CopiesStep {
             'fields': replaced,
             'googleEtag': ?pair.googleEtag,
           };
-          run.copiesAnswers.add(useHadcos);
           await store.updatePair(run.pairId, (p) {
             final h = _Held.parse(p.held)..pending.add(useHadcos);
             return p.copyWith(held: h.encode());
@@ -4691,6 +5170,39 @@ class _CopiesStep {
       changeKey = now.found[key]?['changeKey'] as String?;
       if (changeKey == null) throw const _CopyNotHeld();
     }
+    return changeKey;
+  }
+
+  /// The property a write carries the details only Outlook keeps in.
+  static const _extended = 'singleValueExtendedProperties';
+
+  /// The synced copy [key] read again with the details only Outlook
+  /// keeps, which Graph's answer to a write never shows: each of
+  /// [written] must hold there, by the rule that compared it (a date by
+  /// its day, anything else as written), before any copy goes. Read whole,
+  /// with no `$select`, so the read's address stays as short as the
+  /// listing's. Its `changeKey` as read.
+  Future<String> _readBack(String key, List<Object?> written) async {
+    final now = await run.graph(
+      (a) => a.get(key, whole: true, withOutlookOnly: true),
+    );
+    if (now == null || !run._inContacts(now)) throw const _CopyNotHeld();
+    final held = outlookOnlyValuesOf(now);
+    for (final w in written) {
+      final detail = w is Map ? outlookOnlyDetailOf(w['id']) : null;
+      if (detail == null) throw const _CopyNotHeld();
+      final value = (w as Map)['value'];
+      final holds = switch ((detail.kind, value, held[detail])) {
+        (OutlookOnlyKind.date, final String sent, final String there) =>
+          birthdayFromGraph(sent) != null &&
+              birthdayFromGraph(sent) == birthdayFromGraph(there),
+        (OutlookOnlyKind.date, _, _) => false,
+        _ => _Run._holds(value, held[detail]),
+      };
+      if (!holds) throw const _CopyNotHeld();
+    }
+    final changeKey = now['changeKey'];
+    if (changeKey is! String) throw const _CopyNotHeld();
     return changeKey;
   }
 
@@ -4751,7 +5263,6 @@ class _CopiesStep {
     }
     _count(deleted: deleted?.deleted.length ?? 0);
     _gone += gone.length;
-    run.copiesGone += gone.length;
     if (gone.isNotEmpty) changedAny = true;
     await save();
   }
@@ -4763,6 +5274,22 @@ class _CopiesStep {
     _unlisted.add(key);
     _listed.remove(key);
     _left[key] = {'fingerprint': fingerprint, 'rules': _Copies.rules};
+    _unleft.remove(key);
+  }
+
+  /// [key] left as Ron chose on [listing], when its differences cannot be
+  /// read now (no copy is the merge's): left on those he saw, under the
+  /// rules they were listed by, so a leave from older rules is stamped
+  /// anew by the first pass that meets the copies, as any is.
+  void _leaveAsListed(String key, Map<String, Object?> listing) {
+    _unlisted.add(key);
+    _listed.remove(key);
+    _left[key] = {
+      'fingerprint': listing['fingerprint'] is String
+          ? listing['fingerprint']! as String
+          : '',
+      if (listing['rules'] case final int rules) 'rules': rules,
+    };
     _unleft.remove(key);
   }
 
@@ -4858,6 +5385,23 @@ class _CopiesStep {
           c.left.remove(key);
         }
         c.left.addAll(left);
+        if (ended || short) {
+          // An answer the pass found and leaves waiting (its person passed
+          // over, failed or not reached, or the pass stopped short): one
+          // pass more that could not carry it out. One given while the run
+          // went is not this pass's to count.
+          for (final d in c.differing) {
+            final key = d['key']! as String;
+            final given = d['answer'];
+            if (given == null ||
+                unlisted.contains(key) ||
+                listed.containsKey(key) ||
+                given != seen.listed(key)?['answer']) {
+              continue;
+            }
+            d['tries'] = _Copies.triesOf(d) + 1;
+          }
+        }
         if (short) {
           // A pass that stopped short, Hadco not read: the ask stays, but
           // after three in a row it is given up, and the last result says

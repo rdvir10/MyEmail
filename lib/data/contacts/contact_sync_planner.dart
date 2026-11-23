@@ -273,8 +273,10 @@ enum ContactAnswerOutcome {
   /// Planned: its Needs a look item or brake question is done with.
   applied,
 
-  /// A contact it acts on was not read this run: it stays queued. See
-  /// [contactsToRead].
+  /// A contact it acts on was not read this run (see [contactsToRead]),
+  /// or is not ready for it: the copy it asked for was cut short and is
+  /// not found yet, or its pair is held by the change brake. It stays
+  /// queued.
   waiting,
 
   /// Its contact has gone, or it no longer applies: the item is dropped.
@@ -369,7 +371,8 @@ class ContactSyncInput {
 // Output.
 
 /// The contact changed after the plan read it: its etag or `changeKey`
-/// is no longer the one the plan was made from. Nothing was built. The
+/// is no longer the one the plan was made from, or a Gmail detail to be
+/// written reads otherwise than the plan saw it. Nothing was built. The
 /// runner plans that pair again ([ContactLinkPlan.replan]) from what it
 /// has just read, with the run's settings, and writes that instead.
 class ContactReadStale implements Exception {
@@ -419,11 +422,31 @@ class ContactWrite {
   /// that etag matching. The body carries that source and etag (see
   /// [GooglePersonUpdate]). List values the plan never saw survive even so
   /// (see [googlePersonUpdate]).
+  ///
+  /// It throws too when a single detail to be written reads otherwise on
+  /// [person] than in [seen], the etag as it was: a plan made from a base
+  /// an older build read (an address held only as text, read as none)
+  /// would write over a value it never saw. Planned again from [person],
+  /// it sees it. And when [person] holds a detail to be written in a form
+  /// the sync cannot read ([googleUnreadFields], a birthday as text): a
+  /// plan made without the Person knew nothing of it, and planned again
+  /// from it, leaves it alone.
   GooglePersonUpdate googleUpdate(
     Map<String, Object?> person, {
     required ContactNormaliser normaliser,
   }) {
     if (version != null && googleContactEtag(person) != version) {
+      throw ContactReadStale(side);
+    }
+    if (seen case final seen?) {
+      final read = syncedFromPerson(person);
+      for (final f in fields) {
+        if (!f.isList && !rawEquals(read[f], seen[f])) {
+          throw ContactReadStale(side);
+        }
+      }
+    }
+    if (googleUnreadFields(person).any(fields.contains)) {
       throw ContactReadStale(side);
     }
     return googlePersonUpdate(
@@ -667,7 +690,10 @@ class ContactLinkPlan {
   /// on as [basesAfter] gives them for that answer, so the sync's own
   /// write never reads as Ron's change, in this plan or in one planned
   /// again from it. Its edit time stays the one read before the write.
-  /// A side has a read or a written answer, not both.
+  /// A side has a read or a written answer, not both. A write already made
+  /// stands: the value it wrote over is gone from that side, so the item
+  /// that keeps it (a clash's losing value, or one never in step) is kept
+  /// among [reviews], though the bases, moved on, would no longer raise it.
   ///
   /// Only a plan with [settings] can be planned again (a [StateError]
   /// otherwise). A read that is no whole contact (Gmail's deleted entry,
@@ -709,6 +735,9 @@ class ContactLinkPlan {
     var again = s._read(
       googleUpdatedAt: google?.updatedAt,
       graphUpdatedAt: graph?.updatedAt,
+      // What Gmail holds that the sync cannot read, from the Person in
+      // hand: a plan made without it learns of it here.
+      googleKeeps: gRead == null ? null : googleUnreadFields(gRead.person),
     );
     if (googleWritten != null || graphWritten != null) {
       final bases = basesAfter(
@@ -729,7 +758,42 @@ class ContactLinkPlan {
       graphChangeKey: hRead != null ? hRead.changeKey : graphChangeKey,
       fromAnswer: fromAnswer,
     );
-    return (plan: made.plan, reviews: made.reviews);
+    if (googleWritten == null && graphWritten == null) {
+      return (plan: made.plan, reviews: made.reviews);
+    }
+    // The items this plan gave the values its writes already made wrote
+    // over: compared again as it was, the same.
+    final first = _comparePair(
+      settings: s,
+      googleName: g,
+      graphId: h,
+      googleNow: gNow,
+      graphNow: hNow,
+    );
+    bool madeOver(ContactReviewItem r) {
+      if (r.kind != ContactReviewKind.clash || r.fields.isEmpty) return false;
+      final f = r.fields.first;
+      return switch (r.losingSide) {
+        ContactSide.graph =>
+          graphWritten != null && graphWrite!.fields.contains(f),
+        ContactSide.google =>
+          googleWritten != null && googleWrite!.fields.contains(f),
+        null => false,
+      };
+    }
+
+    final kept = first.reviews.where(madeOver).toList();
+    final keptFields = {for (final r in kept) r.fields.first};
+    return (
+      plan: made.plan,
+      reviews: [
+        for (final r in made.reviews)
+          if (r.kind != ContactReviewKind.clash ||
+              !keptFields.contains(r.fields.firstOrNull))
+            r,
+        ...kept,
+      ],
+    );
   }
 
   /// The row to save when the read just before [delete] finds the contact
@@ -775,6 +839,7 @@ class ContactPairSettings {
     this.copyBack = false,
     this.useSide = const {},
     this.useValues,
+    this.googleKeeps = const {},
   });
 
   /// The pair's, from its phone region.
@@ -800,6 +865,10 @@ class ContactPairSettings {
   /// Ron's Use this one.
   final SyncedContact? useValues;
 
+  /// Details Gmail holds that the sync cannot read ([googleUnreadFields]),
+  /// left as they are: known only from a Person read this run.
+  final Set<ContactField> googleKeeps;
+
   /// The same, compared with [google] and [graph] as bases.
   ContactPairSettings _based({
     required SyncedContact google,
@@ -815,12 +884,15 @@ class ContactPairSettings {
     copyBack: copyBack,
     useSide: useSide,
     useValues: useValues,
+    googleKeeps: googleKeeps,
   );
 
-  /// The same, with the edit times of the sides read again.
+  /// The same, with the edit times of the sides read again, and what the
+  /// Gmail side read again holds that the sync cannot read.
   ContactPairSettings _read({
     DateTime? googleUpdatedAt,
     DateTime? graphUpdatedAt,
+    Set<ContactField>? googleKeeps,
   }) => ContactPairSettings(
     normaliser: normaliser,
     googleBase: googleBase,
@@ -832,6 +904,7 @@ class ContactPairSettings {
     copyBack: copyBack,
     useSide: useSide,
     useValues: useValues,
+    googleKeeps: googleKeeps ?? this.googleKeeps,
   );
 }
 
@@ -898,6 +971,12 @@ enum ContactReviewReason {
   /// copy went (its partner deleted, or kept instead), or the copy no
   /// longer joins any. It is never copied over unasked.
   copyOfGone,
+
+  /// For a clash: changed on one side only, and written over the other
+  /// side's value, which had never been in step with it (left as it was
+  /// when the pair was made, or listed as differing), so it is in no
+  /// other place. A clash with no reason was changed on both sides.
+  notInStep,
 }
 
 /// One Needs a look item.
@@ -1565,14 +1644,23 @@ ContactChecks contactsToRead({
 // One pair.
 
 /// A detail changed on both sides to different values: the newer edit
-/// won, and [losing] is the value that lost, from [losingSide].
+/// won, and [losing] is the value that lost, from [losingSide]. Or, with
+/// [notInStep], a detail changed on one side only over a value of the
+/// other side's that had never been in step with it: [losing] is the
+/// value written over.
 @immutable
 class ContactClash {
-  const ContactClash(this.field, this.losingSide, this.losing);
+  const ContactClash(
+    this.field,
+    this.losingSide,
+    this.losing, {
+    this.notInStep = false,
+  });
 
   final ContactField field;
   final ContactSide losingSide;
   final Object? losing;
+  final bool notInStep;
 }
 
 /// What one pair's comparison comes to.
@@ -1647,9 +1735,12 @@ class ContactPairPlan {
 ///
 /// A detail changed on one side (its raw value differs from that side's
 /// base) is written to the other, unless the other already holds the same
-/// (a fix to capitals still counts as a change). Changed on both sides to
-/// different values, it clashes: the newer edit wins ([googleUpdatedAt]
-/// against [graphUpdatedAt]; Gmail when neither is known). Lists merge
+/// (a fix to capitals still counts as a change); where the value written
+/// over had never been in step with it (the bases differ), it is listed
+/// as a clash's losing value is ([ContactClash.notInStep]). Changed on
+/// both sides to different values, it clashes: the newer edit wins
+/// ([googleUpdatedAt] against [graphUpdatedAt]; Gmail when neither is
+/// known). Lists merge
 /// ([mergeContactList]). A birthday without a year never travels. A
 /// display name that is only an email or the company is no name to copy
 /// ([SyncedContact.copyableName]): it is compared and copied as no name,
@@ -1668,6 +1759,12 @@ class ContactPairPlan {
 /// replaced on one side is written back from the other. [useSide] writes
 /// each named detail from that side to the other, and [useValues] writes
 /// its details to both: Ron's answers.
+///
+/// [googleKeeps] are details Gmail holds in a form the sync cannot read
+/// ([googleUnreadFields], a birthday as text alone), read as none: left
+/// as they are on both sides, whatever else is asked, never written over
+/// in Gmail (a change in Hadco does not reach it) and never taken for a
+/// removal there.
 ContactPairPlan planPairedContact({
   required SyncedContact googleNow,
   SyncedContact? googleBase,
@@ -1681,6 +1778,7 @@ ContactPairPlan planPairedContact({
   bool copyBack = false,
   Map<ContactField, ContactSide> useSide = const {},
   SyncedContact? useValues,
+  Set<ContactField> googleKeeps = const {},
 }) {
   final norm = normaliser;
   final none = SyncedContact.empty;
@@ -1725,6 +1823,10 @@ ContactPairPlan planPairedContact({
     final gN = _copied(googleNow, f);
     final hN = _copied(graphNow, f);
 
+    if (googleKeeps.contains(f)) {
+      adopt(f);
+      continue;
+    }
     if (useValues != null && useValues.values.containsKey(f)) {
       final v = useValues[f];
       if (!norm.equivalent(f, v, gN) && canTravel(f, v)) writeGoogle(f, v);
@@ -1856,7 +1958,24 @@ ContactPairPlan planPairedContact({
             other is ContactBirthday &&
             !other.hasYear &&
             v.sameDay(other);
-        if (other != null && !addsYear) removes = true;
+        if (other != null && !addsYear) {
+          removes = true;
+          // The value written over had never been in step with this
+          // side's (the two were left as they were, or listed as
+          // differing), so it is in no other place: it is kept a tap
+          // away, as a clash's losing value is. One that was in step is
+          // on this side's base, and goes as any edit's old value does.
+          if (!norm.same(f, _copied(gBase, f), _copied(hBase, f))) {
+            clashes.add(
+              ContactClash(
+                f,
+                fromGoogle ? ContactSide.graph : ContactSide.google,
+                other,
+                notInStep: true,
+              ),
+            );
+          }
+        }
       }
       continue;
     }
@@ -1950,6 +2069,7 @@ _comparePair({
     copyBack: s.copyBack,
     useSide: s.useSide,
     useValues: s.useValues,
+    googleKeeps: s.googleKeeps,
   );
   final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
   return (
@@ -1993,9 +2113,18 @@ _comparePair({
       for (final clash in pair.clashes)
         ContactReviewItem(
           kind: ContactReviewKind.clash,
+          reason: clash.notInStep ? ContactReviewReason.notInStep : null,
           googleName: googleName,
           graphId: graphId,
           fields: [clash.field],
+          // Each side as the plan leaves it, shown under the item beside
+          // the value that lost.
+          googleValues: SyncedContact({
+            clash.field: pair.googleTarget[clash.field],
+          }),
+          graphValues: SyncedContact({
+            clash.field: pair.graphTarget[clash.field],
+          }),
           losing: SyncedContact({clash.field: clash.losing}),
           losingSide: clash.losingSide,
           title: title,
@@ -2119,6 +2248,10 @@ class _Planner {
   /// Contacts under a Needs a look item of their own still waiting for
   /// Ron.
   final waitingSubjects = <(ContactSide, String)>{};
+
+  /// Sources of interrupted creates whose copy is not found yet, left
+  /// alone this run ([_settleJournal]): an answer that copies one waits.
+  final copyInFlight = <(ContactSide, String)>{};
   var pairUp = 0;
   var differingPairs = 0;
 
@@ -2422,6 +2555,12 @@ class _Planner {
   SyncedContact _graphNow(_Row row) =>
       graphListed[row.graphId]?.details ?? row.input.graphDetails;
 
+  /// What the Gmail contact [name] holds that the sync cannot read, when
+  /// it was read this run; else nothing known (the write's own check,
+  /// [ContactWrite.googleUpdate], has the pair planned again from it).
+  Set<ContactField> _googleKeeps(String name) =>
+      googleUnreadFields(googleListed[name]?.person ?? const {});
+
   SyncedContact _detailsOf(ContactSide side, String id) {
     if (side == ContactSide.google) {
       return googleListed[id]?.details ??
@@ -2603,6 +2742,7 @@ class _Planner {
         // twice.
         _setStatus(sourceSide, source, _Status.leftAlone);
         _rowOf(sourceSide, source)?.done = true;
+        copyInFlight.add((sourceSide, source));
         continue;
       }
       journalSettled.add(entry.opId);
@@ -2798,6 +2938,12 @@ class _Planner {
             case final ContactAnswerOutcome o) {
           return o;
         }
+        // The copy this answer asked for was cut short and is not found
+        // yet: it waits with it, rather than be taken as done and lost
+        // with the contact held for good. Once the copy shows it is
+        // paired (and the answer done with); once given up, an hour on,
+        // the answer makes it again.
+        if (named.any(copyInFlight.contains)) return waiting;
         var any = false;
         for (final (side, id) in named) {
           final row = _rowOf(side, id);
@@ -2830,8 +2976,30 @@ class _Planner {
           ContactAnswerKind.useGraph ||
           ContactAnswerKind.useValue:
         final row = g != null ? googleRow[g] : graphRow[h];
-        if (row == null || row.done || row.state != ContactLinkState.paired) {
-          return dropped;
+        if (row == null || row.done) return dropped;
+        final bothIds = row.googleName != null && row.graphId != null;
+        // Held as refused, with both its contacts: only an answer can end
+        // it (Retry sends the change refused again), so it is carried out
+        // now, as a Retry with Ron's choice; refused again, the refusal's
+        // own item says so.
+        final refused =
+            bothIds &&
+            row.state == ContactLinkState.held &&
+            row.reason == ContactHeldReason.refused;
+        if (row.state != ContactLinkState.paired && !refused) {
+          // Held by the change brake, it is a pair still, both its
+          // contacts read every run (contactsToRead): the answer waits,
+          // and is carried out the run after the brake is answered. Any
+          // other held row is no pair now (moved out of Contacts, which no
+          // run reads while it is away, or down to one contact): dropped.
+          if (!bothIds || row.reason != ContactHeldReason.changeBrake) {
+            return dropped;
+          }
+          return unread([
+                (ContactSide.google, row.googleName),
+                (ContactSide.graph, row.graphId),
+              ]) ??
+              waiting;
         }
         if (unread([
               (ContactSide.google, row.googleName),
@@ -2970,6 +3138,8 @@ class _Planner {
       case ContactAnswerKind.retry:
         var any = false;
         for (final (side, id) in named) {
+          // A copy it made cut short: waits with it, as Copy it anyway.
+          if (copyInFlight.contains((side, id))) return waiting;
           final row = _rowOf(side, id);
           if (row == null || row.done) continue;
           if (row.reason != ContactHeldReason.refused) continue;
@@ -3469,6 +3639,7 @@ class _Planner {
         copyBack: copyBack,
         useSide: useSide,
         useValues: useValues,
+        googleKeeps: _googleKeeps(g),
       ),
       linkId: row.id,
       googleName: g,
@@ -3498,6 +3669,7 @@ class _Planner {
         googleUpdatedAt: gc?.updatedAt,
         graphUpdatedAt: hc?.updatedAt,
         newPair: true,
+        googleKeeps: _googleKeeps(g),
       ),
       linkId: linkId,
       alsoRemove: alsoRemove,
@@ -3638,7 +3810,12 @@ class _Planner {
   }
 
   /// A surviving copy held as kept, its gone partner's id cleared (and
-  /// kept as the row's partner, for a delete after all).
+  /// kept as the row's partner, for a delete after all). Kept as this run
+  /// read it, its version and details (the row's where it was not read),
+  /// as the runner keeps one at its delete: a later Delete it here too
+  /// with nothing changed since goes through, and one with a change since
+  /// keeps it again. Kept with the row's old version, a contact kept for
+  /// having changed would read as changed at every delete.
   void _keep(
     _Row row,
     ContactSide side,
@@ -3647,21 +3824,22 @@ class _Planner {
   ) {
     final details = _detailsOf(side, id);
     _setStatus(side, id, _Status.held);
+    final onGoogle = side == ContactSide.google;
     _add(
       ContactLinkPlan(
         linkId: row.id,
-        googleName: side == ContactSide.google ? id : null,
-        graphId: side == ContactSide.graph ? id : null,
+        googleName: onGoogle ? id : null,
+        graphId: onGoogle ? null : id,
         state: ContactLinkState.held,
         reason: ContactHeldReason.kept,
-        googleEtag: side == ContactSide.google ? row.input.googleEtag : null,
-        graphChangeKey: side == ContactSide.graph
-            ? row.input.graphChangeKey
+        googleEtag: onGoogle
+            ? googleListed[id]?.etag ?? row.input.googleEtag
             : null,
-        googleBase: side == ContactSide.google
-            ? row.input.googleDetails
-            : null,
-        graphBase: side == ContactSide.graph ? row.input.graphDetails : null,
+        graphChangeKey: onGoogle
+            ? null
+            : graphListed[id]?.changeKey ?? row.input.graphChangeKey,
+        googleBase: onGoogle ? details : null,
+        graphBase: onGoogle ? null : details,
         title: details.title,
         partnerId: row.input.partnerOf(side),
         partnerBase: row.input.partnerDetailsOf(side),
@@ -4331,10 +4509,14 @@ class _Planner {
       if (unique.length == 1) {
         final match = unique.single;
         final status = _status(other, match);
-        final agree = ContactNormaliser.namesAgree(
-          details.name,
-          _detailsOf(other, match).name,
-        );
+        // The family names, and the given names where both have one: Bob
+        // and Ann Cole, alone on one family address, are two people, and
+        // a new pair would mix their details at once with no answer that
+        // splits them again. Ann and Annie, or J. and John, agree.
+        final name = _detailsOf(other, match).name;
+        final agree =
+            ContactNormaliser.namesAgree(details.name, name) &&
+            ContactNormaliser.givenNamesAgree(details.name, name);
         if (!agree) {
           // A partner due to be deleted is not offered: it goes.
           if (status == _Status.orphan) break;
@@ -4778,9 +4960,14 @@ class _Planner {
         items.add(
           _changeItem(
             plan,
+            // Changed on both sides only: a value never in step was
+            // changed on one side, and Copy them back treats it as any
+            // such change.
             clashes: {
               for (final r in p.reviews)
-                if (r.kind == ContactReviewKind.clash) ...r.fields,
+                if (r.kind == ContactReviewKind.clash &&
+                    r.reason != ContactReviewReason.notInStep)
+                  ...r.fields,
             },
           ),
         );
@@ -4846,6 +5033,7 @@ class _Planner {
               googleUpdatedAt: gc.updatedAt,
               graphUpdatedAt: hc.updatedAt,
               firstSync: input.firstSync,
+              googleKeeps: _googleKeeps(g),
             ),
             linkId: row.id,
             googleName: g,
@@ -4858,7 +5046,10 @@ class _Planner {
           changes.add(
             _changeItem(
               made.plan,
-              clashes: {for (final c in made.pair.clashes) c.field},
+              clashes: {
+                for (final c in made.pair.clashes)
+                  if (!c.notInStep) c.field,
+              },
             ),
           );
         default:

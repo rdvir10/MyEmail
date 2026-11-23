@@ -13,12 +13,14 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/draft.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/common/text_size.dart';
+import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart' show formatClock;
 import 'package:myemail/ui/settings/backup_screen.dart';
 import 'package:myemail/ui/settings/contact_sync_screen.dart';
@@ -2021,6 +2023,21 @@ void main() {
           ),
         ]));
         await tester.pumpAndSettle();
+        // While the screen stays open, Ben keeps his place, no longer held,
+        // and nothing moves: Ann keeps her own buttons.
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:b'),
+            matching: find.text('No longer held: nothing to answer.'),
+          ),
+          findsOneWidget,
+        );
+        expect(button('contact-sync-item:a:applyThem'), findsOneWidget);
+
+        // Opened again: a question of one has only the buttons for all.
+        await tester.pumpWidget(const SizedBox());
+        await pumpScreen(tester);
+        expect(button('contact-sync-item:b'), findsNothing);
         expect(button('contact-sync-item:a:applyThem'), findsNothing,
             reason: 'the same as the buttons for all');
         expect(button('contact-sync-question-for'), findsNothing);
@@ -2111,6 +2128,563 @@ void main() {
           findsOneWidget,
         );
         expect(find.text("Don't delete them"), findsNothing);
+      });
+
+      testWidgets('contacts answered one by one stay where they are until '
+          'the screen is left, and so does a question carried out',
+          (tester) async {
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: ContactSide.graph,
+              key: key,
+              answer: answer,
+              changes: const [
+                ContactSyncDetailChange(
+                  field: ContactField.jobTitle,
+                  before: 'Buyer',
+                ),
+              ],
+            );
+        // Six deletions answered for all, waiting for the run, above the
+        // changes Ron goes down one by one.
+        final deletions = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.deletions,
+          answer: ContactSyncChoice.deleteThem,
+          items: [
+            for (final name in ['Eve', 'Fay', 'Gil', 'Hal', 'Ida', 'Jon'])
+              ContactSyncQuestionItem(
+                title: '$name Ash',
+                side: ContactSide.google,
+                key: 'd-$name',
+              ),
+          ],
+        );
+        ContactSyncStatus held(
+          List<ContactSyncQuestionItem> changes, {
+          bool withDeletions = true,
+        }) =>
+            synced(questions: [
+              if (withDeletions) deletions,
+              ContactSyncQuestion(
+                kind: ContactSyncQuestionKind.changes,
+                items: changes,
+              ),
+            ]);
+        sync = FakeContactSync(status: held([
+          person('a', 'Ann Cole'),
+          person('b', 'Ben Day'),
+          person('c', 'Cy Fox'),
+          person('d', 'Di Ray'),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        double top(Finder f) => tester.getTopLeft(f).dy;
+        Finder item(String key) => button('contact-sync-item:$key');
+        Finder under(String key, String text) =>
+            find.descendant(of: item(key), matching: find.text(text));
+
+        // Ann answered on her own, then carried out by the run her answer
+        // started: she stays, done, and nothing under her moves.
+        await tester.tap(button('contact-sync-item:a:applyThem'));
+        await tester.pumpAndSettle();
+        expect(sync.questionItems.last, {'a'});
+        sync.set(held([
+          person('a', 'Ann Cole', answer: ContactSyncChoice.applyThem),
+          person('b', 'Ben Day'),
+          person('c', 'Cy Fox'),
+          person('d', 'Di Ray'),
+        ]));
+        await tester.pumpAndSettle();
+        final c = top(item('c'));
+        sync.set(held([
+          person('b', 'Ben Day'),
+          person('c', 'Cy Fox'),
+          person('d', 'Di Ray'),
+        ]));
+        await tester.pumpAndSettle();
+        expect(under('a', 'You chose Apply: done. It is no longer held.'),
+            findsOneWidget);
+        expect(
+          find.descendant(
+            of: item('a'),
+            matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+          ),
+          findsNothing,
+        );
+        expect(top(item('c')), c, reason: 'nothing moved');
+        expect(find.text('For the 3 not yet answered:'), findsOneWidget);
+
+        // The deletions carried out, their question gone: it stays, done,
+        // and the changes under it do not move.
+        sync.set(held(
+          [
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+            person('d', 'Di Ray'),
+          ],
+          withDeletions: false,
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('You chose Delete them: done. They are no longer held.'),
+          findsOneWidget,
+        );
+        expect(find.text('Eve Ash: deleted in Gmail'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: button('contact-sync-question:deletions'),
+            matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+          ),
+          findsNothing,
+        );
+        expect(top(item('c')), c, reason: 'nothing moved');
+
+        // Ben no longer held, with no answer: he stays, saying so.
+        sync.set(held(
+          [person('c', 'Cy Fox'), person('d', 'Di Ray')],
+          withDeletions: false,
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          under('b', 'No longer held: nothing to answer.'),
+          findsOneWidget,
+        );
+        expect(button('contact-sync-item:b:applyThem'), findsNothing);
+
+        // Held since: under the rest.
+        sync.set(held(
+          [
+            person('c', 'Cy Fox'),
+            person('d', 'Di Ray'),
+            person('f', 'Fay Gil'),
+          ],
+          withDeletions: false,
+        ));
+        await tester.pumpAndSettle();
+        expect(top(item('f')), greaterThan(top(item('d'))));
+
+        // The buttons for the rest answer only the contacts listed now.
+        await tester.tap(find.text('Apply them'));
+        await tester.pumpAndSettle();
+        expect(sync.questionItems.last, {'c', 'd', 'f'});
+      });
+
+      testWidgets('the cards keep their place as each sync starts, ends or '
+          'stops', (tester) async {
+        final question = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.changes,
+          items: [
+            for (final (key, name) in [
+              ('a', 'Ann Cole'),
+              ('b', 'Ben Day'),
+              ('c', 'Cy Fox'),
+            ])
+              ContactSyncQuestionItem(
+                title: name,
+                side: ContactSide.graph,
+                key: key,
+                changes: const [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Buyer',
+                  ),
+                ],
+              ),
+          ],
+        );
+        final last = ContactSyncTally(at: at1042, changedGraph: 1);
+        ContactSyncStatus held({
+          ContactSyncTally? tally,
+          ContactSyncProgress? running,
+          ContactSyncHalt? halt,
+        }) =>
+            synced(
+              questions: [question],
+              last: tally ?? last,
+              running: running,
+              halt: halt,
+            );
+        sync = FakeContactSync(status: held());
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        double top() => tester.getTopLeft(button('contact-sync-item:b')).dy;
+        final b = top();
+
+        // The sync an answer starts, going.
+        sync.set(held(
+          running: const ContactSyncProgress(
+            step: ContactSyncStep.writing,
+            done: 1,
+            total: 3,
+          ),
+        ));
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('Copying changes: 1 of 3'), findsOneWidget);
+        expect(top(), b, reason: 'a sync starting');
+
+        // Done, with more to say about it.
+        sync.set(held(
+          tally: ContactSyncTally(
+            at: at1042,
+            addedToGoogle: 2,
+            changedGraph: 3,
+            deletedGraph: 1,
+            paired: 4,
+            needsALook: 2,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(top(), b, reason: 'a sync ending');
+
+        // Stopped, with why and the way on.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.failed,
+            at: at1042,
+            error: const ContactSyncFailed('Hadco could not be reached.'),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(find.text('Hadco could not be reached.'), findsOneWidget);
+        expect(top(), b, reason: 'a sync stopping');
+      });
+
+      testWidgets("a stop's way on is on a phone's first screen, above a "
+          'question of many contacts', (tester) async {
+        // Hadco's password has run out: every answer's sync stops at once,
+        // the access row can only say it could not check, and Sign in again
+        // is the one way on.
+        sync = FakeContactSync(
+          status: synced(
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.notAllowed,
+              at: at1042,
+              side: ContactSide.graph,
+              error: const ContactSyncNeedsSignIn(
+                side: ContactSide.graph,
+                accountId: 'acct-h',
+                message: "Hadco's sign-in has run out. Sign in again.",
+              ),
+            ),
+            questions: [
+              ContactSyncQuestion(
+                kind: ContactSyncQuestionKind.deletions,
+                items: [
+                  for (var i = 0; i < 40; i++)
+                    ContactSyncQuestionItem(
+                      title: 'Person $i',
+                      side: ContactSide.google,
+                      key: 'k$i',
+                    ),
+                ],
+              ),
+            ],
+          ),
+          access: {
+            'acct-h': const ContactSyncAccess(
+              ContactSyncAccessState.unknown,
+              "Hadco's sign-in has run out.",
+            ),
+          },
+        );
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester, oauth: _grants(), size: const Size(412, 915));
+
+        // On the screen as it opens, unscrolled, and above the question.
+        final signIn = find.text('Sign in again').hitTestable();
+        expect(signIn, findsOneWidget);
+        expect(
+          find
+              .text('Contact sync has stopped: not allowed yet for Hadco.')
+              .hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          tester.getTopLeft(signIn).dy,
+          lessThan(
+            tester.getTopLeft(button('contact-sync-question:deletions')).dy,
+          ),
+        );
+
+        await tester.tap(signIn);
+        for (var i = 0; i < 20; i++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+      });
+
+      testWidgets('above the cards, a line and a button that keep their '
+          'height as a sync starts, ends, stops and its stop clears',
+          (tester) async {
+        final question = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.changes,
+          items: [
+            for (final (key, name) in [
+              ('a', 'Ann Cole'),
+              ('b', 'Ben Day'),
+              ('c', 'Cy Fox'),
+            ])
+              ContactSyncQuestionItem(
+                title: name,
+                side: ContactSide.graph,
+                key: key,
+                changes: const [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Buyer',
+                  ),
+                ],
+              ),
+          ],
+        );
+        ContactSyncStatus held({
+          ContactSyncTally? tally,
+          ContactSyncProgress? running,
+          ContactSyncHalt? halt,
+        }) =>
+            synced(
+              questions: [question],
+              last: tally ?? ContactSyncTally(at: at1042, changedGraph: 1),
+              running: running,
+              halt: halt,
+            );
+        sync = FakeContactSync(status: held());
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester, oauth: _grants(), size: const Size(412, 915));
+        final slot = button('contact-sync-slot');
+        Finder inSlot(String text) =>
+            find.descendant(of: slot, matching: find.text(text));
+        double top() =>
+            tester.getTopLeft(button('contact-sync-question:changes')).dy;
+        final clock = formatClock(at1042, use24h: false);
+
+        expect(inSlot('Synced at $clock'), findsOneWidget);
+        final cards = top();
+        expect(tester.getTopLeft(slot).dy, lessThan(cards));
+
+        // The sync an answer starts, going.
+        sync.set(held(
+          running: const ContactSyncProgress(
+            step: ContactSyncStep.writing,
+            done: 1,
+            total: 3,
+          ),
+        ));
+        await tester.pump();
+        await tester.pump();
+        expect(inSlot('Syncing…'), findsOneWidget);
+        expect(top(), cards, reason: 'a sync starting');
+
+        // Done, with more to say about it: said in full under the cards.
+        sync.set(held(
+          tally: ContactSyncTally(
+            at: at1042,
+            addedToGoogle: 2,
+            changedGraph: 3,
+            deletedGraph: 1,
+            paired: 4,
+            needsALook: 2,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(inSlot('Synced at $clock'), findsOneWidget);
+        expect(top(), cards, reason: 'a sync ending');
+
+        // Stopped by Hadco's sign-in: why, and Sign in again.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.notAllowed,
+            at: at1042,
+            side: ContactSide.graph,
+            error: const ContactSyncNeedsSignIn(
+              side: ContactSide.graph,
+              accountId: 'acct-h',
+              message: 'Hadco has not allowed contact sync.',
+            ),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          inSlot('Contact sync has stopped: not allowed yet for Hadco.'),
+          findsOneWidget,
+        );
+        expect(inSlot('Sign in again'), findsOneWidget);
+        expect(top(), cards, reason: 'a sync stopping, with a way on');
+
+        // Signed in, and synced: the stop and its button go.
+        sync.set(held());
+        await tester.pumpAndSettle();
+        expect(inSlot('Synced at $clock'), findsOneWidget);
+        expect(inSlot('Sign in again'), findsNothing);
+        expect(top(), cards, reason: 'the stop clearing');
+
+        // A failure worth trying again: Try again.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.failed,
+            at: at1042,
+            error: const ContactSyncFailed('Hadco could not be reached.'),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(inSlot('The last sync stopped at $clock.'), findsOneWidget);
+        expect(top(), cards, reason: 'a failure');
+        await tester.tap(inSlot('Try again'));
+        await tester.pumpAndSettle();
+        expect(sync.count('syncNow'), 1);
+
+        // The other device: Sync here.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.otherDevice,
+            at: at1042,
+            claimedAt: at1042.subtract(const Duration(hours: 1)),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          inSlot('Contact sync is on on your other device'),
+          findsOneWidget,
+        );
+        expect(top(), cards, reason: 'the other device');
+        await tester.tap(inSlot('Sync here'));
+        await tester.pumpAndSettle();
+        expect(sync.count('syncHere'), 1);
+
+        // Google's limit, with no way on of its own: the line alone.
+        sync.set(held(
+          halt: ContactSyncHalt(kind: ContactSyncHaltKind.quota, at: at1042),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          inSlot("Google's daily limit on changes to contacts is spent. "
+              'Contact sync carries on tomorrow.'),
+          findsOneWidget,
+        );
+        expect(top(), cards, reason: "Google's limit");
+      });
+
+      testWidgets('a question whose contacts are let go unanswered says so, '
+          'not "all answered"', (tester) async {
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSide side = ContactSide.graph,
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: side,
+              key: key,
+              answer: answer,
+            );
+        final deletions = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.deletions,
+          items: [
+            for (final (key, name) in [
+              ('d1', 'Eve Ash'),
+              ('d2', 'Fay Gil'),
+              ('d3', 'Gus Hay'),
+            ])
+              person(key, name, side: ContactSide.google),
+          ],
+        );
+        ContactSyncQuestion changes(List<ContactSyncQuestionItem> items) =>
+            ContactSyncQuestion(
+              kind: ContactSyncQuestionKind.changes,
+              items: items,
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          deletions,
+          changes([
+            person('a', 'Ann Cole'),
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+          ]),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        expect(find.text('3 deletions need your OK'), findsOneWidget);
+
+        // Ann answered on her own; then the deletions undone in Gmail and
+        // Ben's and Cy's changes undone, none of them answered: no longer
+        // held.
+        sync.set(synced(questions: [
+          deletions,
+          changes([
+            person('a', 'Ann Cole', answer: ContactSyncChoice.applyThem),
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+          ]),
+        ]));
+        await tester.pumpAndSettle();
+        sync.set(synced(questions: [
+          changes([
+            person('a', 'Ann Cole', answer: ContactSyncChoice.applyThem),
+          ]),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('3 deletions, no longer held'), findsOneWidget);
+        expect(
+          find.text('Changes to 3 contacts: 1 answered, 2 no longer held'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('all answered'), findsNothing);
+      });
+
+      testWidgets('a question kept done and a new one of the same kind each '
+          'have a key of their own', (tester) async {
+        ContactSyncQuestion deletions(
+          List<String> names, {
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestion(
+              kind: ContactSyncQuestionKind.deletions,
+              answer: answer,
+              items: [
+                for (final name in names)
+                  ContactSyncQuestionItem(
+                    title: '$name Ash',
+                    side: ContactSide.google,
+                    key: 'k-$name',
+                  ),
+              ],
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          deletions(['Eve', 'Fay'], answer: ContactSyncChoice.deleteThem),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        // Those carried out, and two more deletions held by a later sync.
+        sync.set(synced(questions: [deletions(['Gil', 'Hal'])]));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final done = button('contact-sync-question:deletions');
+        final held = button('contact-sync-question:deletions:2');
+        expect(done, findsOneWidget);
+        expect(held, findsOneWidget);
+        expect(
+          find.descendant(
+            of: done,
+            matching: find.text(
+              'You chose Delete them: done. They are no longer held.',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: held, matching: find.text('Delete them')),
+          findsOneWidget,
+        );
+        expect(tester.getTopLeft(held).dy,
+            greaterThan(tester.getTopLeft(done).dy));
       });
     });
 
@@ -2233,7 +2807,364 @@ void main() {
         (id: 5, choice: ContactSyncChoice.deleteHereToo, candidateId: null),
         (id: 6, choice: ContactSyncChoice.retry, candidateId: null),
       ]);
-      expect(sync.allDiffering, [ContactSyncChoice.leaveAsTheyAre]);
+      expect(sync.allDiffering.single.choice, ContactSyncChoice.leaveAsTheyAre);
+      expect(sync.allDiffering.single.looks.keys, {2, 3});
+    });
+
+    testWidgets('Needs a look: items answered stay where they are until the '
+        'screen is left', (tester) async {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            graphValues: {ContactField.jobTitle: 'Head buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      ContactSyncStatus listing(List<ContactSyncLook> looks) =>
+          synced(looks: looks);
+      sync = FakeContactSync(status: listing([
+        for (var id = 1; id <= 6; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (6)'));
+      await tester.pumpAndSettle();
+      double top(Finder f) => tester.getTopLeft(f).dy;
+      Finder look(int id) => button('contact-sync-look:$id');
+      Finder under(int id, String text) =>
+          find.descendant(of: look(id), matching: find.text(text));
+
+      // Use Hadco's on the first, carried out by the run it started.
+      await tester.tap(button('contact-sync-look:1:useGraph'));
+      await tester.pumpAndSettle();
+      sync.set(listing([
+        differs(1, answer: ContactSyncChoice.useGraph),
+        for (var id = 2; id <= 6; id++) differs(id),
+      ]));
+      await tester.pumpAndSettle();
+      final fifthAnswered = top(look(5));
+      sync.set(listing([for (var id = 2; id <= 6; id++) differs(id)]));
+      await tester.pumpAndSettle();
+      expect(
+        under(1, "You chose Use Hadco's: done. No longer needs a look."),
+        findsOneWidget,
+      );
+      expect(top(look(5)), fifthAnswered, reason: 'nothing moved');
+
+      // Leave as they are, which takes the item away at once: it stays,
+      // done, with the answer given here.
+      await tester.tap(button('contact-sync-look:2:leaveAsTheyAre'));
+      await tester.pumpAndSettle();
+      sync.set(listing([for (var id = 3; id <= 6; id++) differs(id)]));
+      await tester.pumpAndSettle();
+      expect(
+        under(2, 'You chose Leave as they are: done. No longer needs a look.'),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: look(2),
+          matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+        ),
+        findsNothing,
+      );
+
+      // Gone with no answer (its contacts gone): it stays, saying so.
+      sync.set(listing([differs(4), differs(5), differs(6)]));
+      await tester.pumpAndSettle();
+      expect(under(3, 'No longer needs a look.'), findsOneWidget);
+
+      // Listed since: under the rest, and nothing above it moves.
+      final fifth = top(look(5));
+      sync.set(listing([differs(4), differs(5), differs(6), differs(7)]));
+      await tester.pumpAndSettle();
+      expect(top(look(7)), greaterThan(top(look(6))));
+      expect(top(look(5)), fifth);
+      expect(find.text('Nothing needs a look.'), findsNothing);
+
+      // The answer for all names only the items listed now.
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering.single.looks.keys, {4, 5, 6, 7});
+    });
+
+    testWidgets('a value never in step, written over by a change on one '
+        'side, says so', (tester) async {
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.clash,
+          reason: ContactReviewReason.notInStep,
+          title: 'Ann Cole',
+          fields: [ContactField.notes],
+          losing: 'Prefers email after 5',
+          losingSide: ContactSide.graph,
+          choices: [ContactSyncChoice.useOther, ContactSyncChoice.keepNewer],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (1)'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Changed in Gmail and copied to Hadco, where it was '
+            'different. Hadco had: Prefers email after 5.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('both sides'), findsNothing);
+      await tester.tap(find.text("Use Hadco's instead"));
+      await tester.pumpAndSettle();
+      expect(sync.lookAnswers, [
+        (id: 1, choice: ContactSyncChoice.useOther, candidateId: null),
+      ]);
+    });
+
+    testWidgets('Needs a look: an item is said to be done with an answer '
+        'only where the answer was taken', (tester) async {
+      ContactSyncLook differs(int id) => ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            graphValues: {ContactField.jobTitle: 'Head buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+          );
+      sync = FakeContactSync(status: synced(looks: [
+        for (var id = 1; id <= 4; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (4)'));
+      await tester.pumpAndSettle();
+      Finder under(int id, String text) => find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.text(text),
+          );
+      const left = 'You chose Leave as they are: done. No longer needs a look.';
+
+      // A sync took the first away as Ron tapped: nothing was answered.
+      sync.lookGone.add(1);
+      await tester.tap(button('contact-sync-look:1:leaveAsTheyAre'));
+      await tester.pumpAndSettle();
+      sync.set(synced(looks: [differs(2), differs(3), differs(4)]));
+      await tester.pumpAndSettle();
+      expect(under(1, 'No longer needs a look.'), findsOneWidget);
+      expect(find.textContaining('You chose'), findsNothing);
+
+      // The answer for all took two of the three it named: the third, gone
+      // meanwhile, was not answered.
+      sync.allDifferingAnswered = {2, 3};
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering.single.looks.keys, {2, 3, 4});
+      sync.set(synced(looks: const []));
+      await tester.pumpAndSettle();
+      expect(under(2, left), findsOneWidget);
+      expect(under(3, left), findsOneWidget);
+      expect(under(4, 'No longer needs a look.'), findsOneWidget);
+    });
+
+    testWidgets('Needs a look: an item whose answer the server refused comes '
+        'back listed, never said to be done', (tester) async {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.notes],
+            googleValues: {ContactField.notes: 'Met at the fair $id'},
+            graphValues: {ContactField.notes: 'Prefers email after 5'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      const refused = ContactSyncLook(
+        id: 3,
+        kind: ContactReviewKind.refused,
+        side: ContactSide.graph,
+        title: 'Person 1',
+        choices: [ContactSyncChoice.retry],
+      );
+      const running = ContactSyncProgress(step: ContactSyncStep.writing);
+      sync = FakeContactSync(status: synced(looks: [
+        differs(1),
+        differs(2),
+        differs(4),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+      Finder said(int id, String text) => find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.textContaining(text),
+          );
+      Future<void> tap(String key) async {
+        await tester.ensureVisible(button(key));
+        await tester.tap(button(key));
+        await tester.pumpAndSettle();
+      }
+
+      const carrying = "You chose Use Gmail's: the sync is carrying it out.";
+      const done = "You chose Use Gmail's: done. No longer needs a look.";
+
+      // Use Gmail's on two: queued (the second's never shown so, the run
+      // too quick), then taken away by the run that carries them out,
+      // said to be carried out while it runs.
+      await tap('contact-sync-look:1:useGoogle');
+      sync.set(synced(looks: [
+        differs(1, answer: ContactSyncChoice.useGoogle),
+        differs(2),
+        differs(4),
+      ]));
+      await tester.pumpAndSettle();
+      await tap('contact-sync-look:2:useGoogle');
+      sync.set(synced(looks: [differs(4)], running: running));
+      await tester.pumpAndSettle();
+      for (final id in [1, 2]) {
+        expect(said(id, carrying), findsOneWidget);
+        expect(said(id, 'done'), findsNothing);
+      }
+      // Leave as they are needs no run: done at once, a run going or not.
+      await tap('contact-sync-look:4:leaveAsTheyAre');
+      sync.set(synced(looks: const [], running: running));
+      await tester.pumpAndSettle();
+      expect(
+        said(4, 'You chose Leave as they are: done. No longer needs a look.'),
+        findsOneWidget,
+      );
+
+      // Outlook refused the first's write: it is put back as it was,
+      // unanswered, beside the refusal, to be answered again. The second
+      // went through.
+      sync.set(synced(looks: [differs(1), refused]));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-look:1:useGoogle'), findsOneWidget);
+      expect(button('contact-sync-look:1:useGraph'), findsOneWidget);
+      expect(said(1, 'You chose'), findsNothing);
+      expect(said(1, 'No longer needs a look'), findsNothing);
+      expect(said(2, done), findsOneWidget);
+      expect(button('contact-sync-look:3:retry'), findsOneWidget);
+      expect(
+        tester.getTopLeft(button('contact-sync-look:1')).dy,
+        lessThan(tester.getTopLeft(button('contact-sync-look:2')).dy),
+      );
+
+      // Taken away later with no answer (its contacts gone): the answer
+      // that was refused is not said to be done.
+      sync.set(synced(looks: const [refused]));
+      await tester.pumpAndSettle();
+      expect(said(1, 'No longer needs a look.'), findsOneWidget);
+      expect(said(1, 'You chose'), findsNothing);
+      expect(said(2, done), findsOneWidget);
+    });
+
+    group('Needs a look: the box for all keeps its place', () {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            graphValues: {ContactField.jobTitle: 'Head buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      double top(WidgetTester tester, Finder f) => tester.getTopLeft(f).dy;
+      Finder look(int id) => button('contact-sync-look:$id');
+      final box = button('contact-sync-all');
+
+      testWidgets('with fewer than two left, it stays, its buttons off',
+          (tester) async {
+        sync = FakeContactSync(status: synced(looks: [
+          for (var id = 1; id <= 3; id++) differs(id),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        await tester.tap(find.text('Needs a look (3)'));
+        await tester.pumpAndSettle();
+        final first = top(tester, look(1));
+        expect(top(tester, box), lessThan(first));
+
+        // Answered one by one down to one: the box stays where it was.
+        sync.set(synced(looks: [
+          differs(1, answer: ContactSyncChoice.useGraph),
+          differs(2, answer: ContactSyncChoice.useGraph),
+          differs(3),
+        ]));
+        await tester.pumpAndSettle();
+        expect(box, findsOneWidget);
+        expect(
+          find.text('Only one is left: answer it with its own buttons.'),
+          findsOneWidget,
+        );
+        for (final c in ['useGoogle', 'useGraph', 'leaveAsTheyAre']) {
+          expect(enabled(tester, 'contact-sync-all:$c'), isFalse, reason: c);
+        }
+        expect(top(tester, look(1)), first, reason: 'nothing moved');
+
+        // None left, the first two carried out: still in its place.
+        sync.set(synced(looks: [
+          differs(3, answer: ContactSyncChoice.useGraph),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('Nothing left to answer for all.'), findsOneWidget);
+        expect(top(tester, look(1)), first, reason: 'nothing moved');
+      });
+
+      testWidgets('one that comes while the screen is open goes under the '
+          'items', (tester) async {
+        const dana = ContactSyncLook(
+          id: 9,
+          kind: ContactReviewKind.newContact,
+          reason: ContactReviewReason.sameName,
+          side: ContactSide.google,
+          title: 'Dana Levi',
+          candidates: [ContactSyncCandidate(id: 'h-1', title: 'Dana Levi')],
+          choices: [
+            ContactSyncChoice.samePerson,
+            ContactSyncChoice.copyAnyway,
+            ContactSyncChoice.leaveOut,
+          ],
+        );
+        sync = FakeContactSync(status: synced(looks: [dana, differs(1)]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        await tester.tap(find.text('Needs a look (2)'));
+        await tester.pumpAndSettle();
+        expect(box, findsNothing);
+        final first = top(tester, look(9));
+
+        // Same person on Dana: the run pairs her, and her details differ
+        // too, so now two pairs do.
+        sync.set(synced(looks: [differs(1), differs(2)]));
+        await tester.pumpAndSettle();
+        expect(find.text('All 2 pairs whose details differ'), findsOneWidget);
+        expect(top(tester, look(9)), first, reason: 'nothing moved');
+        expect(top(tester, box), greaterThan(top(tester, look(2))));
+      });
     });
 
     testWidgets("one side's details for every differing pair is asked again, "
@@ -2275,16 +3206,119 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text("Replace Hadco's"));
       await tester.pumpAndSettle();
-      expect(sync.allDiffering, [ContactSyncChoice.useGoogle]);
+      expect(
+        [for (final a in sync.allDiffering) a.choice],
+        [ContactSyncChoice.useGoogle],
+      );
 
       // Leaving them as they are replaces nothing, and is not asked again.
       await tester.tap(find.text('Leave all as they are'));
       await tester.pumpAndSettle();
       expect(button('contact-sync-all-sure'), findsNothing);
-      expect(sync.allDiffering, [
+      expect([for (final a in sync.allDiffering) a.choice], [
         ContactSyncChoice.useGoogle,
         ContactSyncChoice.leaveAsTheyAre,
       ]);
+    });
+
+    testWidgets('an answer for all names the pairs it counted: one listed '
+        'while its question is open is not among them', (tester) async {
+      ContactSyncLook differs(int id) => ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+          );
+      sync = FakeContactSync(status: synced(looks: [
+        for (var id = 1; id <= 3; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text("Use Hadco's for all"));
+      await tester.pumpAndSettle();
+      // A run lists another pair while the question is open.
+      sync.set(synced(looks: [
+        for (var id = 1; id <= 4; id++) differs(id),
+      ]));
+      await tester.pumpAndSettle();
+      expect(find.text("Use Hadco's details for all 3?"), findsOneWidget);
+      await tester.tap(find.text("Replace Gmail's"));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering.single.choice, ContactSyncChoice.useGraph);
+      expect(sync.allDiffering.single.looks, {
+        for (var id = 1; id <= 3; id++) id: differs(id).version,
+      });
+
+      // Refused, the pairs having changed since: said, and read again.
+      sync.allDifferingFailure = const ContactSyncRefused(
+        'Those contacts have changed since they were shown. Look at them '
+        'again.',
+      );
+      final reads = sync.statusReads;
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Those contacts have changed since they were shown. Look '
+            'at them again.'),
+        findsOneWidget,
+      );
+      expect(sync.statusReads, greaterThan(reads),
+          reason: 'read again, to be answered as it is now');
+    });
+
+    test("an item's version is what it shows", () {
+      const look = ContactSyncLook(
+        id: 1,
+        kind: ContactReviewKind.differing,
+        title: 'Ann Cole',
+        fields: [ContactField.jobTitle],
+        googleValues: {ContactField.jobTitle: 'Buyer'},
+        graphValues: {ContactField.jobTitle: 'Head buyer'},
+      );
+      expect(look.version, hasLength(16));
+      expect(look.version, isNot(contains('Buyer')));
+      expect(
+        const ContactSyncLook(
+          id: 2,
+          kind: ContactReviewKind.differing,
+          title: 'Ann Cole',
+          fields: [ContactField.jobTitle],
+          googleValues: {ContactField.jobTitle: 'Buyer'},
+          graphValues: {ContactField.jobTitle: 'Head buyer'},
+          answer: ContactSyncChoice.useGraph,
+        ).version,
+        look.version,
+        reason: 'not its id or its answer',
+      );
+      for (final other in const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.differing,
+          title: 'Ann Cole',
+          fields: [ContactField.jobTitle, ContactField.company],
+          googleValues: {ContactField.jobTitle: 'Buyer'},
+          graphValues: {ContactField.jobTitle: 'Head buyer'},
+        ),
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.differing,
+          title: 'Ann Cole',
+          fields: [ContactField.jobTitle],
+          googleValues: {ContactField.jobTitle: 'Buyer'},
+          graphValues: {ContactField.jobTitle: 'Chief buyer'},
+        ),
+      ]) {
+        expect(other.version, isNot(look.version));
+      }
     });
 
     testWidgets('a new contact whose names disagree says so, however it was '
@@ -2618,11 +3652,17 @@ void main() {
       final panel = button('contact-sync-copies');
       inOrder(tester, panel, [
         "Merge Hadco's copies",
+        // Where Graph's delete puts a contact is not yet known: true
+        // either way.
         'Keeps the synced copy of each person, adds to it any detail only '
-            'another copy has, and deletes the other copies, which Outlook '
-            'keeps in Deleted Items. When both copies have a photo, the '
-            'synced copy keeps its own. Copies that differ are left for you '
-            'to choose.',
+            "another copy has (Outlook's own faxes, PO boxes, user fields "
+            'and the like among them), and deletes the other copies. Outlook '
+            'keeps deleted contacts for a while: in Deleted Items, or under '
+            'Recover items deleted from this folder at the top of Deleted '
+            'Items. Files attached to a copy, and its gender, billing and '
+            'mileage, are not compared and go with the copy. When both '
+            'copies have a photo, the synced copy keeps its own. Copies that '
+            'differ are left for you to choose.',
         'Nothing is deleted in Gmail; it gets the added details at the next '
             'sync.',
         '1336 people have 1515 other copies in Hadco.',
@@ -3627,6 +4667,252 @@ void main() {
       );
     });
 
+    testWidgets('a merge asked for whose sync has stopped says why it waits, '
+        'with the way on', (tester) async {
+      const asked = ContactSyncCopies(people: 1336, extras: 1515, asked: true);
+      ContactSyncStatus stopped(
+        ContactSyncHalt? halt, {
+        ContactSyncProgress? running,
+      }) =>
+          synced(
+            copies: asked,
+            halt: halt,
+            running: running,
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      await openDuplicates(tester, copies: asked);
+      const waits = 'Merge asked for: it starts once the sync can carry on.';
+      final panel = button('contact-sync-copies');
+      final clock = formatClock(at1042, use24h: false);
+
+      // The sync stopped, as Ron waits here for the merge.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at1042,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'The last sync stopped at $clock.',
+        'Hadco could not be reached.',
+        'Sync now',
+      ]);
+      expect(find.text('Merge asked for: the next sync carries it out.'),
+          findsNothing);
+      await tester.tap(button('contact-sync-copies-sync-now'));
+      await tester.pumpAndSettle();
+      expect(sync.count('syncNow'), 1);
+
+      // Each stop in the Contact sync screen's own words.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.notAllowed,
+        at: at1042,
+        side: ContactSide.graph,
+        error: const ContactSyncNeedsSignIn(
+          side: ContactSide.graph,
+          accountId: 'acct-h',
+          message: 'Hadco needs you to sign in again.',
+        ),
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'Contact sync has stopped: not allowed yet for Hadco.',
+        'Hadco needs you to sign in again.',
+        'Sync now',
+      ]);
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.emptyAnswer,
+        at: at1042,
+        side: ContactSide.graph,
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'Contact sync has stopped: Hadco listed far fewer contacts than '
+            'expected.',
+        'Sync now',
+      ]);
+      final renewed = at1042.add(const Duration(hours: 2));
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.quota,
+        at: at1042,
+        side: ContactSide.google,
+        until: renewed,
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        "Google's daily limit on changes to contacts is spent. Contact sync "
+            'carries on after ${formatClock(renewed, use24h: false)}.',
+        'Sync now',
+      ]);
+
+      // Another device's claim, which Sync now would only meet again: Sync
+      // here, as the Contact sync screen offers.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.otherDevice,
+        at: at1042,
+        claimedAt: at1042,
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'Contact sync is on on your other device',
+        'It last synced there at $clock. Only one device may sync, or the '
+            'two would work against each other: turn it off there, or sync '
+            'here instead.',
+        'Sync here',
+      ]);
+      expect(button('contact-sync-copies-sync-now'), findsNothing);
+      await tester.tap(button('contact-sync-copies-here'));
+      await tester.pumpAndSettle();
+      expect(sync.count('syncHere'), 1);
+
+      // Put away: nothing to say, the next opening carries it on.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.putAway,
+        at: at1042,
+      )));
+      await tester.pumpAndSettle();
+      expect(find.text('Merge asked for: the next sync carries it out.'),
+          findsOneWidget);
+      expect(button('contact-sync-copies-stop'), findsNothing);
+      expect(button('contact-sync-copies-sync-now'), findsNothing);
+
+      // A sync going again: how far it has got, not the stop before it.
+      sync.set(stopped(
+        ContactSyncHalt(kind: ContactSyncHaltKind.failed, at: at1042),
+        running: const ContactSyncProgress(step: ContactSyncStep.reading),
+      ));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge asked for: it starts once the sync has made its '
+            'changes.'),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-copies-stop'), findsNothing);
+      expect(button('contact-sync-copies-sync-now'), findsNothing);
+    });
+
+    testWidgets('a merge stopped part way says it carries on, not that it '
+        'starts', (tester) async {
+      const partWay = ContactSyncCopies(
+        people: 600,
+        extras: 700,
+        asked: true,
+        partWay: true,
+      );
+      ContactSyncStatus stopped({ContactSyncProgress? running}) => synced(
+            copies: partWay,
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.notAllowed,
+              at: at1042,
+              side: ContactSide.graph,
+              error: const ContactSyncNeedsSignIn(
+                side: ContactSide.graph,
+                accountId: 'acct-h',
+                message: 'Hadco needs you to sign in again.',
+              ),
+            ),
+            running: running,
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      await openDuplicates(tester, copies: partWay);
+      // A sign-in Hadco asked for during the merge, after the sync's end.
+      sync.set(stopped());
+      await tester.pumpAndSettle();
+      inOrder(tester, button('contact-sync-copies'), [
+        'Merge stopped part way: it carries on once the sync can.',
+        'Contact sync has stopped: not allowed yet for Hadco.',
+        'Hadco needs you to sign in again.',
+        'Sync now',
+      ]);
+      expect(find.textContaining('it starts'), findsNothing);
+
+      // The next sync going: the merge carries on after its changes.
+      sync.set(stopped(
+        running: const ContactSyncProgress(step: ContactSyncStep.reading),
+      ));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge stopped part way: it carries on once the sync has '
+            'made its changes.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('it starts'), findsNothing);
+    });
+
+    testWidgets('a merge waiting on a stop that needs a sign-in offers the '
+        'sign-in there, as the Contact sync screen does', (tester) async {
+      final web = FakeWebViewPlatform.install();
+      sync = FakeContactSync(status: synced(
+        copies: const ContactSyncCopies(people: 3, extras: 4, asked: true),
+        halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.notAllowed,
+          at: at1042,
+          side: ContactSide.graph,
+          error: const ContactSyncNeedsSignIn(
+            side: ContactSide.graph,
+            accountId: 'acct-h',
+            message: 'Hadco has not allowed contact sync.',
+          ),
+        ),
+        duplicates: const [
+          ContactSyncDuplicates(
+            title: 'Ann Cole',
+            googleCopies: 1,
+            graphCopies: 3,
+            googleSynced: true,
+            graphSynced: true,
+          ),
+        ],
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester, oauth: _grants());
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+      final panel = button('contact-sync-copies');
+      final signIn = find.descendant(
+        of: panel,
+        matching: find.text('Sign in again'),
+      );
+      expect(signIn, findsOneWidget);
+      expect(button('contact-sync-copies-sync-now'), findsOneWidget,
+          reason: 'the way on once signed in');
+
+      await tester.tap(signIn);
+      // Not pumpAndSettle: the sign-in page never says it has loaded here.
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+      final page = web.loadedUrls.last;
+      expect(
+        page.queryParameters['scope'],
+        contains('https://graph.microsoft.com/Contacts.ReadWrite'),
+      );
+      expect(page.queryParameters['login_hint'], 'ron@hadco.example');
+      await web.navigationHandler!(NavigationRequest(
+        url: '${MicrosoftOAuth.redirectUri}?code=the-code'
+            '&state=${page.queryParameters['state']}',
+        isMainFrame: true,
+      ));
+      await tester.pumpAndSettle();
+      expect(engine.signedInAgain, ['acct-h']);
+      expect(find.text('Duplicates to merge'), findsOneWidget,
+          reason: 'back where Ron was');
+    });
+
     testWidgets("copies that differ: each copy's values, and Keep these or "
         'Leave them', (tester) async {
       await openDuplicates(
@@ -3646,10 +4932,10 @@ void main() {
       expect(
         find.text("Keep these puts that copy's values in the synced copy, "
             'which always stays, and in Gmail at the next sync; then every '
-            'other copy is deleted, to Deleted Items. Values the synced copy '
-            'loses are kept only in your backup file. Leave them leaves every '
-            'copy as it is. An answer is carried out in the next sync, which '
-            'starts at once.'),
+            'other copy is deleted, and Outlook keeps it for a while. Values '
+            'the synced copy loses are kept only in your backup file. Leave '
+            'them leaves every copy as it is. An answer is carried out in the '
+            'next sync, which starts at once.'),
         findsOneWidget,
       );
       final ann = button('contact-sync-copies-person:p1');
@@ -3747,6 +5033,41 @@ void main() {
       expect(button('contact-sync-copies-all'), findsNothing);
     });
 
+    testWidgets('an answer three syncs could not carry out says so, and that '
+        'each sync tries again', (tester) async {
+      ContactSyncCopiesPerson answered(String key, int tries) =>
+          ContactSyncCopiesPerson(
+            key: key,
+            title: annDiffers.title,
+            copies: annDiffers.copies,
+            answer: 'a2',
+            tries: tries,
+          );
+      await openDuplicates(
+        tester,
+        copies: ContactSyncCopies(
+          differing: [answered('p1', 2), answered('p2', 3)],
+        ),
+      );
+
+      expect(
+        find.descendant(
+          of: button('contact-sync-copies-person:p1'),
+          matching: find.text("You chose the other copy's details; the next "
+              'sync carries it out.'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: button('contact-sync-copies-person:p2'),
+          matching: find.text("You chose the other copy's details; the last 3 "
+              'syncs could not carry it out, and each sync tries again.'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets("Keep the synced copy's for all, asked first",
         (tester) async {
       await openDuplicates(
@@ -3781,8 +5102,10 @@ void main() {
       expect(
         find.text('For each of the 2 people, the synced copy keeps its values '
             'and gains the details only another copy has, and the other '
-            'copies are deleted, to Deleted Items, at the next sync, which '
-            'starts at once.'),
+            'copies are deleted at the next sync, which starts at once. '
+            'Outlook keeps deleted contacts for a while: in Deleted Items, or '
+            'under Recover items deleted from this folder at the top of '
+            'Deleted Items.'),
         findsOneWidget,
       );
       await tester.tap(find.text('Cancel'));
@@ -3855,11 +5178,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(sync.allCopiesAnswers.last, {'p1': 'va2', 'p2': 'vb2'});
 
-      // One left to answer: its own buttons are enough.
+      // One left to answer: its own buttons are enough, and the one for
+      // all stays where it was, off.
       sync.set(listing([changed(annDiffers, 'va3')]));
       await tester.pumpAndSettle();
       expect(button('contact-sync-copies-keep:p1:a1'), findsOneWidget);
-      expect(button('contact-sync-copies-all'), findsNothing);
+      expect(find.text('One left: answer it on its own'), findsOneWidget);
+      expect(enabled(tester, 'contact-sync-copies-all'), isFalse);
     });
 
     testWidgets("Keep the synced copy's for all is off while a merge is "
@@ -3887,6 +5212,110 @@ void main() {
       ));
       await tester.pumpAndSettle();
       expect(enabled(tester, 'contact-sync-copies-all'), isTrue);
+    });
+
+    group("Keep the synced copy's for all keeps its place", () {
+      ContactSyncCopiesPerson person(
+        String key,
+        String title, {
+        String? answer,
+      }) =>
+          ContactSyncCopiesPerson(
+            key: key,
+            title: title,
+            answer: answer,
+            version: 'v-$key',
+            copies: [
+              ContactSyncCopy(
+                key: '$key-s',
+                synced: true,
+                details: const [
+                  ContactSyncCopyDetail(label: 'Job title', value: 'Buyer'),
+                ],
+              ),
+              ContactSyncCopy(
+                key: '$key-o',
+                details: const [
+                  ContactSyncCopyDetail(label: 'Job title', value: 'Head'),
+                ],
+              ),
+            ],
+          );
+      ContactSyncStatus listing(List<ContactSyncCopiesPerson> differing) =>
+          synced(
+            copies: ContactSyncCopies(differing: differing),
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      final forAll = button('contact-sync-copies-all');
+      Finder of(String key) => button('contact-sync-copies-person:$key');
+
+      testWidgets('with fewer than two open, it stays, off', (tester) async {
+        await openDuplicates(
+          tester,
+          copies: ContactSyncCopies(differing: [
+            person('a', 'Ann Cole'),
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+          ]),
+        );
+        final ann = top(tester, of('a'));
+        expect(top(tester, forAll), lessThan(ann));
+
+        // Two answered: one left.
+        sync.set(listing([
+          person('a', 'Ann Cole', answer: ContactSyncCopiesPerson.leave),
+          person('b', 'Ben Day', answer: 'b-s'),
+          person('c', 'Cy Fox'),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('One left: answer it on its own'), findsOneWidget);
+        expect(enabled(tester, 'contact-sync-copies-all'), isFalse);
+        expect(top(tester, of('a')), ann, reason: 'nothing moved');
+
+        // All three answered: none left.
+        sync.set(listing([
+          person('a', 'Ann Cole', answer: ContactSyncCopiesPerson.leave),
+          person('b', 'Ben Day', answer: 'b-s'),
+          person('c', 'Cy Fox', answer: 'c-s'),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('Nothing left to answer for all'), findsOneWidget);
+        expect(top(tester, of('a')), ann, reason: 'nothing moved');
+      });
+
+      testWidgets('one that comes while the copies that differ are shown '
+          'goes under them', (tester) async {
+        await openDuplicates(
+          tester,
+          copies: ContactSyncCopies(differing: [person('a', 'Ann Cole')]),
+        );
+        expect(forAll, findsNothing);
+        final ann = top(tester, of('a'));
+
+        // A merge's pass lists another.
+        sync.set(listing([person('a', 'Ann Cole'), person('b', 'Ben Day')]));
+        await tester.pumpAndSettle();
+        expect(find.text("Keep the synced copy's for all 2"), findsOneWidget);
+        expect(top(tester, of('a')), ann, reason: 'nothing moved');
+        expect(top(tester, forAll), greaterThan(top(tester, of('b'))));
+        expect(
+          top(tester, forAll),
+          lessThan(top(tester, find.text('People with copies (1)'))),
+        );
+      });
+
+      testWidgets('copies that differ first listed while the screen is open '
+          'bring it in their heading', (tester) async {
+        await openDuplicates(
+          tester,
+          copies: const ContactSyncCopies(people: 3, extras: 4),
+        );
+        sync.set(listing([person('a', 'Ann Cole'), person('b', 'Ben Day')]));
+        await tester.pumpAndSettle();
+        expect(top(tester, forAll), lessThan(top(tester, of('a'))));
+      });
     });
 
     testWidgets('an answer refused because the person changed is said, and '
@@ -3992,8 +5421,20 @@ void main() {
       await tester.tap(find.text('Recently deleted (3)'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining("Outlook's fax, pager and anniversary"),
-          findsOneWidget);
+      // Where Graph's delete puts a contact is not yet known: true either
+      // way, as the merge's texts are. None of the details only Outlook
+      // keeps is read into the bin, so none comes back with a Restore.
+      expect(
+        find.text('Every contact the sync deleted in the last 30 days. '
+            'Restore makes it again where it was deleted, with every detail '
+            'that can be written, and on the other side too unless it is '
+            'back there already; the two are then paired. Photos, and the '
+            'details only Outlook keeps (faxes and the like), come back '
+            "only from Google's Trash or, for a while, from Outlook: in "
+            'Deleted Items, or under Recover items deleted from this folder '
+            'at the top of it.'),
+        findsOneWidget,
+      );
       expect(
         find.text('Deleted from Hadco at ${formatClock(at1042, use24h: false)}'),
         findsOneWidget,
@@ -4488,11 +5929,17 @@ void main() {
       addTearDown(putAway.close);
     });
 
-    Future<void> pumpApp(WidgetTester tester, {bool on = true}) async {
+    /// [engine]: one with Gmail and Hadco, for the screens that need the
+    /// pair's accounts; else the sample's own.
+    Future<void> pumpApp(
+      WidgetTester tester, {
+      bool on = true,
+      MailEngine? engine,
+    }) async {
       if (on) await ui.writeString(UiStateKeys.contactSyncDevice, 'on');
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(ui),
-        mailEngineProvider.overrideWithValue(_SampleWith(sync)),
+        mailEngineProvider.overrideWithValue(engine ?? _SampleWith(sync)),
         appPutAwayProvider.overrideWithValue(putAway.stream),
       ]);
       addTearDown(c.dispose);
@@ -4699,6 +6146,270 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('Contact sync has stopped'), findsNothing);
       expect(sync.noticesSeen, [at], reason: 'the screen shows it already');
+    });
+
+    testWidgets('a stop while Duplicates to merge is open over the Contact '
+        'sync screen is said there, which shows no stop', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      sync = FakeContactSync(
+        status: synced(duplicates: duplicates, copies: copies),
+      );
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      // Ron waits on Duplicates to merge for the merge he asked for.
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+
+      final first = DateTime(today.year, today.month, today.day, 9);
+      ContactSyncStatus stopped(DateTime at) {
+        final halt = ContactSyncHalt(
+          kind: ContactSyncHaltKind.failed,
+          at: at,
+          error: const ContactSyncFailed('Hadco could not be reached.'),
+        );
+        return synced(
+          halt: halt,
+          notice: ContactSyncNotice(at: at, halt: halt),
+          duplicates: duplicates,
+          copies: copies,
+        );
+      }
+
+      sync.set(stopped(first));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+      expect(sync.noticesSeen, [first]);
+
+      // Back on the Contact sync screen, which shows the stop: the next one
+      // is not said there.
+      final inner = tester.element(find.text('Duplicates to merge'));
+      ScaffoldMessenger.of(inner).removeCurrentSnackBar();
+      Navigator.of(inner).pop();
+      await tester.pumpAndSettle();
+      final second = first.add(const Duration(hours: 1));
+      sync.set(stopped(second));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsNothing);
+      expect(sync.noticesSeen, [first, second]);
+    });
+
+    testWidgets("a stop's Open, said over a screen of contact sync's own, "
+        'goes back to the Contact sync screen under it', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      sync = FakeContactSync(
+        status: synced(duplicates: duplicates, copies: copies),
+      );
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      final halt = ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      );
+      sync.set(synced(
+        halt: halt,
+        notice: ContactSyncNotice(at: at, halt: halt),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.text('Duplicates to merge', skipOffstage: false),
+          findsNothing);
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsOneWidget, reason: 'the one open, not a second');
+      expect(ContactSyncScreen.isOpen, isTrue);
+      expect(find.text('The last sync stopped at '
+          '${formatClock(at, use24h: false)}.'), findsOneWidget);
+    });
+
+    testWidgets("a stop's Open, said over a sign-in pushed from Duplicates "
+        'to merge, goes back to the Contact sync screen under both',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      ContactSyncHalt signIn(DateTime at) => ContactSyncHalt(
+            kind: ContactSyncHaltKind.notAllowed,
+            at: at,
+            side: ContactSide.graph,
+            error: const ContactSyncNeedsSignIn(
+              side: ContactSide.graph,
+              accountId: 'acct-h',
+              message: 'Hadco has not allowed contact sync.',
+            ),
+          );
+      final at = DateTime(today.year, today.month, today.day, 9);
+      sync = FakeContactSync(status: synced(
+        halt: signIn(at),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byKey(const ValueKey('contact-sync-copies')),
+        matching: find.text('Sign in again'),
+      ));
+      // Not pumpAndSettle: the sign-in page never says it has loaded here.
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+
+      // A later run stops the same way, and says so over the sign-in.
+      final later = at.add(const Duration(hours: 1));
+      sync.set(synced(
+        halt: signIn(later),
+        notice: ContactSyncNotice(at: later, halt: signIn(later)),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.text('Contact sync has stopped: not allowed yet for Hadco'),
+          findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen, skipOffstage: false),
+          findsNothing);
+      expect(find.text('Duplicates to merge', skipOffstage: false),
+          findsNothing);
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsOneWidget, reason: 'the one open, not a second');
+      expect(ContactSyncScreen.isOpen, isTrue);
+    });
+
+    testWidgets("a stop's Open, said over a screen from elsewhere, closes "
+        'nothing: a message being written stays as it was', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      final navigator =
+          tester.state<NavigatorState>(find.byType(Navigator).first);
+      unawaited(navigator.push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      // A notification tapped in the shade opens a message over it, and
+      // its Reply a message to write: here, the writing at once.
+      unawaited(navigator.push(MaterialPageRoute<bool>(
+        builder: (_) => const ComposeScreen(
+          draft: Draft(
+            accountId: 'acct-g',
+            kind: ComposeKind.newMessage,
+            subject: 'Numbers',
+            htmlBody: '<p>The figures for Thursday.</p>',
+          ),
+        ),
+      )));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Numbers'),
+        'Numbers for Thursday',
+      );
+      await tester.pumpAndSettle();
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      final halt = ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      );
+      sync.set(synced(
+        halt: halt,
+        notice: ContactSyncNotice(at: at, halt: halt),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing, reason: 'nothing asked');
+      expect(ContactSyncScreen.isOpen, isTrue);
+      expect(find.text('The last sync stopped at '
+          '${formatClock(at, use24h: false)}.'), findsOneWidget);
+      expect(find.byType(ComposeScreen, skipOffstage: false), findsOneWidget,
+          reason: 'still open, under it');
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsNWidgets(2), reason: 'one under the message, one over it');
+
+      // Back from it: the message as Ron left it.
+      Navigator.of(tester.element(find.byType(ContactSyncScreen))).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.text('Numbers for Thursday'), findsOneWidget);
     });
   });
 
