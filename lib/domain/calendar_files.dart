@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'calendar_event.dart' show EventShowAs;
 import 'calendar_invite.dart';
 import 'ics_feed.dart';
 import 'meeting.dart';
@@ -260,6 +261,9 @@ class FileEvent {
         // [seriesZone]. [timeZone] is the phone's.
         timeZone: seriesZone ?? timeZone,
         recurrence: repeat,
+        // Shown as free in the file (a holiday, a school's break) stays
+        // free; otherwise the calendar's own way, busy.
+        showAs: event.transparent ? EventShowAs.free : null,
         transactionId: transactionId,
       );
 }

@@ -1015,6 +1015,156 @@ void main() {
       expect(share, contains('if (takeCalendar(intent, pushNow)) return'));
     });
   });
+
+  // An event the file or the invitation shows as free (TRANSP:TRANSPARENT,
+  // a school's holidays, an office closed) went to the calendar as busy:
+  // the calendars take an event that says nothing as busy, so Ron was busy
+  // all day to his colleagues and in Insert free times.
+  group('an event shown as free', () {
+    const holidays = 'BEGIN:VCALENDAR\r\n'
+        "X-WR-CALNAME:Ella's school\r\n"
+        'BEGIN:VEVENT\r\n'
+        'UID:break@example.com\r\n'
+        'SUMMARY:Winter break\r\n'
+        'DTSTART;VALUE=DATE:20261221\r\n'
+        'DTEND;VALUE=DATE:20261222\r\n'
+        'TRANSP:TRANSPARENT\r\n'
+        'END:VEVENT\r\n'
+        'BEGIN:VEVENT\r\n'
+        'UID:play@example.com\r\n'
+        'SUMMARY:School play\r\n'
+        'DTSTART:20261218T150000Z\r\n'
+        'DTEND:20261218T163000Z\r\n'
+        'TRANSP:OPAQUE\r\n'
+        'END:VEVENT\r\n'
+        'END:VCALENDAR\r\n';
+
+    FileEvent named(String title) => CalendarFile.read(holidays)!
+        .events
+        .singleWhere((e) => e.title == title);
+
+    test('goes to a calendar as free; one busy says nothing, as before', () {
+      final free = named('Winter break').draftFor(
+        accountId: 'a',
+        calendarId: CalendarEvent.mainCalendar,
+        timeZone: 'Asia/Jerusalem',
+      );
+      expect(free.allDay, isTrue);
+      expect(free.showAs, EventShowAs.free);
+      expect(GraphCalendarApi.eventJson(free)['showAs'], 'free');
+      expect(GoogleCalendarApi.eventJson(free)['transparency'], 'transparent');
+
+      final busy = named('School play').draftFor(
+        accountId: 'a',
+        calendarId: CalendarEvent.mainCalendar,
+        timeZone: 'Asia/Jerusalem',
+      );
+      expect(busy.showAs, isNull, reason: "the calendar's own way stands");
+      expect(GraphCalendarApi.eventJson(busy).containsKey('showAs'), isFalse);
+    });
+
+    testWidgets('Add keeps it free on a calendar', (tester) async {
+      await pumpOpened(tester, SharedContent(
+        calendarFile: aFile('holidays.ics', text: holidays),
+        calendarOpened: true,
+      ));
+
+      await tapAdd(tester, 'Winter break');
+      expect(engine.meetings.single.showAs, EventShowAs.free);
+      await tapAdd(tester, 'School play');
+      expect(engine.meetings.last.showAs, isNull);
+    });
+
+    testWidgets("and in the phone's calendar app", (tester) async {
+      await pumpOpened(tester, SharedContent(
+        calendarFile: aFile('holidays.ics', text: holidays),
+        calendarOpened: true,
+      ));
+
+      await tester.tap(find.byKey(const ValueKey('calendar-file-target')));
+      await settle(tester);
+      await tester.tap(
+          find.byKey(const ValueKey('calendar-file-target:phone')).last);
+      await settle(tester);
+      await tapAdd(tester, 'Winter break');
+      expect(phone.inserted.single.free, isTrue);
+      expect(phone.inserted.single.allDay, isTrue);
+      await tapAdd(tester, 'School play');
+      expect(phone.inserted.last.free, isFalse);
+    });
+
+    String notice(String status) => 'BEGIN:VCALENDAR\r\n'
+        'METHOD:REQUEST\r\n'
+        'BEGIN:VEVENT\r\n'
+        'UID:closed@example.com\r\n'
+        'SUMMARY:Office closed\r\n'
+        'DTSTART;VALUE=DATE:20261224\r\n'
+        'DTEND;VALUE=DATE:20261225\r\n'
+        '$status'
+        'ORGANIZER:mailto:hr@example.com\r\n'
+        'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:ron@example.com\r\n'
+        'END:VEVENT\r\n'
+        'END:VCALENDAR\r\n';
+
+    test("an invitation's free is read: TRANSP, or Outlook's intended "
+        'status where it gives one', () {
+      bool? freeOf(String status) =>
+          CalendarInvite.parse(notice(status))?.free;
+      expect(freeOf('TRANSP:TRANSPARENT\r\n'), isTrue);
+      expect(freeOf('TRANSP:OPAQUE\r\n'), isFalse);
+      expect(freeOf(''), isFalse);
+      expect(
+          freeOf('TRANSP:OPAQUE\r\nX-MICROSOFT-CDO-INTENDEDSTATUS:FREE\r\n'),
+          isTrue);
+      expect(
+          freeOf('TRANSP:TRANSPARENT\r\n'
+              'X-MICROSOFT-CDO-INTENDEDSTATUS:BUSY\r\n'),
+          isFalse,
+          reason: 'what Outlook means the invited to show as comes first');
+      expect(freeOf('TRANSP:nonsense\r\n'), isFalse);
+    });
+
+    testWidgets("an invitation's Add to calendar keeps it free",
+        (tester) async {
+      final c = ProviderContainer(overrides: [
+        uiStateStoreProvider.overrideWithValue(MemoryUiStateStore()),
+        mailEngineProvider.overrideWithValue(engine),
+        deviceCalendarProvider.overrideWithValue(phone),
+      ]);
+      addTearDown(c.dispose);
+      for (final (status, free) in [
+        ('TRANSP:TRANSPARENT\r\n', true),
+        ('TRANSP:OPAQUE\r\n', false),
+      ]) {
+        await tester.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+            home: Scaffold(
+              body: InviteCard(
+                key: ValueKey(status),
+                message: MailMessage(
+                  id: 'acct-personal:INBOX#2',
+                  accountId: 'acct-personal',
+                  folderId: 'acct-personal:INBOX',
+                  uid: 2,
+                  subject: 'Office closed',
+                  from: const MailAddress(email: 'hr@example.com'),
+                  to: const [MailAddress(email: 'ron@example.com')],
+                  date: DateTime(2026, 11, 20),
+                  preview: '',
+                ),
+                invite: CalendarInvite.parse(notice(status))!,
+              ),
+            ),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Add to calendar'));
+        await tester.pumpAndSettle();
+        expect(phone.inserted.last.free, free, reason: status);
+      }
+    });
+  });
 }
 
 /// Let the sample engine's small delays and any disk reads pass, then draw.

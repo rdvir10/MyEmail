@@ -224,6 +224,7 @@ class _CalendarFileScreenState extends ConsumerState<CalendarFileScreen> {
               : event.end,
           allDay: event.allDay,
           rule: event.phoneRule,
+          free: event.event.transparent,
         );
         if (!handed) throw const _NoCalendarApp();
         said = "Handed to the phone's calendar app";

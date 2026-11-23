@@ -41,7 +41,15 @@ class CalendarInvite {
     this.attendeeNoted = false,
     this.rule,
     this.datesChanged = false,
+    this.free = false,
   });
+
+  /// Whether the time shows as free to those invited: Outlook's intended
+  /// status where the invitation gives one (X-MICROSOFT-CDO-INTENDEDSTATUS,
+  /// what Exchange means the invited to show as), otherwise TRANSP. An
+  /// office closed, a holiday. Handed on with it to the phone's calendar
+  /// app, which otherwise shows the day busy.
+  final bool free;
 
   /// Whether a series' invitation leaves out some of its dates (EXDATE),
   /// or moves some (another event in it, the single meeting changed):
@@ -196,6 +204,8 @@ class CalendarInvite {
     var attendeeNoted = false;
     String? rule;
     var datesChanged = false;
+    String? transp;
+    String? intended;
 
     for (final line in lines) {
       final name = line.name;
@@ -280,6 +290,10 @@ class CalendarInvite {
           originalStartLine = line;
         case 'X-MS-OLK-ORIGINALEND':
           originalEndLine = line;
+        case 'TRANSP':
+          transp = value.trim().toUpperCase();
+        case 'X-MICROSOFT-CDO-INTENDEDSTATUS':
+          intended = value.trim().toUpperCase();
       }
     }
     if (!seen || startLine == null) return null;
@@ -353,6 +367,7 @@ class CalendarInvite {
       productId: productId == null || productId.isEmpty ? null : productId,
       rule: rule == null || rule.isEmpty ? null : rule,
       datesChanged: datesChanged,
+      free: intended != null ? intended == 'FREE' : transp == 'TRANSPARENT',
       attendeeNoted: attendeeNoted,
       responderNote: _noteOf(
         method == 'REPLY' || method == 'COUNTER'

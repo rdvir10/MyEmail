@@ -226,6 +226,8 @@ class _InviteCardState extends ConsumerState<InviteCard> {
           // A series goes as a series (calendar idea #67), where the phone
           // can be told its repeat: see ruleForPhone.
           rule: ruleForPhoneOf(i),
+          // An office closed shown as free stays free there.
+          free: i.free,
         );
     if (!ok) {
       messenger?.showSnackBar(
