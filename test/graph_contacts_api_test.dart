@@ -585,6 +585,43 @@ void main() {
         throwsA(isA<ConnectionFailed>()),
       );
     });
+
+    test('getBatch with the tag expands it in each part, as get does',
+        () async {
+      final ann = graph.seed(
+        contact('Ann', 'Lee', 'ann@example.com'),
+        tag: 'people/c1',
+      );
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+
+      final read = await api().getBatch([ann, bob], withTag: true);
+
+      expect(GraphContactsApi.tagOf(read.found[ann]!), 'people/c1');
+      expect(GraphContactsApi.tagOf(read.found[bob]!), isNull);
+      expect(read.found[ann]!.containsKey('fileAs'), isFalse);
+      final batch = graph.requestsTo(r'$batch').single;
+      for (final part in (jsonDecode(batch.body) as Map)['requests'] as List) {
+        final url = Uri.parse('${part['url']}');
+        expect(url.queryParameters[r'$select'], graphContactSelect);
+        expect(
+          url.queryParameters[r'$expand'],
+          "singleValueExtendedProperties(\$filter=id eq "
+          "'$graphLinkPropertyId')",
+        );
+      }
+
+      // Without it, as before: no expand.
+      graph.requests.clear();
+      final plain = await api().getBatch([ann]);
+      expect(GraphContactsApi.tagOf(plain.found[ann]!), isNull);
+      final part = ((jsonDecode(graph.requestsTo(r'$batch').single.body)
+              as Map)['requests'] as List)
+          .single;
+      expect(
+        Uri.parse('${part['url']}').queryParameters.containsKey(r'$expand'),
+        isFalse,
+      );
+    });
   });
 
   group('photos and deletes', () {

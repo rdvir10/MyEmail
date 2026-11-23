@@ -271,24 +271,28 @@ class GraphContactsApi {
     return _json(response, 'get');
   }
 
-  /// The contacts [ids] read as [get] reads them (the sync's properties),
-  /// [batchLimit] to a `$batch`: which are there, wherever each is in the
-  /// mailbox; which are not (404); and which no answer said either of,
-  /// their own answer a failure. One throttled (a 429, or a 503: a read
-  /// can be asked again) is asked again after the longest wait any asked
-  /// for, as a request alone would be. A batch that fails as a whole
-  /// throws, as [get] would, and what the batches before it read is not
-  /// kept: a caller that wants it asks [batchLimit] at a time.
-  Future<GraphBatchRead> getBatch(Iterable<String> ids) async {
+  /// The contacts [ids] read as [get] reads them (the sync's properties,
+  /// with [withTag] the hidden tag too), [batchLimit] to a `$batch`: which
+  /// are there, wherever each is in the mailbox; which are not (404); and
+  /// which no answer said either of, their own answer a failure. One
+  /// throttled (a 429, or a 503: a read can be asked again) is asked again
+  /// after the longest wait any asked for, as a request alone would be. A
+  /// batch that fails as a whole throws, as [get] would, and what the
+  /// batches before it read is not kept: a caller that wants it asks
+  /// [batchLimit] at a time.
+  Future<GraphBatchRead> getBatch(
+    Iterable<String> ids, {
+    bool withTag = false,
+  }) async {
     final asked = ids.toSet().toList();
     final answers = await _batchEach(
       asked,
       (id) => {
         'method': 'GET',
-        'url': _relative(
-          '/me/contacts/${_id(id)}',
-          {r'$select': graphContactSelect},
-        ),
+        'url': _relative('/me/contacts/${_id(id)}', {
+          r'$select': graphContactSelect,
+          if (withTag) r'$expand': _expandOf(graphLinkPropertyId),
+        }),
         'headers': {'Prefer': prefer},
       },
       'batch read',
