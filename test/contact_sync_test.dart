@@ -464,6 +464,140 @@ void main() {
       expect(h.graph.count, 3);
     });
 
+    // Gmail as 3.22.1 read it: an address held only as text read as none.
+    http.Response? readAsBefore(http.Request r, http.Response response) {
+      if (r.method != 'GET' || r.url.host != 'people.googleapis.com') {
+        return null;
+      }
+      final json = jsonDecode(response.body);
+      if (json is! Map<String, Object?>) return null;
+      const textOnly = {'type', 'formattedType', 'formattedValue', 'metadata'};
+      void strip(Object? person) {
+        if (person is! Map) return;
+        final addresses = person['addresses'];
+        if (addresses is! List) return;
+        addresses.removeWhere(
+          (a) => a is Map && a.keys.every(textOnly.contains),
+        );
+      }
+
+      strip(json);
+      for (final c in json['connections'] as List? ?? const []) {
+        strip(c);
+      }
+      for (final found in json['responses'] as List? ?? const []) {
+        if (found is Map) strip(found['person']);
+      }
+      return http.Response(
+        jsonEncode(json),
+        response.statusCode,
+        headers: response.headers,
+      );
+    }
+
+    // Ann's Gmail home address is only text; Hadco's Ann has none.
+    Future<({String google, String graph})> annReadAsBefore() async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'addresses': [
+          {'type': 'home', 'formattedValue': '12 Elm Rd\nSpringfield'},
+        ],
+      });
+      final o = h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com'));
+      h.reshape = readAsBefore;
+      await h.firstSync();
+      h.reshape = null;
+      expect((h.graph.contact(o)!['homeAddress'] as Map?)?['street'], isNull);
+      return (google: g, graph: o);
+    }
+
+    test('the first run after the update lists Gmail whole: an address an '
+        'older build read as none reaches Hadco, Gmail untouched', () async {
+      final ann = await annReadAsBefore();
+      await h.store.updatePair(
+        (await h.pair()).pairId,
+        (p) => p.copyWith(googleMask: 1),
+      );
+      final full = h.google.fullListings;
+      h.requests.clear();
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.google.fullListings, full + 1);
+      expect(
+        (h.graph.contact(ann.graph)!['homeAddress'] as Map?)?['street'],
+        '12 Elm Rd\nSpringfield',
+      );
+      expect(h.writesTo('people.googleapis.com'), isEmpty);
+      expect(status.needsALook, isEmpty);
+      // Once: the run after takes changes again.
+      await h.later();
+      expect(h.google.fullListings, full + 1);
+    });
+
+    test('a Gmail detail the plan did not see is never written over: the '
+        'pair is planned again from the Person read', () async {
+      // Stored as read before, at the version Gmail still has; the feed
+      // brings nothing of Ann's in Gmail when Hadco gains an address.
+      final ann = await annReadAsBefore();
+      h.pass(const Duration(minutes: 30));
+      h.graph.editFromOutlook(ann.graph, {
+        'homeAddress': {'street': '4 Oak St', 'city': 'Leeds'},
+      });
+      final status = await h.later();
+      expect(status.halt, isNull);
+      // Changed on both sides as read now: Hadco's newer address won, and
+      // Gmail's is a tap away rather than gone.
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.losingSide, ContactSide.google);
+      expect(look.losing, '12 Elm Rd, Springfield');
+    });
+
+    test('a Gmail birthday kept only as text is never sent back: a change '
+        'with nothing else to write sends nothing', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'birthdays': [
+          {'text': 'Spring 1960'},
+        ],
+      });
+      final o = h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com'));
+      await h.firstSync();
+      // Google asks for a date on every change of a birthday: this one
+      // refuses an update with a birthday that has none.
+      h.google.refuse = (p) => (p['birthdays'] as List? ?? const []).any(
+        (b) => b is Map && b['date'] == null,
+      );
+      String? text() =>
+          ((h.google.person(g)!['birthdays']! as List).single as Map)['text']
+              as String?;
+
+      h.graph.editFromOutlook(o, {'birthday': '1960-03-05T11:59:00Z'});
+      h.requests.clear();
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty, reason: 'nothing refused');
+      expect(h.requestsTo(':updateContact'), isEmpty);
+      expect(text(), 'Spring 1960');
+
+      // With a job title to write as well, only that is sent.
+      h.graph.editFromOutlook(o, {
+        'birthday': '1960-03-06T11:59:00Z',
+        'jobTitle': 'Buyer',
+      });
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      final sent = h.requestsTo(':updateContact').single;
+      expect(sent.url.queryParameters['updatePersonFields'], 'organizations');
+      expect(text(), 'Spring 1960');
+
+      // And then nothing more.
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+
     test('an expired Outlook delta starts a new one, reconciled with the '
         'rows: nothing doubled, a change still synced', () async {
       final pairs = seedPairs(h, 3);
@@ -1923,6 +2057,13 @@ void main() {
       expect(look.reason, ContactReviewReason.notInStep);
       expect(look.losingSide, ContactSide.graph);
       expect(look.losing, 'Prefers email after 5');
+      // Each side as the sync left it.
+      expect(look.googleValues, {
+        ContactField.notes: 'Met at the fair\nCall in May',
+      });
+      expect(look.graphValues, {
+        ContactField.notes: 'Met at the fair\nCall in May',
+      });
 
       await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
       await h.sync.syncNow();
@@ -1930,6 +2071,141 @@ void main() {
       final notes = h.google.person(g)!['biographies']! as List;
       expect((notes.single as Map)['value'], 'Prefers email after 5');
       expect((await h.status()).needsALook, isEmpty);
+    });
+
+    test("Use Hadco's instead on a pair held as refused is carried out at "
+        'once, ending the refusal', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      var look = (await h.status()).needsALook.single;
+      await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+
+      // Ron edits the Gmail note into one Outlook will not take.
+      h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair, and again at the trade show in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      expect(
+        status.needsALook.map((l) => l.kind),
+        unorderedEquals([ContactReviewKind.clash, ContactReviewKind.refused]),
+      );
+      look = status.needsALook.firstWhere(
+        (l) => l.kind == ContactReviewKind.clash,
+      );
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      final notes = h.google.person(g)!['biographies']! as List;
+      expect((notes.single as Map)['value'], 'Prefers email after 5');
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      expect(
+        status.needsALook.where((l) => l.kind == ContactReviewKind.clash),
+        isEmpty,
+      );
+      expect(
+        (await h.links()).single.state,
+        ContactLinkState.paired,
+        reason: 'no longer held as refused',
+      );
+    });
+
+    test("a value written over in Outlook stays listed when Gmail's write "
+        'is planned again', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      final differing = (await h.status()).needsALook.single;
+      await h.sync.answerLook(differing.id, ContactSyncChoice.leaveAsTheyAre);
+
+      // A write each way: Gmail's note over Hadco's, never in step, and
+      // Hadco's new job title to Gmail. Ron adds a nickname in Gmail as
+      // the run reads it before its write.
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair\nCall in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      h.graph.editFromOutlook(o, {'jobTitle': 'Buyer'});
+      var edited = false;
+      h.before = (r) async {
+        if (!edited && r.method == 'GET' && r.url.path == '/v1/$g') {
+          edited = true;
+          h.google.editFromGmail(g, {
+            'nicknames': [
+              {'value': 'Annie'},
+            ],
+          });
+        }
+      };
+      final status = await h.later();
+      h.before = null;
+      expect(status.halt, isNull);
+      expect(edited, isTrue);
+      expect(
+        h.graph.contact(o)!['personalNotes'],
+        'Met at the fair\nCall in May',
+      );
+      final organizations = h.google.person(g)!['organizations']! as List;
+      expect((organizations.single as Map)['title'], 'Buyer');
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, ContactReviewReason.notInStep);
+      expect(look.losing, 'Prefers email after 5');
+    });
+
+    test('a clash item shows each side as the sync left it, beside the '
+        'value that lost', () async {
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      h.google.editFromGmail(pairs[0].google, {
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      h.pass(const Duration(minutes: 5));
+      h.graph.editFromOutlook(pairs[0].graph, {'companyName': 'Acme Ltd'});
+      final status = await h.later();
+      expect(status.halt, isNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, isNull, reason: 'changed on both sides');
+      expect(look.fields, [ContactField.company]);
+      // Outlook's is the newer edit: on both sides now, Gmail's the one
+      // that lost.
+      expect(look.googleValues, {ContactField.company: 'Acme Ltd'});
+      expect(look.graphValues, {ContactField.company: 'Acme Ltd'});
+      expect(look.losing, 'Acme');
+      expect(look.losingSide, ContactSide.google);
     });
   });
 

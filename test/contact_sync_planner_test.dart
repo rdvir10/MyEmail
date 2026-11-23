@@ -873,6 +873,66 @@ void main() {
       expect(plan.reviews, isEmpty);
     });
 
+    test('a Gmail birthday kept only as text is left as it is', () {
+      // Its Person holds the birthday as text alone, read as none.
+      final textOnly = {
+        'resourceName': 'people/c1',
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': 'etag-people/c1'},
+          ],
+        },
+        'birthdays': [
+          {'text': 'Spring 1960'},
+        ],
+      };
+      GoogleContact withText(SyncedContact details) => GoogleContact(
+        resourceName: 'people/c1',
+        details: details,
+        etag: 'etag-people/c1',
+        person: textOnly,
+      );
+      const born = ContactBirthday(year: 1960, month: 3, day: 5);
+      final dated = base.withValue(ContactField.birthday, born);
+      // Hadco gains a birthday: none is written into Gmail, and Hadco's is
+      // taken in, so it is not planned again.
+      final changed = byLink(
+        run(
+          google: [withText(base)],
+          graph: [h('H1', dated, key: 'key-2')],
+          links: [link(1, 'people/c1', 'H1', base: base)],
+        ),
+        1,
+      )!;
+      expect(changed.googleWrite, isNull);
+      expect(changed.graphBase!.birthday, born);
+      expect(changed.googleBase!.birthday, isNull);
+      // Nor is one filled in for a new pair.
+      final made = run(
+        google: [withText(base)],
+        graph: [h('H1', dated)],
+      );
+      expect(byGoogle(made, 'people/c1')!.graphId, 'H1');
+      expect(byGoogle(made, 'people/c1')!.googleWrite, isNull);
+      // Planned from a base, Gmail not read this run: the Person refuses
+      // the write, and planned again from it, nothing goes to Gmail.
+      final fromBase = byLink(
+        run(
+          graph: [h('H1', dated, key: 'key-2')],
+          links: [link(1, 'people/c1', 'H1', base: base)],
+        ),
+        1,
+      )!;
+      expect(fromBase.googleWrite!.fields, {ContactField.birthday});
+      expect(
+        () => fromBase.googleWrite!.googleUpdate(textOnly, normaliser: norm),
+        throwsA(isA<ContactReadStale>()),
+      );
+      final again = fromBase.replan(google: withText(base)).plan;
+      expect(again.googleWrite, isNull);
+      expect(again.graphBase!.birthday, born);
+    });
+
     test('lists merge: an addition on each side keeps both', () {
       final plan = run(
         google: [
@@ -1211,6 +1271,50 @@ void main() {
         graph.graphPatch({'changeKey': 'key-1'}),
         contains('officeLocation'),
       );
+    });
+
+    test('a write is built only on the details the plan saw', () {
+      // Hadco added a home address. The feed did not bring the Gmail side,
+      // so the plan is made from its base, which has none; Gmail holds one
+      // at the same version all the same, as an address kept only as text
+      // was read as none by an older build.
+      final plan = run(
+        graph: [
+          h(
+            'H1',
+            base.withValue(
+              ContactField.homeAddress,
+              ContactAddress.of(street: '4 Oak St', city: 'Leeds'),
+            ),
+            key: 'key-2',
+          ),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base, etag: 'etag-1')],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.fields, {ContactField.homeAddress});
+      Map<String, Object?> person(List<Map<String, Object?>> addresses) => {
+        'resourceName': 'people/c1',
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': 'etag-1'},
+          ],
+        },
+        'addresses': addresses,
+      };
+      expect(
+        () => write.googleUpdate(
+          person([
+            {'type': 'home', 'formattedValue': '12 Elm Rd'},
+          ]),
+          normaliser: norm,
+        ),
+        throwsA(isA<ContactReadStale>()),
+        reason: 'planned again from the Person, never written over unseen',
+      );
+      // As the plan saw it: written.
+      final update = write.googleUpdate(person(const []), normaliser: norm);
+      expect(update.updatePersonFields, ['addresses']);
     });
 
     test('Gmail\'s version is its contact source\'s etag, whatever was read',
@@ -4845,8 +4949,8 @@ void main() {
       expect(away.writes, isFalse);
     });
 
-    test("Use Hadco's on a pair a brake holds waits for the brake's answer",
-        () {
+    test("Use Hadco's on a pair a brake holds waits for the brake's answer; "
+        'on one held as refused it is tried at once', () {
       // Bob's job titles were left differing, and a later run's change
       // brake holds the pair for another change (Gmail's company) before
       // Ron answers the item.
@@ -4890,19 +4994,31 @@ void main() {
         answers: answers,
       );
 
-      // Held by the change brake, or held as refused, it is still a pair:
-      // each answer waits, and nothing is written.
-      for (final reason in [
-        ContactHeldReason.changeBrake,
-        ContactHeldReason.refused,
-      ]) {
-        final plan = answered(held(reason), [useHadcos, useOther]);
+      // Held by the change brake, it is still a pair: each answer waits,
+      // and nothing is written.
+      final braked = answered(held(ContactHeldReason.changeBrake), [
+        useHadcos,
+        useOther,
+      ]);
+      expect(braked.answers, [
+        ContactAnswerOutcome.waiting,
+        ContactAnswerOutcome.waiting,
+      ]);
+      expect(braked.links.where((l) => l.writes), isEmpty);
+      // Held as refused, nothing but an answer would end it (Retry sends
+      // the change refused again): carried out at once, as a Retry with
+      // Ron's choice. Refused again, the refusal's item says so.
+      for (final answer in [useHadcos, useOther]) {
+        final refused = answered(held(ContactHeldReason.refused), [answer]);
+        expect(refused.answers, [ContactAnswerOutcome.applied]);
+        final retried = byLink(refused, 1)!;
+        expect(retried.state, ContactLinkState.paired);
+        expect(retried.fromAnswer, isTrue);
         expect(
-          plan.answers,
-          [ContactAnswerOutcome.waiting, ContactAnswerOutcome.waiting],
-          reason: '$reason',
+          retried.googleWrite?.target.text(ContactField.jobTitle) ??
+              retried.graphWrite?.target.text(ContactField.jobTitle),
+          answer == useHadcos ? 'Manager' : 'Clerk',
         );
-        expect(plan.links.where((l) => l.writes), isEmpty);
       }
       // Ron answers Apply them: the held change is made, and Use Hadco's
       // waits on, its pair planned already this run.
@@ -5822,6 +5938,66 @@ void main() {
         () => first.replan(google: written, googleWritten: written),
         throwsArgumentError,
       );
+    });
+
+    test('keeps the items of a write already made', () {
+      // Never in step, Gmail's note goes over Hadco's (listed), and
+      // Hadco's new job title goes to Gmail: a write each way.
+      final gWas = base.withValue(
+        ContactField.notes,
+        const ContactNotes('Met at the fair'),
+      );
+      final hWas = base.withValue(
+        ContactField.notes,
+        const ContactNotes('Prefers email after 5'),
+      );
+      final gNow = gWas.withValue(
+        ContactField.notes,
+        const ContactNotes('Met at the fair\nCall in May'),
+      );
+      final hNow = hWas.withValue(ContactField.jobTitle, 'Buyer');
+      final plan = run(
+        google: [g('people/c1', gNow, etag: 'e1')],
+        graph: [h('H1', hNow, key: 'k1')],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: gWas,
+            graphBase: hWas,
+            etag: 'e0',
+            key: 'k0',
+          ),
+        ],
+      );
+      final first = byLink(plan, 1)!;
+      expect(first.graphWrite!.fields, {ContactField.notes});
+      expect(first.googleWrite!.fields, {ContactField.jobTitle});
+      expect(plan.reviews.single.reason, ContactReviewReason.notInStep);
+      // Outlook's write went through; Gmail's read before its own finds
+      // Ron added a nickname meanwhile.
+      final again = first.replan(
+        google: g(
+          'people/c1',
+          gNow.withValue(ContactField.nickname, 'Annie'),
+          etag: 'e2',
+        ),
+        graphWritten: h(
+          'H1',
+          hNow.withValue(ContactField.notes, gNow[ContactField.notes]),
+          key: 'k2',
+        ),
+      );
+      expect(again.plan.googleWrite!.fields, {ContactField.jobTitle});
+      expect(again.plan.graphWrite!.fields, {ContactField.nickname});
+      // Hadco's old note is gone from Hadco, though the bases, moved on by
+      // the write, would no longer list it: its item stays.
+      final item = again.reviews.single;
+      expect(item.kind, ContactReviewKind.clash);
+      expect(item.reason, ContactReviewReason.notInStep);
+      expect(item.losingSide, ContactSide.graph);
+      expect(item.losing!.notes!.text, 'Prefers email after 5');
     });
   });
   group('copies of one person', () {
