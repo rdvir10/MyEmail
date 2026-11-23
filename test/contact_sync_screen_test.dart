@@ -2021,6 +2021,21 @@ void main() {
           ),
         ]));
         await tester.pumpAndSettle();
+        // While the screen stays open, Ben keeps his place, no longer held,
+        // and nothing moves: Ann keeps her own buttons.
+        expect(
+          find.descendant(
+            of: button('contact-sync-item:b'),
+            matching: find.text('No longer held: nothing to answer.'),
+          ),
+          findsOneWidget,
+        );
+        expect(button('contact-sync-item:a:applyThem'), findsOneWidget);
+
+        // Opened again: a question of one has only the buttons for all.
+        await tester.pumpWidget(const SizedBox());
+        await pumpScreen(tester);
+        expect(button('contact-sync-item:b'), findsNothing);
         expect(button('contact-sync-item:a:applyThem'), findsNothing,
             reason: 'the same as the buttons for all');
         expect(button('contact-sync-question-for'), findsNothing);
@@ -2111,6 +2126,150 @@ void main() {
           findsOneWidget,
         );
         expect(find.text("Don't delete them"), findsNothing);
+      });
+
+      testWidgets('contacts answered one by one stay where they are until '
+          'the screen is left, and so does a question carried out',
+          (tester) async {
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: ContactSide.graph,
+              key: key,
+              answer: answer,
+              changes: const [
+                ContactSyncDetailChange(
+                  field: ContactField.jobTitle,
+                  before: 'Buyer',
+                ),
+              ],
+            );
+        // Six deletions answered for all, waiting for the run, above the
+        // changes Ron goes down one by one.
+        final deletions = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.deletions,
+          answer: ContactSyncChoice.deleteThem,
+          items: [
+            for (final name in ['Eve', 'Fay', 'Gil', 'Hal', 'Ida', 'Jon'])
+              ContactSyncQuestionItem(
+                title: '$name Ash',
+                side: ContactSide.google,
+                key: 'd-$name',
+              ),
+          ],
+        );
+        ContactSyncStatus held(
+          List<ContactSyncQuestionItem> changes, {
+          bool withDeletions = true,
+        }) =>
+            synced(questions: [
+              if (withDeletions) deletions,
+              ContactSyncQuestion(
+                kind: ContactSyncQuestionKind.changes,
+                items: changes,
+              ),
+            ]);
+        sync = FakeContactSync(status: held([
+          person('a', 'Ann Cole'),
+          person('b', 'Ben Day'),
+          person('c', 'Cy Fox'),
+          person('d', 'Di Ray'),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        double top(Finder f) => tester.getTopLeft(f).dy;
+        Finder item(String key) => button('contact-sync-item:$key');
+        Finder under(String key, String text) =>
+            find.descendant(of: item(key), matching: find.text(text));
+
+        // Ann answered on her own, then carried out by the run her answer
+        // started: she stays, done, and nothing under her moves.
+        await tester.tap(button('contact-sync-item:a:applyThem'));
+        await tester.pumpAndSettle();
+        expect(sync.questionItems.last, {'a'});
+        sync.set(held([
+          person('a', 'Ann Cole', answer: ContactSyncChoice.applyThem),
+          person('b', 'Ben Day'),
+          person('c', 'Cy Fox'),
+          person('d', 'Di Ray'),
+        ]));
+        await tester.pumpAndSettle();
+        final c = top(item('c'));
+        sync.set(held([
+          person('b', 'Ben Day'),
+          person('c', 'Cy Fox'),
+          person('d', 'Di Ray'),
+        ]));
+        await tester.pumpAndSettle();
+        expect(under('a', 'You chose Apply: done. It is no longer held.'),
+            findsOneWidget);
+        expect(
+          find.descendant(
+            of: item('a'),
+            matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+          ),
+          findsNothing,
+        );
+        expect(top(item('c')), c, reason: 'nothing moved');
+        expect(find.text('For the 3 not yet answered:'), findsOneWidget);
+
+        // The deletions carried out, their question gone: it stays, done,
+        // and the changes under it do not move.
+        sync.set(held(
+          [
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+            person('d', 'Di Ray'),
+          ],
+          withDeletions: false,
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('You chose Delete them: done. They are no longer held.'),
+          findsOneWidget,
+        );
+        expect(find.text('Eve Ash: deleted in Gmail'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: button('contact-sync-question:deletions'),
+            matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+          ),
+          findsNothing,
+        );
+        expect(top(item('c')), c, reason: 'nothing moved');
+
+        // Ben no longer held, with no answer: he stays, saying so.
+        sync.set(held(
+          [person('c', 'Cy Fox'), person('d', 'Di Ray')],
+          withDeletions: false,
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          under('b', 'No longer held: nothing to answer.'),
+          findsOneWidget,
+        );
+        expect(button('contact-sync-item:b:applyThem'), findsNothing);
+
+        // Held since: under the rest.
+        sync.set(held(
+          [
+            person('c', 'Cy Fox'),
+            person('d', 'Di Ray'),
+            person('f', 'Fay Gil'),
+          ],
+          withDeletions: false,
+        ));
+        await tester.pumpAndSettle();
+        expect(top(item('f')), greaterThan(top(item('d'))));
+
+        // The buttons for the rest answer only the contacts listed now.
+        await tester.tap(find.text('Apply them'));
+        await tester.pumpAndSettle();
+        expect(sync.questionItems.last, {'c', 'd', 'f'});
       });
     });
 
@@ -2235,6 +2394,91 @@ void main() {
       ]);
       expect(sync.allDiffering.single.choice, ContactSyncChoice.leaveAsTheyAre);
       expect(sync.allDiffering.single.looks.keys, {2, 3});
+    });
+
+    testWidgets('Needs a look: items answered stay where they are until the '
+        'screen is left', (tester) async {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            graphValues: {ContactField.jobTitle: 'Head buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      ContactSyncStatus listing(List<ContactSyncLook> looks) =>
+          synced(looks: looks);
+      sync = FakeContactSync(status: listing([
+        for (var id = 1; id <= 6; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (6)'));
+      await tester.pumpAndSettle();
+      double top(Finder f) => tester.getTopLeft(f).dy;
+      Finder look(int id) => button('contact-sync-look:$id');
+      Finder under(int id, String text) =>
+          find.descendant(of: look(id), matching: find.text(text));
+
+      // Use Hadco's on the first, carried out by the run it started.
+      await tester.tap(button('contact-sync-look:1:useGraph'));
+      await tester.pumpAndSettle();
+      sync.set(listing([
+        differs(1, answer: ContactSyncChoice.useGraph),
+        for (var id = 2; id <= 6; id++) differs(id),
+      ]));
+      await tester.pumpAndSettle();
+      final fifthAnswered = top(look(5));
+      sync.set(listing([for (var id = 2; id <= 6; id++) differs(id)]));
+      await tester.pumpAndSettle();
+      expect(
+        under(1, "You chose Use Hadco's: done. No longer needs a look."),
+        findsOneWidget,
+      );
+      expect(top(look(5)), fifthAnswered, reason: 'nothing moved');
+
+      // Leave as they are, which takes the item away at once: it stays,
+      // done, with the answer given here.
+      await tester.tap(button('contact-sync-look:2:leaveAsTheyAre'));
+      await tester.pumpAndSettle();
+      sync.set(listing([for (var id = 3; id <= 6; id++) differs(id)]));
+      await tester.pumpAndSettle();
+      expect(
+        under(2, 'You chose Leave as they are: done. No longer needs a look.'),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: look(2),
+          matching: find.byWidgetPredicate((w) => w is ButtonStyleButton),
+        ),
+        findsNothing,
+      );
+
+      // Gone with no answer (its contacts gone): it stays, saying so.
+      sync.set(listing([differs(4), differs(5), differs(6)]));
+      await tester.pumpAndSettle();
+      expect(under(3, 'No longer needs a look.'), findsOneWidget);
+
+      // Listed since: under the rest, and nothing above it moves.
+      final fifth = top(look(5));
+      sync.set(listing([differs(4), differs(5), differs(6), differs(7)]));
+      await tester.pumpAndSettle();
+      expect(top(look(7)), greaterThan(top(look(6))));
+      expect(top(look(5)), fifth);
+      expect(find.text('Nothing needs a look.'), findsNothing);
+
+      // The answer for all names only the items listed now.
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering.single.looks.keys, {4, 5, 6, 7});
     });
 
     testWidgets("one side's details for every differing pair is asked again, "
