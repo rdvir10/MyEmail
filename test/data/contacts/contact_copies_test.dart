@@ -30,7 +30,14 @@ void main() {
     OutlookCopy kept,
     List<OutlookCopy> others, {
     String? keep,
-  }) => mergeCopies(kept, others, keep: keep, norm: norm);
+    bool keepsPhoto = false,
+  }) => mergeCopies(
+    kept,
+    others,
+    keep: keep,
+    keepsPhoto: keepsPhoto,
+    norm: norm,
+  );
 
   Map<String, Object?> email(String address, [String? name]) => {
     'name': name ?? address,
@@ -727,8 +734,8 @@ void main() {
       expect(mine.adds, isEmpty);
     });
 
-    test("Keep these on another copy brings that copy's photo, when it has "
-        "one, in place of the synced copy's", () {
+    test('an answer never touches the photo: the synced copy keeps its '
+        "own, or takes the first other copy's", () {
       final kept = copy('A', {'jobTitle': 'Buyer'}, 'p1');
       final other = copy('B', {'jobTitle': 'Manager'}, 'p2');
       final bare = copy('C', {'jobTitle': 'Clerk'});
@@ -736,29 +743,67 @@ void main() {
       expect([for (final d in unanswered.differences) d.label], [
         'Job title',
       ]);
-      expect(unanswered.photoFrom, isNull);
-      expect(merge(kept, [other, bare], keep: 'A').photoFrom, isNull);
-      final theirs = merge(kept, [other, bare], keep: 'B');
+      for (final keep in [null, 'A', 'B', 'C']) {
+        final answered = merge(kept, [other, bare], keep: keep);
+        expect(answered.photoFrom, isNull, reason: keep);
+        expect(
+          answered.adds.where((d) => d.label == 'Photo'),
+          isEmpty,
+          reason: keep,
+        );
+      }
+      // The synced copy with none: the first other copy's, whatever the
+      // answer.
+      final none = copy('A', {'jobTitle': 'Buyer'});
+      for (final keep in [null, 'A', 'B', 'D']) {
+        expect(
+          merge(none, [other, copy('D', const {}, 'p3')], keep: keep)
+              .photoFrom,
+          'B',
+          reason: keep,
+        );
+      }
+    });
+
+    test("where the photo was a difference Ron saw (keepsPhoto: a 3.22.0 "
+        "listing), another copy's answer brings its photo", () {
+      final kept = copy('A', {'jobTitle': 'Buyer'}, 'p1');
+      final other = copy('B', {'jobTitle': 'Manager'}, 'p2');
+      final bare = copy('C', {'jobTitle': 'Clerk'});
+      final theirs = merge(kept, [other, bare], keep: 'B', keepsPhoto: true);
       expect(theirs.photoFrom, 'B');
       expect(theirs.outcome, CopiesOutcome.adds);
       expect(
         theirs.adds.where((d) => d.label == 'Photo'),
         [const CopiesDetail(label: 'Photo', value: 'a photo')],
       );
-      // A copy with none leaves the synced copy's.
-      expect(merge(kept, [other, bare], keep: 'C').photoFrom, isNull);
+      // The synced copy's, or a copy with none: the synced copy's stays.
+      for (final keep in ['A', 'C']) {
+        expect(
+          merge(kept, [other, bare], keep: keep, keepsPhoto: true).photoFrom,
+          isNull,
+          reason: keep,
+        );
+      }
       // With nothing else differing, too.
-      final alike = merge(copy('A', const {}, 'p1'), [
-        copy('B', const {}, 'p2'),
-      ], keep: 'B');
+      final alike = merge(
+        copy('A', const {}, 'p1'),
+        [copy('B', const {}, 'p2')],
+        keep: 'B',
+        keepsPhoto: true,
+      );
       expect(alike.outcome, CopiesOutcome.adds);
       expect(alike.photoFrom, 'B');
       expect(alike.fingerprint, '');
       // The synced copy with none: the chosen copy's, not the first.
       final none = copy('A', {'jobTitle': 'Buyer'});
-      expect(merge(none, [other, copy('D', const {}, 'p3')]).photoFrom, 'B');
       expect(
-        merge(none, [other, copy('D', const {}, 'p3')], keep: 'D').photoFrom,
+        merge(
+          none,
+          [other, copy('D', const {}, 'p3')],
+          keep: 'D',
+          keepsPhoto: true,
+        ).photoFrom,
         'D',
       );
     });
@@ -1228,8 +1273,8 @@ void main() {
       final merged = merge(kept, [other, third], keep: 'B');
       expect(merged.outcome, CopiesOutcome.adds);
       expect(merged.differences, isEmpty);
-      // Its photo comes with it, in place of the synced copy's.
-      expect(merged.photoFrom, 'B');
+      // The synced copy's photo stays: the answer was on the details.
+      expect(merged.photoFrom, isNull);
       expect(merged.patch, {
         'emailAddresses': [email('ann@x.example'), email('ann@y.example')],
         'department': 'Purchasing',
@@ -1248,7 +1293,6 @@ void main() {
           label: 'Other details',
           value: 'weddingAnniversary: 2001-05-05',
         ),
-        const CopiesDetail(label: 'Photo', value: 'a photo'),
       ]);
       expect(merged.fingerprint, merge(kept, [other, third]).fingerprint);
     });

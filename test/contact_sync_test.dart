@@ -5463,8 +5463,8 @@ void main() {
       expect(h.graph.contact(e.others.single), isNotNull);
     });
 
-    test("Keep these on another copy brings that copy's photo, read, given "
-        'and read back', () async {
+    test("Keep these on another copy, on today's listing, takes its details "
+        "and never the photo: the synced copy's own stays", () async {
       final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
       await h.firstSync();
       final c = await hadcoOf(cat);
@@ -5488,15 +5488,12 @@ void main() {
       await h.sync.syncNow();
       expect((await h.status()).copies.differing, isEmpty);
       expect(h.graph.contact(c.synced)!['jobTitle'], 'Manager');
-      expect(h.graph.photoOf(c.synced)!.bytes, [2]);
+      expect(h.graph.photoOf(c.synced)!.bytes, [1]);
       expect(h.graph.contact(c.others.single), isNull);
+      // No photo read, nor given.
       expect(
-        [
-          for (final r in h.requests)
-            if (r.method == 'GET' && r.url.path.endsWith(r'/$value'))
-              r.url.pathSegments[r.url.pathSegments.length - 3],
-        ],
-        [c.others.single],
+        h.requests.where((r) => r.url.path.endsWith(r'/$value')),
+        isEmpty,
       );
     });
 
@@ -5581,6 +5578,44 @@ void main() {
       expect(status.copies.last!.passedOver, 0);
       expect(h.graph.photoOf(a.synced)!.bytes, [1]);
       expect(h.graph.photoOf(b.synced)!.bytes, [3]);
+    });
+
+    test('a leave 3.22.0 kept is kept in today\'s form at the next run, '
+        'then lifted by a change to its copies, and counted to merge',
+        () async {
+      final eve = copiesOf('Eve', 'Moss');
+      await h.firstSync();
+      final e = await hadcoOf(eve);
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final copies =
+            (held['copies'] as Map<String, Object?>?) ?? <String, Object?>{};
+        copies['left'] = {e.synced: '0' * 64};
+        held['copies'] = copies;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      // The next run keeps the leave in today's form, its copies as they
+      // are: still left, not counted.
+      var status = await h.later();
+      expect(status.copies.people, 0);
+      final left = (jsonDecode((await h.pair()).held!) as Map)['copies']['left']
+          as Map;
+      expect((left[e.synced] as Map)['keys'], {
+        e.synced: h.graph.contact(e.synced)!['changeKey'],
+        for (final id in e.others) id: h.graph.contact(id)!['changeKey'],
+      });
+      // A copy changes: the leave is lifted, so the merge is offered, and
+      // reads Eve again as any other.
+      h.graph.editFromOutlook(e.others.single, {'jobTitle': 'Pilot'});
+      status = await h.later();
+      expect(status.copies.people, 1);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(e.synced)!['jobTitle'], 'Pilot');
+      expect(h.graph.contact(e.others.single), isNull);
     });
 
     test('a person no longer listed, or a copy not its own, is refused',
