@@ -4679,11 +4679,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(sync.allCopiesAnswers.last, {'p1': 'va2', 'p2': 'vb2'});
 
-      // One left to answer: its own buttons are enough.
+      // One left to answer: its own buttons are enough, and the one for
+      // all stays where it was, off.
       sync.set(listing([changed(annDiffers, 'va3')]));
       await tester.pumpAndSettle();
       expect(button('contact-sync-copies-keep:p1:a1'), findsOneWidget);
-      expect(button('contact-sync-copies-all'), findsNothing);
+      expect(find.text('One left: answer it on its own'), findsOneWidget);
+      expect(enabled(tester, 'contact-sync-copies-all'), isFalse);
     });
 
     testWidgets("Keep the synced copy's for all is off while a merge is "
@@ -4711,6 +4713,110 @@ void main() {
       ));
       await tester.pumpAndSettle();
       expect(enabled(tester, 'contact-sync-copies-all'), isTrue);
+    });
+
+    group("Keep the synced copy's for all keeps its place", () {
+      ContactSyncCopiesPerson person(
+        String key,
+        String title, {
+        String? answer,
+      }) =>
+          ContactSyncCopiesPerson(
+            key: key,
+            title: title,
+            answer: answer,
+            version: 'v-$key',
+            copies: [
+              ContactSyncCopy(
+                key: '$key-s',
+                synced: true,
+                details: const [
+                  ContactSyncCopyDetail(label: 'Job title', value: 'Buyer'),
+                ],
+              ),
+              ContactSyncCopy(
+                key: '$key-o',
+                details: const [
+                  ContactSyncCopyDetail(label: 'Job title', value: 'Head'),
+                ],
+              ),
+            ],
+          );
+      ContactSyncStatus listing(List<ContactSyncCopiesPerson> differing) =>
+          synced(
+            copies: ContactSyncCopies(differing: differing),
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      final forAll = button('contact-sync-copies-all');
+      Finder of(String key) => button('contact-sync-copies-person:$key');
+
+      testWidgets('with fewer than two open, it stays, off', (tester) async {
+        await openDuplicates(
+          tester,
+          copies: ContactSyncCopies(differing: [
+            person('a', 'Ann Cole'),
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+          ]),
+        );
+        final ann = top(tester, of('a'));
+        expect(top(tester, forAll), lessThan(ann));
+
+        // Two answered: one left.
+        sync.set(listing([
+          person('a', 'Ann Cole', answer: ContactSyncCopiesPerson.leave),
+          person('b', 'Ben Day', answer: 'b-s'),
+          person('c', 'Cy Fox'),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('One left: answer it on its own'), findsOneWidget);
+        expect(enabled(tester, 'contact-sync-copies-all'), isFalse);
+        expect(top(tester, of('a')), ann, reason: 'nothing moved');
+
+        // All three answered: none left.
+        sync.set(listing([
+          person('a', 'Ann Cole', answer: ContactSyncCopiesPerson.leave),
+          person('b', 'Ben Day', answer: 'b-s'),
+          person('c', 'Cy Fox', answer: 'c-s'),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('Nothing left to answer for all'), findsOneWidget);
+        expect(top(tester, of('a')), ann, reason: 'nothing moved');
+      });
+
+      testWidgets('one that comes while the copies that differ are shown '
+          'goes under them', (tester) async {
+        await openDuplicates(
+          tester,
+          copies: ContactSyncCopies(differing: [person('a', 'Ann Cole')]),
+        );
+        expect(forAll, findsNothing);
+        final ann = top(tester, of('a'));
+
+        // A merge's pass lists another.
+        sync.set(listing([person('a', 'Ann Cole'), person('b', 'Ben Day')]));
+        await tester.pumpAndSettle();
+        expect(find.text("Keep the synced copy's for all 2"), findsOneWidget);
+        expect(top(tester, of('a')), ann, reason: 'nothing moved');
+        expect(top(tester, forAll), greaterThan(top(tester, of('b'))));
+        expect(
+          top(tester, forAll),
+          lessThan(top(tester, find.text('People with copies (1)'))),
+        );
+      });
+
+      testWidgets('copies that differ first listed while the screen is open '
+          'bring it in their heading', (tester) async {
+        await openDuplicates(
+          tester,
+          copies: const ContactSyncCopies(people: 3, extras: 4),
+        );
+        sync.set(listing([person('a', 'Ann Cole'), person('b', 'Ben Day')]));
+        await tester.pumpAndSettle();
+        expect(top(tester, forAll), lessThan(top(tester, of('a'))));
+      });
     });
 
     testWidgets('an answer refused because the person changed is said, and '

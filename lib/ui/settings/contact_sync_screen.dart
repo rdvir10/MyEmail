@@ -2344,6 +2344,17 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   /// those differences still.
   final Map<String, ({String answer, String version})> _gaveHere = {};
 
+  /// Where Keep the synced copy's for all stands this visit, settled when
+  /// the copies that differ are first shown: in their heading if two or
+  /// more were open then; one that comes later goes under them, so that
+  /// its coming pushes nothing down.
+  bool? _allOnTop;
+
+  /// The button has been shown this visit: it stays until the screen is
+  /// left, off with fewer than two people open, so that its going moves
+  /// nothing up either.
+  bool _allShown = false;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
   DateTime? _lastNow() =>
@@ -2616,6 +2627,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       for (final s in shown)
         if (s.answer == null) s.person,
     ];
+    if (shown.isNotEmpty) _allOnTop ??= open.length > 1;
+    if (open.length > 1) _allShown = true;
+    // Kept for the visit: in the heading, or under the copies that differ.
+    final allOnTop = _allShown && (_allOnTop ?? false);
+    final allAtFoot = _allShown && !allOnTop && shown.isNotEmpty;
     // By name, to find someone among a few hundred.
     final people = [...?status?.duplicates]..sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
@@ -2646,7 +2662,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     // the copies that differ, under their heading; then everyone with
     // copies, under theirs.
     const differFrom = 1;
-    final peopleFrom = differFrom + (shown.isEmpty ? 0 : shown.length + 1);
+    final peopleFrom = differFrom +
+        (shown.isEmpty ? 0 : shown.length + 1 + (allAtFoot ? 1 : 0));
     return Scaffold(
       appBar: AppBar(
         title: const Text('Duplicates to merge'),
@@ -2673,9 +2690,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 if (i == differFrom) {
                   return _differingHead(
                     shown.length,
-                    open,
-                    asked: copies.asked,
+                    allOnTop ? _forAll(open, asked: copies.asked) : null,
                   );
+                }
+                if (i - differFrom - 1 == shown.length) {
+                  return _forAll(open, asked: copies.asked);
                 }
                 final (:person, :answer, :listed) = shown[i - differFrom - 1];
                 return _CopiesPerson(
@@ -2945,13 +2964,9 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   }
 
   /// The heading of the copies that differ, what the answers do, and the
-  /// answer for all of them, set apart from each person's own.
-  Widget _differingHead(
-    int n,
-    List<ContactSyncCopiesPerson> open, {
-    required bool asked,
-  }) =>
-      Column(
+  /// answer for all of them ([forAll]) where it stands here, set apart
+  /// from each person's own.
+  Widget _differingHead(int n, Widget? forAll) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _Heading('Copies that differ ($n)'),
@@ -2964,18 +2979,28 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
             'sync, which starts at once.',
             muted: true,
           ),
-          if (open.length > 1)
-            _Buttons([
-              FilledButton.tonal(
-                key: const ValueKey('contact-sync-copies-all'),
-                // Off while a merge is asked for: it lists people as it
-                // goes, under those Ron has seen.
-                onPressed: asked ? null : () => _keepSyncedForAll(open),
-                child: Text("Keep the synced copy's for all ${open.length}"),
-              ),
-            ]),
+          ?forAll,
         ],
       );
+
+  /// Keep the synced copy's for all, for the people [open]; with fewer
+  /// than two it stays, the same size, off, saying why.
+  Widget _forAll(List<ContactSyncCopiesPerson> open, {required bool asked}) =>
+      _Buttons([
+        FilledButton.tonal(
+          key: const ValueKey('contact-sync-copies-all'),
+          // Off while a merge is asked for: it lists people as it goes,
+          // under those Ron has seen.
+          onPressed: asked || open.length < 2
+              ? null
+              : () => _keepSyncedForAll(open),
+          child: Text(switch (open.length) {
+            0 => 'Nothing left to answer for all',
+            1 => 'One left: answer it on its own',
+            final n => "Keep the synced copy's for all $n",
+          }),
+        ),
+      ]);
 }
 
 /// One person whose copies on the Microsoft side differ: each copy's
