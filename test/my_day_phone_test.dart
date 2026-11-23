@@ -10,6 +10,7 @@ import 'package:myemail/data/calendar/phone_calendar.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/account_calendars.dart' show CalendarInfo;
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/mail_message.dart' show MailAddress;
 import 'package:myemail/state/calendar_providers.dart'
@@ -18,6 +19,7 @@ import 'package:myemail/state/calendar_view_providers.dart';
 import 'package:myemail/state/meeting_alert_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/theme/app_theme.dart' show buildTheme;
+import 'package:myemail/ui/calendar/agenda_row_parts.dart' show agendaFaintBar;
 import 'package:myemail/ui/calendar/calendar_screen.dart';
 import 'package:myemail/ui/calendar/my_day_pane.dart';
 import 'package:myemail/ui/messages/message_list_pane.dart';
@@ -85,6 +87,7 @@ void main() {
     double bottomBar = 0,
     bool calendar = true,
     List<CalendarEvent> Function(Account hadco)? events,
+    void Function(SampleMailEngine engine, Account hadco)? prepare,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
@@ -104,6 +107,7 @@ void main() {
             ),
           )))!;
       engine.events[hadco.id] = (events ?? day)(hadco);
+      prepare?.call(engine, hadco);
     }
     final c = ProviderContainer(overrides: [
       uiStateStoreProvider.overrideWithValue(ui),
@@ -176,6 +180,51 @@ void main() {
     final drawn = tester.getRect(find.byType(BottomSheet));
     expect(drawn.top, greaterThan(100));
     expect(drawn.bottom, 915);
+  });
+
+  // My Day drew a holiday as it draws a meeting: a full bar, in the
+  // account's colour, though its calendar has a colour of its own.
+  testWidgets("a free whole day is pale in My Day, in its calendar's colour",
+      (tester) async {
+    const green = 0xFF0B8043;
+    await pump(
+      tester,
+      events: (hadco) => [
+        ...day(hadco),
+        CalendarEvent(
+          id: 'h',
+          accountId: hadco.id,
+          calendarId: 'holidays',
+          title: 'Thanksgiving',
+          start: DateTime(2026, 10, 26),
+          end: DateTime(2026, 10, 27),
+          allDay: true,
+          showAs: EventShowAs.free,
+          readOnly: true,
+        ),
+      ],
+      prepare: (engine, hadco) => engine.calendarLists[hadco.id] = [
+        CalendarInfo.main(hadco.id),
+        CalendarInfo(
+          accountId: hadco.id,
+          id: 'holidays',
+          name: 'Holidays',
+          colour: green,
+          canEdit: false,
+        ),
+      ],
+    );
+    await hold(tester);
+
+    Color bar(String id) {
+      final box = tester.widget<Container>(
+          inSheet(find.byKey(ValueKey('my-day-bar:my-day-event:$id'))));
+      return (box.decoration! as BoxDecoration).color!;
+    }
+
+    final theme = Theme.of(tester.element(sheet));
+    expect(bar('h'), agendaFaintBar(const Color(green), theme));
+    expect(bar('b').a, 1.0, reason: 'a meeting full strength, as before');
   });
 
   testWidgets('turned on its side with My Day up, its taps still open what '

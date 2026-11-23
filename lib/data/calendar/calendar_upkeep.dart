@@ -389,6 +389,8 @@ class CalendarUpkeep {
             'e': e.end.millisecondsSinceEpoch,
             if (e.allDay) 'a': true,
             if (e.declined) 'd': true,
+            // Shown as free, a holiday or a birthday: drawn pale.
+            if (e.showAs == EventShowAs.free) 'f': true,
             // Signed and inside 32 bits, as Android reads a colour.
             'c': eventColour(
               e,

@@ -285,6 +285,31 @@ void main() {
     expect(surface.calendarRedraws, 1);
   });
 
+  // The widget drew a holiday as it draws a meeting, full strength.
+  test('the widget is told which of them show as free, to draw them pale',
+      () async {
+    now = DateTime(2026, 10, 26, 9);
+    engine.events[hadco.id] = [
+      meeting('a', DateTime(2026, 10, 26, 10), title: 'Stand-up'),
+      CalendarEvent(
+        id: 'h',
+        accountId: hadco.id,
+        title: 'Holiday',
+        start: DateTime(2026, 10, 26),
+        end: DateTime(2026, 10, 27),
+        allDay: true,
+        showAs: EventShowAs.free,
+      ),
+    ];
+    await run();
+    final rows =
+        jsonDecode(surface.values[CalendarUpkeep.widgetKey]! as String) as List;
+    final byTitle = {for (final r in rows) r['t']: r as Map};
+    expect(byTitle['Holiday']!['f'], isTrue);
+    expect(byTitle['Holiday']!['a'], isTrue);
+    expect(byTitle['Stand-up']!.containsKey('f'), isFalse);
+  });
+
   test('a calendar that cannot be read keeps what the device kept', () async {
     engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
     await run();

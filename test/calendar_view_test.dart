@@ -788,6 +788,53 @@ void main() {
       expect(c.read(calendarViewProvider), CalendarViewMode.day);
     });
 
+    // Whole days came first and took a day's three dots, at full strength,
+    // so a day of holidays showed none for its meeting.
+    testWidgets("Month on a phone: a day's dots go to what takes its time "
+        'first; one free, or declined, is pale', (tester) async {
+      final t = today();
+      final board = DateTime(t.year, t.month, t.day == 10 ? 11 : 10);
+      await pump(tester, const CalendarScreen(),
+          size: const Size(400, 800), prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          for (final n in [1, 2, 3])
+            CalendarEvent(
+              id: 'holiday$n',
+              accountId: hadco.id,
+              title: 'Holiday $n',
+              start: board,
+              end: DateTime(board.year, board.month, board.day + 1),
+              allDay: true,
+              showAs: EventShowAs.free,
+            ),
+          at(hadco, 'board', 'Board',
+              DateTime(board.year, board.month, board.day, 10)),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
+      await tester.pumpAndSettle();
+
+      Finder dot(String id) => find.byWidgetPredicate((w) =>
+          w.key is ValueKey<String> &&
+          (w.key! as ValueKey<String>).value.startsWith(
+              'month-dot:${day(board)}:') &&
+          (w.key! as ValueKey<String>).value.endsWith('|$id'));
+      int alphaOf(String id) {
+        final box = tester.widget<Container>(dot(id).first);
+        final colour = (box.decoration! as BoxDecoration).color!;
+        return (colour.a * 255).round();
+      }
+
+      expect(dot('board'), findsOneWidget, reason: 'the meeting first');
+      expect(alphaOf('board'), 255);
+      expect(dot('holiday1'), findsOneWidget);
+      expect(dot('holiday2'), findsOneWidget);
+      expect(dot('holiday3'), findsNothing, reason: 'three dots at most');
+      expect(alphaOf('holiday1'), 90, reason: 'free, so pale');
+      final first = tester.getCenter(dot('board')).dx;
+      expect(first, lessThan(tester.getCenter(dot('holiday1')).dx));
+    });
+
     testWidgets('Week shows the work week alone once chosen (#6)',
         (tester) async {
       final (c, _) = await pump(tester, const CalendarScreen());

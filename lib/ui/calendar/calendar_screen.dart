@@ -1443,7 +1443,7 @@ class _AgendaRow extends StatelessWidget {
       if (e.declined) 'Declined',
       if (e.cancelled) 'Cancelled',
     ].join(' · ');
-    final faint = e.showAs == EventShowAs.free || e.declined;
+    final faint = paleInLists(e);
     final title = e.title.isEmpty ? '(No title)' : e.title;
     // As wide as the times need at this text size and clock (#90).
     final times = agendaTimesWidth(context);
@@ -1721,6 +1721,13 @@ class _MonthDay extends StatelessWidget {
     );
     final Widget body;
     if (!titles) {
+      // What takes the day's time has its dots first, then what does not
+      // (free, declined), pale as the Agenda draws it: three holidays took
+      // every dot, and the day's meeting had none.
+      final dotted = [
+        ...events.where((e) => !paleInLists(e)),
+        ...events.where(paleInLists),
+      ].take(3);
       body = Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -1729,13 +1736,17 @@ class _MonthDay extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              for (final e in events.take(3))
+              for (final e in dotted)
                 Container(
+                  key: ValueKey('month-dot:${_dayKey(day)}:'
+                      '${e.accountId}|${e.calendarId}|${e.id}'),
                   width: 5,
                   height: 5,
                   margin: const EdgeInsets.symmetric(horizontal: 1),
                   decoration: BoxDecoration(
-                    color: e.declined ? colourOf(e).withAlpha(90) : colourOf(e),
+                    color: paleInLists(e)
+                        ? colourOf(e).withAlpha(90)
+                        : colourOf(e),
                     shape: BoxShape.circle,
                   ),
                 ),

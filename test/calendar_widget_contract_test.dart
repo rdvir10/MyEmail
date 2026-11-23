@@ -34,7 +34,8 @@ void main() {
       // does not see.
       for (final m in RegExp(r"'(\w)': \?").allMatches(dart)) m[1]!,
     };
-    expect(read, containsAll(['t', 's', 'e', 'l']));
+    expect(read, containsAll(['t', 's', 'e', 'l', 'f']),
+        reason: "'f', shown as free, draws the row's colour pale");
     expect(written, containsAll(read));
   });
 

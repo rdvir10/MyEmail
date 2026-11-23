@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../domain/calendar_event.dart';
 import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../messages/date_format.dart' show formatClock;
 
@@ -84,6 +85,13 @@ double agendaTitleIndent(BuildContext context) =>
 
 /// The room from a row's times to its title: the bar, and the room after.
 const agendaBarAndRoom = _bar + _barToTitle;
+
+/// Whether [e] is drawn pale in a list, as taking none of Ron's time: shown
+/// as free (a holiday, a birthday, someone's day off) or declined. The
+/// Agenda's bar, My Day's, the month's dots on a phone and the calendar
+/// widget's colour.
+bool paleInLists(CalendarEvent e) =>
+    e.showAs == EventShowAs.free || e.declined;
 
 /// A free or declined meeting's bar: its colour, faint. On the light page
 /// that is the colour thinned over the page; on the dark page the same

@@ -9,7 +9,9 @@ import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_alert_providers.dart';
 import '../messages/date_format.dart';
+import 'agenda_row_parts.dart' show agendaFaintBar, paleInLists;
 import 'calendar_screen.dart';
+import 'event_colours.dart';
 import 'next_meeting_bar.dart' show joinMeeting;
 import 'place_link.dart';
 
@@ -97,7 +99,15 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
     final nextLoad = ref.watch(calendarEventsProvider(nextDay));
     final prefs = ref.watch(calendarPrefsProvider);
     final accounts = ref.watch(calendarAccountsProvider);
-    final colours = {for (final a in accounts) a.id: Color(a.colorValue)};
+    // As the calendar draws them: the event's own colour, else its
+    // calendar's (a holiday calendar's green), else its account's.
+    final colours = EventColours(
+      accounts: {for (final a in accounts) a.id: Color(a.colorValue)},
+      calendars: {
+        ...?load.value?.calendars,
+        ...?nextLoad.value?.calendars,
+      },
+    );
     final events = shownEvents(load.value?.events ?? const [], prefs);
     final nextEvents = shownEvents(nextLoad.value?.events ?? const [], prefs);
     // Tomorrow's too, for the minutes before midnight.
@@ -145,8 +155,9 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
           for (final e in events)
             _MyDayEvent(
               tapKey: ValueKey('$name:${e.id}'),
+              barKey: ValueKey('my-day-bar:$name:${e.id}'),
               event: e,
-              colour: colours[e.accountId] ?? theme.colorScheme.primary,
+              colour: colours[e] ?? theme.colorScheme.primary,
               over: !e.end.isAfter(now),
               next: identical(e, next),
               use24h: use24h,
@@ -258,6 +269,7 @@ String _titleOf(CalendarEvent e) =>
 class _MyDayEvent extends StatelessWidget {
   const _MyDayEvent({
     required this.tapKey,
+    required this.barKey,
     required this.event,
     required this.colour,
     required this.over,
@@ -268,6 +280,7 @@ class _MyDayEvent extends StatelessWidget {
 
   /// Today's and tomorrow's apart: a meeting over midnight is in both.
   final Key tapKey;
+  final Key barKey;
   final CalendarEvent event;
   final Color colour;
   final bool over;
@@ -303,10 +316,15 @@ class _MyDayEvent extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
+                key: barKey,
                 width: 4,
                 height: 36,
                 decoration: BoxDecoration(
-                  color: colour,
+                  // Pale where it takes none of the day, a holiday or a
+                  // birthday, as the Agenda draws it.
+                  color: paleInLists(e)
+                      ? agendaFaintBar(colour, theme)
+                      : colour,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),

@@ -86,6 +86,7 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
         val end: Long,
         val allDay: Boolean,
         val declined: Boolean,
+        val free: Boolean,
         val colour: Int,
         val where: String?,
         val join: String?,
@@ -110,6 +111,7 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
                     end = o.optLong("e", 0),
                     allDay = o.optBoolean("a", false),
                     declined = o.optBoolean("d", false),
+                    free = o.optBoolean("f", false),
                     colour = o.optLong("c", DEFAULT_COLOUR.toLong()).toInt(),
                     where = o.optString("w", "").ifEmpty { null },
                     join = o.optString("j", "").ifEmpty { null },
@@ -182,6 +184,13 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
     private fun row(context: Context, m: Meeting, now: Long, today: Boolean): RemoteViews =
         RemoteViews(context.packageName, R.layout.calendar_widget_row).apply {
             setInt(R.id.calendar_row_colour, "setColorFilter", m.colour)
+            // Pale where it takes none of the day (a holiday, a birthday)
+            // or was declined, as the calendar's Agenda draws it.
+            setInt(
+                R.id.calendar_row_colour,
+                "setImageAlpha",
+                if (m.free || m.declined) FAINT_ALPHA else 255,
+            )
             setTextViewText(R.id.calendar_row_title, m.title)
             val clock = DateFormat.getTimeFormat(context)
             val time = if (m.allDay) {
@@ -268,5 +277,7 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
         const val LINE_DP = 24
         /** The app's own orange, for a meeting whose account has gone. */
         const val DEFAULT_COLOUR = 0xFFFF7A18.toInt()
+        /** A pale row's colour, of 255: the Agenda's faint bar's. */
+        const val FAINT_ALPHA = 110
     }
 }
