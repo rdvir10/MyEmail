@@ -495,6 +495,39 @@ void main() {
       expect(await h.paired(), hasLength(1));
     });
 
+    test("Copy it anyway cut short before Outlook made the contact is kept, "
+        'and carried out once its create is given up', () async {
+      h.google.seed(person('Jo', 'Smith', email: 'jo@home.example'));
+      h.graph.seed(outlook('Jo', 'Smith', email: 'jo@work.example'));
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.side, ContactSide.google);
+      // The connection drops before Outlook makes anything.
+      h.before = (r) async {
+        if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+          throw http.ClientException('connection lost');
+        }
+      };
+      await h.sync.answerLook(look.id, ContactSyncChoice.copyAnyway);
+      await h.sync.syncNow();
+      h.before = null;
+      expect(h.graph.count, 1);
+      expect(await h.store.ops((await h.pair()).pairId), hasLength(1));
+
+      // Within the hour the copy may still show: Ron's answer is kept.
+      var status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 1);
+
+      // An hour on and not found: made, and paired.
+      status = await h.later(after: const Duration(minutes: 70));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 2);
+      final jo = h.google.nameWithEmail('jo@home.example');
+      expect((await h.paired()).where((l) => l.googleName == jo), hasLength(1));
+      expect(await h.store.ops((await h.pair()).pairId), isEmpty);
+    });
+
     test('an interrupted Outlook create is settled by the tag read with '
         'the copy, where nothing else would pair them', () async {
       // A name and a landline: no email to look the copy up by, and no

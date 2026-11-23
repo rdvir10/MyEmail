@@ -3789,6 +3789,77 @@ void main() {
       expect(byGoogle(plan, 'people/c1')!.create!.side, ContactSide.graph);
     });
 
+    test("Ron's copy cut short waits with it, and is made once given up", () {
+      // Copy it anyway, Copy it back or Retry: the create it planned was
+      // cut short before the server made anything (a lost connection),
+      // so its journal entry stays and the row is held as it was.
+      final answered = [
+        (
+          ContactHeldReason.waiting,
+          const ContactAnswer(
+            ContactAnswerKind.copyAnyway,
+            googleName: 'people/c1',
+          ),
+        ),
+        (
+          ContactHeldReason.kept,
+          const ContactAnswer(
+            ContactAnswerKind.copyBack,
+            googleName: 'people/c1',
+          ),
+        ),
+        (
+          ContactHeldReason.refused,
+          const ContactAnswer(ContactAnswerKind.retry, googleName: 'people/c1'),
+        ),
+      ];
+      for (final (reason, answer) in answered) {
+        final row = link(
+          1,
+          'people/c1',
+          null,
+          base: ann,
+          state: ContactLinkState.held,
+          reason: reason,
+        );
+        // Within the hour the copy may still show: the answer waits.
+        final inside = run(
+          google: [g('people/c1', ann)],
+          links: [row],
+          journal: [entry],
+          answers: [answer],
+        );
+        expect(
+          inside.answers,
+          [ContactAnswerOutcome.waiting],
+          reason: '$reason',
+        );
+        expect(inside.links, isEmpty);
+        expect(inside.reviews, isEmpty);
+        // An hour on and not found: given up, and the copy made again.
+        final after = run(
+          google: [g('people/c1', ann)],
+          links: [row],
+          journal: [
+            ContactJournalEntry(
+              opId: 3,
+              side: ContactSide.graph,
+              sourceId: 'people/c1',
+              startedAt: now.subtract(const Duration(minutes: 61)),
+            ),
+          ],
+          answers: [answer],
+        );
+        expect(after.journalSettled, [3]);
+        expect(
+          after.answers,
+          [ContactAnswerOutcome.applied],
+          reason: '$reason',
+        );
+        expect(byLink(after, 1)!.create!.side, ContactSide.graph);
+      }
+    });
+
     test('found by the tag it was written with, after a re-key', () {
       // Journalled under people/c1 with tag people/c1; the store then
       // re-keyed the source to people/c9, and Google no longer reports

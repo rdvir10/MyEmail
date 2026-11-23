@@ -273,8 +273,9 @@ enum ContactAnswerOutcome {
   /// Planned: its Needs a look item or brake question is done with.
   applied,
 
-  /// A contact it acts on was not read this run: it stays queued. See
-  /// [contactsToRead].
+  /// A contact it acts on was not read this run (see [contactsToRead]),
+  /// or the copy it asked for was cut short and is not found yet: it
+  /// stays queued.
   waiting,
 
   /// Its contact has gone, or it no longer applies: the item is dropped.
@@ -2119,6 +2120,10 @@ class _Planner {
   /// Contacts under a Needs a look item of their own still waiting for
   /// Ron.
   final waitingSubjects = <(ContactSide, String)>{};
+
+  /// Sources of interrupted creates whose copy is not found yet, left
+  /// alone this run ([_settleJournal]): an answer that copies one waits.
+  final copyInFlight = <(ContactSide, String)>{};
   var pairUp = 0;
   var differingPairs = 0;
 
@@ -2603,6 +2608,7 @@ class _Planner {
         // twice.
         _setStatus(sourceSide, source, _Status.leftAlone);
         _rowOf(sourceSide, source)?.done = true;
+        copyInFlight.add((sourceSide, source));
         continue;
       }
       journalSettled.add(entry.opId);
@@ -2798,6 +2804,12 @@ class _Planner {
             case final ContactAnswerOutcome o) {
           return o;
         }
+        // The copy this answer asked for was cut short and is not found
+        // yet: it waits with it, rather than be taken as done and lost
+        // with the contact held for good. Once the copy shows it is
+        // paired (and the answer done with); once given up, an hour on,
+        // the answer makes it again.
+        if (named.any(copyInFlight.contains)) return waiting;
         var any = false;
         for (final (side, id) in named) {
           final row = _rowOf(side, id);
@@ -2970,6 +2982,8 @@ class _Planner {
       case ContactAnswerKind.retry:
         var any = false;
         for (final (side, id) in named) {
+          // A copy it made cut short: waits with it, as Copy it anyway.
+          if (copyInFlight.contains((side, id))) return waiting;
           final row = _rowOf(side, id);
           if (row == null || row.done) continue;
           if (row.reason != ContactHeldReason.refused) continue;
