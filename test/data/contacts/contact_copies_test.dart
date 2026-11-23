@@ -1118,6 +1118,27 @@ void main() {
       });
     });
 
+    test("Keep these on a copy with another extended property (Other "
+        'details) and a detail only Outlook keeps writes both, one never in '
+        "the other's place", () {
+      final merged = merge(copy('A'), [
+        copy(
+          'B',
+          kept({
+            'String {x} Name Colour': 'Red',
+            'String 0x3A24': '212 555 0101',
+          }),
+        ),
+      ], keep: 'B');
+      expect(merged.outcome, CopiesOutcome.adds);
+      expect(merged.patch, {
+        'singleValueExtendedProperties': [
+          {'id': 'String {x} Name Colour', 'value': 'Red'},
+          {'id': 'String 0x3A24', 'value': '212 555 0101'},
+        ],
+      });
+    });
+
     test("Ron's answer: another copy's takes its value of what differs, the "
         "synced copy's keeps its own", () {
       final a = copy(

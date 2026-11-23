@@ -612,9 +612,12 @@ class _Merger {
       photoFrom = chosen.id;
     }
     // The details only Outlook keeps go as Graph takes them: extended
-    // properties, by their ids.
+    // properties, by their ids, after any other extended property Ron's
+    // answer took (Other details), never in its place: written together,
+    // the runner then reads back what it can check and fails the person
+    // on what it cannot.
     final body = <String, Object?>{};
-    final extended = <Map<String, Object?>>[];
+    final extended = <Object?>[];
     for (final MapEntry(:key, :value) in patch.entries) {
       if (_outlookOnly.contains(key)) {
         extended.add({'id': key, 'value': value});
@@ -622,7 +625,13 @@ class _Merger {
         body[key] = value;
       }
     }
-    if (extended.isNotEmpty) body['singleValueExtendedProperties'] = extended;
+    if (extended.isNotEmpty) {
+      final other = body['singleValueExtendedProperties'];
+      body['singleValueExtendedProperties'] = [
+        if (other is List) ...other else ?other,
+        ...extended,
+      ];
+    }
     return CopiesMerge(
       outcome: differences.isNotEmpty
           ? CopiesOutcome.differs
