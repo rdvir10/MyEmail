@@ -5933,6 +5933,44 @@ void main() {
       expect(status.copies.people, 0);
     });
 
+    test("a merge stopped part way leaves the sync's own end recorded: its "
+        'positions, its time and its counts, beside the stop', () async {
+      for (var i = 0; i < 30; i++) {
+        copiesOf('P$i', 'Fam$i');
+      }
+      await h.firstSync();
+      final first = await h.pair();
+      // A contact Ron adds in Gmail: the run that merges copies it first.
+      h.google.addFromGmail(person('Dee', 'New', email: 'dee@example.com'));
+      var stopped = false;
+      h.before = (r) async {
+        if (!stopped &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          stopped = true;
+          unawaited(h.sync.stop());
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      final status = await h.status();
+      final pair = await h.pair();
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      expect(status.copies.asked, isTrue);
+      // Read past: the next run reads only what changes after.
+      expect(pair.lastDoneAt, h.now);
+      expect(pair.googleSyncToken, isNot(first.googleSyncToken));
+      expect(pair.graphDeltaLink, isNot(first.graphDeltaLink));
+      expect(status.last!.complete, isTrue);
+      expect(status.last!.addedToGraph, 1);
+      expect(h.graph.idWithEmail('dee@example.com'), isNotNull);
+      // Counted once: Dee's copy, and the copies the merge deleted.
+      expect(status.graphCount, h.graph.count);
+      expect(status.googleCount, h.google.count);
+    });
+
     test('a write that is refused, or does not hold, fails that person: '
         'nothing of theirs is deleted, and the others go on', () async {
       final ann = copiesOf('Ann', 'Cole');

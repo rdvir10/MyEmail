@@ -2037,8 +2037,13 @@ class _Run {
         ..heldChanges = plan.counts.heldChanges;
       await _saveFirst();
       await _write();
-      await _copies();
+      // The sync's own end is recorded before the merge of Hadco's copies,
+      // which can take minutes: a merge cut short (MyEmail put away, a
+      // sign-in) leaves the feeds' positions, the counts and the answers
+      // carried out as they are, not read and planned again next time.
       await _finish();
+      await _copies();
+      await _countCopies();
       return true;
     } catch (e) {
       await _halted(e);
@@ -3329,7 +3334,11 @@ class _Run {
   // --- the end ---------------------------------------------------------------
 
   /// Everything read was applied: the feeds' positions move on, with the
-  /// counts, the result and the claim.
+  /// counts, the result and the claim. Recorded before the merge of
+  /// Hadco's copies ([_copies]), which keeps its own progress as it goes
+  /// and lowers the Microsoft count itself; a stop in the merge then keeps
+  /// all this ([_halted]), and the people left to merge are counted after
+  /// it ([_countCopies]).
   Future<void> _finish() async {
     final firstSync = pair.firstDoneAt == null;
     final at = sync._now();
@@ -3431,7 +3440,6 @@ class _Run {
           ..addAll(
             plan.duplicates.map((d) => _Duplicates.of(d, made: copiedFrom)),
           );
-        h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
         return p.copyWith(
           googleSyncToken: googleToken ?? p.googleSyncToken,
           googleMask: googleContactFieldsVersion,
@@ -3441,7 +3449,7 @@ class _Run {
           graphFolderId: p.graphFolderId ?? folderId,
           normaliser: contactNormaliserVersion,
           googleCount: plan.googleCount + googleMade - googleDeleted,
-          graphCount: plan.graphCount + graphMade - graphDeleted - copiesGone,
+          graphCount: plan.graphCount + graphMade - graphDeleted,
           firstDoneAt: p.firstDoneAt ?? (firstSync ? at : null),
           lastDoneAt: at,
           lastResult: _LastResult(tally: tallyNow).encode(),
@@ -3449,6 +3457,7 @@ class _Run {
         );
       });
     });
+    _ended = true;
     await _writeClaim(at);
     debugPrint(
       '[myemail] contacts: read ${googleRead.length}+${graphRead.length}'
@@ -3461,6 +3470,23 @@ class _Run {
       '${tally.passedOver} passed over, '
       '${(watch.elapsedMilliseconds / 1000).toStringAsFixed(1)} s',
     );
+  }
+
+  /// The sync's own end is recorded ([_finish]): a stop after it is the
+  /// merge's.
+  bool _ended = false;
+
+  /// The people left to merge ([_Copies.count]), counted once the merge of
+  /// Hadco's copies is done with this run ([_copies]): from the rows as it
+  /// left them, without the people it merged. A merge cut short is counted
+  /// by the next run.
+  Future<void> _countCopies() async {
+    final rows = await store.links(pairId);
+    await store.updatePair(pairId, (p) {
+      final h = _Held.parse(p.held);
+      h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
+      return p.copyWith(held: h.encode());
+    });
   }
 
   Future<void> _writeClaim(DateTime at) async {
@@ -3501,6 +3527,9 @@ class _Run {
 
   /// The run stopped short: why, kept for the screen; the counts moved on
   /// by what was made and deleted; the feeds' positions left as they were.
+  /// Stopped in the merge of Hadco's copies, after the sync's own end was
+  /// recorded ([_ended]): that stands, its counts and its result (the
+  /// merge keeps its own as it goes), with why the run stopped.
   Future<void> _halted(Object e) async {
     final at = sync._now();
     final halt = haltFor(e, at);
@@ -3510,6 +3539,12 @@ class _Run {
         final h = _Held.parse(p.held);
         if (halt.kind == ContactSyncHaltKind.quota) h.quotaUntil = halt.until;
         final before = _LastResult.parse(p.lastResult);
+        if (_ended) {
+          return p.copyWith(
+            held: h.encode(),
+            lastResult: _LastResult(tally: before.tally, halt: halt).encode(),
+          );
+        }
         return p.copyWith(
           googleCount: p.googleCount == null
               ? null
