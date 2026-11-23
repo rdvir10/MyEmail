@@ -273,8 +273,10 @@ enum ContactAnswerOutcome {
   /// Planned: its Needs a look item or brake question is done with.
   applied,
 
-  /// A contact it acts on was not read this run: it stays queued. See
-  /// [contactsToRead].
+  /// A contact it acts on was not read this run (see [contactsToRead]),
+  /// or is not ready for it: the copy it asked for was cut short and is
+  /// not found yet, or its pair is held by the change brake or as
+  /// refused. It stays queued.
   waiting,
 
   /// Its contact has gone, or it no longer applies: the item is dropped.
@@ -898,6 +900,12 @@ enum ContactReviewReason {
   /// copy went (its partner deleted, or kept instead), or the copy no
   /// longer joins any. It is never copied over unasked.
   copyOfGone,
+
+  /// For a clash: changed on one side only, and written over the other
+  /// side's value, which had never been in step with it (left as it was
+  /// when the pair was made, or listed as differing), so it is in no
+  /// other place. A clash with no reason was changed on both sides.
+  notInStep,
 }
 
 /// One Needs a look item.
@@ -1565,14 +1573,23 @@ ContactChecks contactsToRead({
 // One pair.
 
 /// A detail changed on both sides to different values: the newer edit
-/// won, and [losing] is the value that lost, from [losingSide].
+/// won, and [losing] is the value that lost, from [losingSide]. Or, with
+/// [notInStep], a detail changed on one side only over a value of the
+/// other side's that had never been in step with it: [losing] is the
+/// value written over.
 @immutable
 class ContactClash {
-  const ContactClash(this.field, this.losingSide, this.losing);
+  const ContactClash(
+    this.field,
+    this.losingSide,
+    this.losing, {
+    this.notInStep = false,
+  });
 
   final ContactField field;
   final ContactSide losingSide;
   final Object? losing;
+  final bool notInStep;
 }
 
 /// What one pair's comparison comes to.
@@ -1647,9 +1664,12 @@ class ContactPairPlan {
 ///
 /// A detail changed on one side (its raw value differs from that side's
 /// base) is written to the other, unless the other already holds the same
-/// (a fix to capitals still counts as a change). Changed on both sides to
-/// different values, it clashes: the newer edit wins ([googleUpdatedAt]
-/// against [graphUpdatedAt]; Gmail when neither is known). Lists merge
+/// (a fix to capitals still counts as a change); where the value written
+/// over had never been in step with it (the bases differ), it is listed
+/// as a clash's losing value is ([ContactClash.notInStep]). Changed on
+/// both sides to different values, it clashes: the newer edit wins
+/// ([googleUpdatedAt] against [graphUpdatedAt]; Gmail when neither is
+/// known). Lists merge
 /// ([mergeContactList]). A birthday without a year never travels. A
 /// display name that is only an email or the company is no name to copy
 /// ([SyncedContact.copyableName]): it is compared and copied as no name,
@@ -1856,7 +1876,24 @@ ContactPairPlan planPairedContact({
             other is ContactBirthday &&
             !other.hasYear &&
             v.sameDay(other);
-        if (other != null && !addsYear) removes = true;
+        if (other != null && !addsYear) {
+          removes = true;
+          // The value written over had never been in step with this
+          // side's (the two were left as they were, or listed as
+          // differing), so it is in no other place: it is kept a tap
+          // away, as a clash's losing value is. One that was in step is
+          // on this side's base, and goes as any edit's old value does.
+          if (!norm.same(f, _copied(gBase, f), _copied(hBase, f))) {
+            clashes.add(
+              ContactClash(
+                f,
+                fromGoogle ? ContactSide.graph : ContactSide.google,
+                other,
+                notInStep: true,
+              ),
+            );
+          }
+        }
       }
       continue;
     }
@@ -1993,6 +2030,7 @@ _comparePair({
       for (final clash in pair.clashes)
         ContactReviewItem(
           kind: ContactReviewKind.clash,
+          reason: clash.notInStep ? ContactReviewReason.notInStep : null,
           googleName: googleName,
           graphId: graphId,
           fields: [clash.field],
@@ -2119,6 +2157,10 @@ class _Planner {
   /// Contacts under a Needs a look item of their own still waiting for
   /// Ron.
   final waitingSubjects = <(ContactSide, String)>{};
+
+  /// Sources of interrupted creates whose copy is not found yet, left
+  /// alone this run ([_settleJournal]): an answer that copies one waits.
+  final copyInFlight = <(ContactSide, String)>{};
   var pairUp = 0;
   var differingPairs = 0;
 
@@ -2603,6 +2645,7 @@ class _Planner {
         // twice.
         _setStatus(sourceSide, source, _Status.leftAlone);
         _rowOf(sourceSide, source)?.done = true;
+        copyInFlight.add((sourceSide, source));
         continue;
       }
       journalSettled.add(entry.opId);
@@ -2798,6 +2841,12 @@ class _Planner {
             case final ContactAnswerOutcome o) {
           return o;
         }
+        // The copy this answer asked for was cut short and is not found
+        // yet: it waits with it, rather than be taken as done and lost
+        // with the contact held for good. Once the copy shows it is
+        // paired (and the answer done with); once given up, an hour on,
+        // the answer makes it again.
+        if (named.any(copyInFlight.contains)) return waiting;
         var any = false;
         for (final (side, id) in named) {
           final row = _rowOf(side, id);
@@ -2830,8 +2879,25 @@ class _Planner {
           ContactAnswerKind.useGraph ||
           ContactAnswerKind.useValue:
         final row = g != null ? googleRow[g] : graphRow[h];
-        if (row == null || row.done || row.state != ContactLinkState.paired) {
-          return dropped;
+        if (row == null || row.done) return dropped;
+        if (row.state != ContactLinkState.paired) {
+          // Held by the change brake, or held as refused, it is a pair
+          // still, both its contacts read every run (contactsToRead): the
+          // answer waits, and is carried out once the brake is answered
+          // or the pair goes through again. Any other held row is no pair
+          // now (moved out of Contacts, which no run reads while it is
+          // away, or down to one contact): dropped.
+          final heldPair =
+              row.googleName != null &&
+              row.graphId != null &&
+              (row.reason == ContactHeldReason.changeBrake ||
+                  row.reason == ContactHeldReason.refused);
+          if (!heldPair) return dropped;
+          return unread([
+                (ContactSide.google, row.googleName),
+                (ContactSide.graph, row.graphId),
+              ]) ??
+              waiting;
         }
         if (unread([
               (ContactSide.google, row.googleName),
@@ -2970,6 +3036,8 @@ class _Planner {
       case ContactAnswerKind.retry:
         var any = false;
         for (final (side, id) in named) {
+          // A copy it made cut short: waits with it, as Copy it anyway.
+          if (copyInFlight.contains((side, id))) return waiting;
           final row = _rowOf(side, id);
           if (row == null || row.done) continue;
           if (row.reason != ContactHeldReason.refused) continue;
@@ -3638,7 +3706,12 @@ class _Planner {
   }
 
   /// A surviving copy held as kept, its gone partner's id cleared (and
-  /// kept as the row's partner, for a delete after all).
+  /// kept as the row's partner, for a delete after all). Kept as this run
+  /// read it, its version and details (the row's where it was not read),
+  /// as the runner keeps one at its delete: a later Delete it here too
+  /// with nothing changed since goes through, and one with a change since
+  /// keeps it again. Kept with the row's old version, a contact kept for
+  /// having changed would read as changed at every delete.
   void _keep(
     _Row row,
     ContactSide side,
@@ -3647,21 +3720,22 @@ class _Planner {
   ) {
     final details = _detailsOf(side, id);
     _setStatus(side, id, _Status.held);
+    final onGoogle = side == ContactSide.google;
     _add(
       ContactLinkPlan(
         linkId: row.id,
-        googleName: side == ContactSide.google ? id : null,
-        graphId: side == ContactSide.graph ? id : null,
+        googleName: onGoogle ? id : null,
+        graphId: onGoogle ? null : id,
         state: ContactLinkState.held,
         reason: ContactHeldReason.kept,
-        googleEtag: side == ContactSide.google ? row.input.googleEtag : null,
-        graphChangeKey: side == ContactSide.graph
-            ? row.input.graphChangeKey
+        googleEtag: onGoogle
+            ? googleListed[id]?.etag ?? row.input.googleEtag
             : null,
-        googleBase: side == ContactSide.google
-            ? row.input.googleDetails
-            : null,
-        graphBase: side == ContactSide.graph ? row.input.graphDetails : null,
+        graphChangeKey: onGoogle
+            ? null
+            : graphListed[id]?.changeKey ?? row.input.graphChangeKey,
+        googleBase: onGoogle ? details : null,
+        graphBase: onGoogle ? null : details,
         title: details.title,
         partnerId: row.input.partnerOf(side),
         partnerBase: row.input.partnerDetailsOf(side),
@@ -4331,10 +4405,14 @@ class _Planner {
       if (unique.length == 1) {
         final match = unique.single;
         final status = _status(other, match);
-        final agree = ContactNormaliser.namesAgree(
-          details.name,
-          _detailsOf(other, match).name,
-        );
+        // The family names, and the given names where both have one: Bob
+        // and Ann Cole, alone on one family address, are two people, and
+        // a new pair would mix their details at once with no answer that
+        // splits them again. Ann and Annie, or J. and John, agree.
+        final name = _detailsOf(other, match).name;
+        final agree =
+            ContactNormaliser.namesAgree(details.name, name) &&
+            ContactNormaliser.givenNamesAgree(details.name, name);
         if (!agree) {
           // A partner due to be deleted is not offered: it goes.
           if (status == _Status.orphan) break;
@@ -4778,9 +4856,14 @@ class _Planner {
         items.add(
           _changeItem(
             plan,
+            // Changed on both sides only: a value never in step was
+            // changed on one side, and Copy them back treats it as any
+            // such change.
             clashes: {
               for (final r in p.reviews)
-                if (r.kind == ContactReviewKind.clash) ...r.fields,
+                if (r.kind == ContactReviewKind.clash &&
+                    r.reason != ContactReviewReason.notInStep)
+                  ...r.fields,
             },
           ),
         );
@@ -4858,7 +4941,10 @@ class _Planner {
           changes.add(
             _changeItem(
               made.plan,
-              clashes: {for (final c in made.pair.clashes) c.field},
+              clashes: {
+                for (final c in made.pair.clashes)
+                  if (!c.notInStep) c.field,
+              },
             ),
           );
         default:

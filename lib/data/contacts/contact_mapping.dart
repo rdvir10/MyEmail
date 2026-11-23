@@ -585,7 +585,8 @@ String googlePersonField(ContactField field) => switch (field) {
 ///
 /// A rewritten name leaves out `unstructuredName` so Google rebuilds it; a
 /// rewritten address leaves out `formattedValue` for the same reason, and
-/// keeps its `poBox`. A rewritten note is plain text.
+/// keeps its `poBox`. A rewritten note is plain text. A birthday Gmail
+/// holds with no date the sync can read is left as it is.
 ///
 /// [seen] is Gmail's side as the plan read it. A list value in [person]
 /// that the plan never saw (neither there nor in [target]) was added
@@ -839,6 +840,12 @@ List<Map<String, Object?>> _rebuildGoogle(
       }
       return result;
     case ContactField.birthday:
+      // One Gmail holds with no date the sync can read (text alone, or a
+      // year with no day) reads as none, so the sync never saw what it
+      // would lose: it stays as it is, never written over nor cleared.
+      if (entries.isNotEmpty && _unreadBirthday(entries.first)) {
+        return entries;
+      }
       final birthday = value as ContactBirthday?;
       return _single(
         entries,
@@ -1412,16 +1419,25 @@ Map<String, Object?>? _chosenUrl(List<Map<String, Object?>> entries) =>
     entries.firstWhereOrNull((u) => _type(u) == 'homepage') ??
     entries.firstOrNull;
 
+/// An address entry's parts; or, where Gmail holds the address only as
+/// one block of text (`formattedValue`, every part empty, as an address
+/// typed in one field or imported from one can be), that text as the
+/// street, as the backup keeps it: read as no address, it would never
+/// reach Outlook, and a fill from Outlook would write over it unseen. A
+/// PO box alone is left unread as before: a write keeps the box where it
+/// is ([_googleAddress]), and its text would only repeat it.
 ContactAddress? _addressFromGoogle(Map<String, Object?> entry) {
   final street = _string(entry['streetAddress']);
   final extended = _string(entry['extendedAddress']);
-  return ContactAddress.of(
+  final parts = ContactAddress.of(
     street: [street, extended].nonNulls.join('\n'),
     city: _string(entry['city']),
     region: _string(entry['region']),
     postalCode: _string(entry['postalCode']),
     country: _string(entry['country']) ?? _string(entry['countryCode']),
   );
+  if (parts != null || _string(entry['poBox']) != null) return parts;
+  return ContactAddress.of(street: _string(entry['formattedValue']));
 }
 
 ContactBirthday? _birthdayFromGoogle(Map<String, Object?> entry) {
@@ -1435,6 +1451,14 @@ ContactBirthday? _birthdayFromGoogle(Map<String, Object?> entry) {
     month: month,
     day: day,
   );
+}
+
+/// A birthday entry holding something, text or part of a date, but no
+/// month and day to read ([_birthdayFromGoogle]): read as none.
+bool _unreadBirthday(Map<String, Object?> entry) {
+  if (_birthdayFromGoogle(entry) != null) return false;
+  return _string(entry['text']) != null ||
+      _map(entry['date']).values.any((v) => v is int && v != 0);
 }
 
 String? _string(Object? v) => v is String && v.trim().isNotEmpty ? v : null;

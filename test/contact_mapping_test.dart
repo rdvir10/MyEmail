@@ -241,6 +241,33 @@ void main() {
       expect(d.birthday, const ContactBirthday(month: 7, day: 4));
     });
 
+    test('an address held only as one block of text is read as the street',
+        () {
+      final d = syncedFromPerson({
+        'addresses': [
+          contact({'type': 'home', 'formattedValue': '12 Elm Rd\nSpringfield'}),
+          // Parts there: read from them alone, as before.
+          contact({
+            'type': 'work',
+            'streetAddress': '1 Main St',
+            'city': 'Leeds',
+            'formattedValue': '1 Main St\nLeeds\nUK',
+          }),
+          // A PO box alone stays unread: a write keeps it where it is.
+          contact({'type': 'other', 'poBox': 'PO 9', 'formattedValue': 'PO 9'}),
+        ],
+      });
+      expect(
+        d.address(ContactField.homeAddress),
+        ContactAddress.of(street: '12 Elm Rd\nSpringfield'),
+      );
+      expect(
+        d.address(ContactField.workAddress),
+        ContactAddress.of(street: '1 Main St', city: 'Leeds'),
+      );
+      expect(d.address(ContactField.otherAddress), isNull);
+    });
+
     test('a deleted entry from a sync-token listing says so', () {
       final g = GoogleContact.fromPerson({
         'resourceName': 'people/c9',
@@ -804,6 +831,55 @@ void main() {
         {ContactField.birthday},
       ).person['birthdays'] as List).cast<Map>();
       expect(bdays.single['date'], {'month': 7, 'day': 4});
+    });
+
+    test('a birthday Gmail holds with no date it can read is never written '
+        'over, nor cleared', () {
+      for (final unread in [
+        contact({'text': 'Spring 1960'}),
+        contact({
+          'date': {'year': 1960},
+        }),
+      ]) {
+        final person = {
+          'birthdays': [unread],
+        };
+        expect(syncedFromPerson(person).birthday, isNull);
+        for (final target in [
+          SyncedContact({
+            ContactField.birthday: const ContactBirthday(
+              year: 1960,
+              month: 3,
+              day: 5,
+            ),
+          }),
+          SyncedContact.empty,
+        ]) {
+          final update = rebuild(person, target, {ContactField.birthday});
+          expect(update.person['birthdays'], [unread]);
+        }
+      }
+      // A date it can read is written as before, its text dropped.
+      final bdays = (rebuild(
+        {
+          'birthdays': [
+            contact({
+              'text': 'March 5',
+              'date': {'month': 3, 'day': 5},
+            }),
+          ],
+        },
+        SyncedContact({
+          ContactField.birthday: const ContactBirthday(
+            year: 1960,
+            month: 3,
+            day: 5,
+          ),
+        }),
+        {ContactField.birthday},
+      ).person['birthdays'] as List).cast<Map>();
+      expect(bdays.single['date'], {'year': 1960, 'month': 3, 'day': 5});
+      expect(bdays.single.containsKey('text'), isFalse);
     });
 
     test('an organisation keeps what Outlook cannot hold', () {
@@ -1449,6 +1525,29 @@ void main() {
         ),
         isFalse,
       );
+    });
+
+    test('given names agree when one starts the other, or one side has '
+        'none', () {
+      bool agree(ContactName? a, ContactName? b) =>
+          ContactNormaliser.givenNamesAgree(a, b);
+      ContactName? given(String g) => ContactName.of(given: g, family: 'Cole');
+      for (final (a, b) in [
+        ('Ann', 'ANN'),
+        ('Ann', 'Annie'),
+        ('Rob', 'Robert'),
+        ('J.', 'John'),
+        ('Mary', 'Mary-Ann'),
+      ]) {
+        expect(agree(given(a), given(b)), isTrue, reason: '$a, $b');
+        expect(agree(given(b), given(a)), isTrue, reason: '$b, $a');
+      }
+      expect(agree(given('Ann'), ContactName.of(family: 'Cole')), isTrue);
+      expect(agree(given('Ann'), ContactName.of(display: 'Acme')), isTrue);
+      expect(agree(given('Ann'), null), isTrue);
+      for (final (a, b) in [('Bob', 'Ann'), ('Bob', 'Robert'), ('Jo', 'Al')]) {
+        expect(agree(given(a), given(b)), isFalse, reason: '$a, $b');
+      }
     });
   });
 

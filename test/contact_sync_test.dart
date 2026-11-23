@@ -495,6 +495,39 @@ void main() {
       expect(await h.paired(), hasLength(1));
     });
 
+    test("Copy it anyway cut short before Outlook made the contact is kept, "
+        'and carried out once its create is given up', () async {
+      h.google.seed(person('Jo', 'Smith', email: 'jo@home.example'));
+      h.graph.seed(outlook('Jo', 'Smith', email: 'jo@work.example'));
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.side, ContactSide.google);
+      // The connection drops before Outlook makes anything.
+      h.before = (r) async {
+        if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+          throw http.ClientException('connection lost');
+        }
+      };
+      await h.sync.answerLook(look.id, ContactSyncChoice.copyAnyway);
+      await h.sync.syncNow();
+      h.before = null;
+      expect(h.graph.count, 1);
+      expect(await h.store.ops((await h.pair()).pairId), hasLength(1));
+
+      // Within the hour the copy may still show: Ron's answer is kept.
+      var status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 1);
+
+      // An hour on and not found: made, and paired.
+      status = await h.later(after: const Duration(minutes: 70));
+      expect(status.halt, isNull);
+      expect(h.graph.count, 2);
+      final jo = h.google.nameWithEmail('jo@home.example');
+      expect((await h.paired()).where((l) => l.googleName == jo), hasLength(1));
+      expect(await h.store.ops((await h.pair()).pairId), isEmpty);
+    });
+
     test('an interrupted Outlook create is settled by the tag read with '
         'the copy, where nothing else would pair them', () async {
       // A name and a landline: no email to look the copy up by, and no
@@ -992,6 +1025,42 @@ void main() {
       await h.sync.syncNow();
       expect((await h.status()).questions, isEmpty);
       expect(mobileOf(h.graph.contact(pairs[0].graph)), isNull);
+    });
+
+    test("Use Hadco's on a pair the change brake holds waits for Apply them, "
+        'then is carried out', () async {
+      final pairs = seedPairs(h, 11, mobiles: true);
+      h.google.editFromGmail(pairs[0].google, {
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      h.graph.editFromOutlook(pairs[0].graph, {'companyName': 'Hadco'});
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {'phoneNumbers': null});
+      }
+      var status = await h.later();
+      expect(status.questions.single.items, hasLength(11));
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.needsALook.single.answer, ContactSyncChoice.useGraph);
+      expect(companyOf(h.google.person(pairs[0].google)), 'Acme');
+
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+      );
+      await h.sync.syncNow();
+      status = await h.later();
+      expect(status.questions, isEmpty);
+      expect(status.needsALook, isEmpty);
+      expect(companyOf(h.google.person(pairs[0].google)), 'Hadco');
+      expect(companyOf(h.graph.contact(pairs[0].graph)), 'Hadco');
     });
 
     test('a listing with far fewer contacts stops the run before any '
@@ -1502,6 +1571,52 @@ void main() {
       expect((await h.status()).needsALook, isEmpty);
       expect(h.requests, isEmpty);
     });
+
+    test('a detail left as it was, then changed on one side: copied, and '
+        "the value it replaced listed, Use Hadco's instead a tap away",
+        () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      var look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair\nCall in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(
+        h.graph.contact(o)!['personalNotes'],
+        'Met at the fair\nCall in May',
+      );
+      look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, ContactReviewReason.notInStep);
+      expect(look.losingSide, ContactSide.graph);
+      expect(look.losing, 'Prefers email after 5');
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+      await h.sync.syncNow();
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      final notes = h.google.person(g)!['biographies']! as List;
+      expect((notes.single as Map)['value'], 'Prefers email after 5');
+      expect((await h.status()).needsALook, isEmpty);
+    });
   });
 
   group('Outlook entries read short', () {
@@ -1584,6 +1699,26 @@ void main() {
       );
       expect(row.reason, ContactHeldReason.kept);
       expect(row.googleName, isNull);
+    });
+
+    test('changed in Outlook and deleted in Gmail before a run: kept, and '
+        'Delete it in Hadco too deletes it the first time', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+      h.google.deleteFromGmail(pairs[0].google);
+      var status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      expect(look.reason, ContactReviewReason.changedSince);
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      expect(status.needsALook, isEmpty);
+      expect(status.recentlyDeleted.single.side, ContactSide.graph);
     });
 
     test('kept at its delete, the contact is kept as it is now: Delete it '

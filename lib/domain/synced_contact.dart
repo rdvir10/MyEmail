@@ -876,6 +876,27 @@ class ContactNormaliser {
     return fa == fb;
   }
 
+  /// The given names agree: one starts the other (Ann and Annie, Rob and
+  /// Robert, the initial J. and John), without case and with dots and
+  /// hyphens as spaces, or one side has none. With [namesAgree], what a
+  /// shared email or mobile needs to pair two new contacts: Bob and Ann
+  /// Cole alone on one family address are two people. A nickname that is
+  /// no start (Bob and Robert) does not agree, and is only asked about.
+  static bool givenNamesAgree(ContactName? a, ContactName? b) {
+    String? key(String? given) {
+      final words = given
+          ?.toLowerCase()
+          .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+          .trim();
+      return words == null || words.isEmpty ? null : words;
+    }
+
+    final ga = key(a?.given);
+    final gb = key(b?.given);
+    if (ga == null || gb == null) return true;
+    return ga.startsWith(gb) || gb.startsWith(ga);
+  }
+
   /// The full name used to spot two contacts that may be one person.
   static String? fullNameKey(ContactName? n) {
     if (n == null) return null;
