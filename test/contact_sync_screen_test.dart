@@ -2236,6 +2236,38 @@ void main() {
       expect(sync.allDiffering, [ContactSyncChoice.leaveAsTheyAre]);
     });
 
+    testWidgets('a value never in step, written over by a change on one '
+        'side, says so', (tester) async {
+      sync = FakeContactSync(status: synced(looks: const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.clash,
+          reason: ContactReviewReason.notInStep,
+          title: 'Ann Cole',
+          fields: [ContactField.notes],
+          losing: 'Prefers email after 5',
+          losingSide: ContactSide.graph,
+          choices: [ContactSyncChoice.useOther, ContactSyncChoice.keepNewer],
+        ),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (1)'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Changed in Gmail and copied to Hadco, where it was '
+            'different. Hadco had: Prefers email after 5.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('both sides'), findsNothing);
+      await tester.tap(find.text("Use Hadco's instead"));
+      await tester.pumpAndSettle();
+      expect(sync.lookAnswers, [
+        (id: 1, choice: ContactSyncChoice.useOther, candidateId: null),
+      ]);
+    });
+
     testWidgets("one side's details for every differing pair is asked again, "
         'naming the count and the side replaced', (tester) async {
       ContactSyncLook differs(int id) => ContactSyncLook(

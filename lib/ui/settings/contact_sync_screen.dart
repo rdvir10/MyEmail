@@ -3126,6 +3126,12 @@ String _lookLine(ContactSyncLook l, String graphName) {
     case ContactReviewKind.clash:
       final losing = l.losing;
       final losingSide = l.losingSide;
+      // Changed on one side only, over a value the two never shared.
+      if (l.reason == ContactReviewReason.notInStep && losingSide != null) {
+        return 'Changed in ${side(losingSide.other)} and copied to '
+            '${side(losingSide)}, where it was different'
+            '${losing == null ? '' : '. ${side(losingSide)} had: $losing'}.';
+      }
       return 'Changed on both sides since the last sync, and the newer '
           'change was kept'
           '${losing == null || losingSide == null ? '' : '. ${side(losingSide)} had: $losing'}'
