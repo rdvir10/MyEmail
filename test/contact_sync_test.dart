@@ -5589,9 +5589,11 @@ void main() {
         expect(await h.sync.startIfDue(), due);
         await h.sync.syncNow();
       }
+      final waiting = (await h.status()).copies.differing.single;
+      expect(waiting.answer, c.others.single);
       expect(
-        (await h.status()).copies.differing.single.answer,
-        c.others.single,
+        waiting.tries,
+        greaterThanOrEqualTo(ContactSyncCopiesPerson.quietAfter),
       );
       // The usual hour's sync still tries it, and carries it out.
       h.answer = null;

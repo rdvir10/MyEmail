@@ -1060,10 +1060,15 @@ class ContactSyncCopiesPerson {
     this.copies = const [],
     this.answer,
     this.version = '',
+    this.tries = 0,
   });
 
   /// [answer] when Ron chose to leave them as they are.
   static const leave = 'leave';
+
+  /// After this many [tries], an answer no longer starts a sync each time
+  /// MyEmail is opened.
+  static const quietAfter = 3;
 
   /// Names the person for [ContactSyncService.answerCopies].
   final String key;
@@ -1082,6 +1087,12 @@ class ContactSyncCopiesPerson {
   /// ([ContactSyncService.answerCopies], [ContactSyncService
   /// .answerAllCopies]) counts only on these.
   final String version;
+
+  /// Syncs in a row that could not carry [answer] out: a copy changed or
+  /// gone from Contacts meanwhile, a write that did not hold, Hadco not
+  /// read. From [quietAfter] on, the answer waits for a sync that runs
+  /// anyway; each one still tries it.
+  final int tries;
 }
 
 /// One copy of a person whose copies differ.

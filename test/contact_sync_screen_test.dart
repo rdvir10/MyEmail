@@ -3747,6 +3747,41 @@ void main() {
       expect(button('contact-sync-copies-all'), findsNothing);
     });
 
+    testWidgets('an answer three syncs could not carry out says so, and that '
+        'each sync tries again', (tester) async {
+      ContactSyncCopiesPerson answered(String key, int tries) =>
+          ContactSyncCopiesPerson(
+            key: key,
+            title: annDiffers.title,
+            copies: annDiffers.copies,
+            answer: 'a2',
+            tries: tries,
+          );
+      await openDuplicates(
+        tester,
+        copies: ContactSyncCopies(
+          differing: [answered('p1', 2), answered('p2', 3)],
+        ),
+      );
+
+      expect(
+        find.descendant(
+          of: button('contact-sync-copies-person:p1'),
+          matching: find.text("You chose the other copy's details; the next "
+              'sync carries it out.'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: button('contact-sync-copies-person:p2'),
+          matching: find.text("You chose the other copy's details; the last 3 "
+              'syncs could not carry it out, and each sync tries again.'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets("Keep the synced copy's for all, asked first",
         (tester) async {
       await openDuplicates(

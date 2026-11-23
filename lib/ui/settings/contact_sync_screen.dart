@@ -2642,10 +2642,16 @@ class _CopiesPerson extends StatelessWidget {
               // No longer listed: done, or dropped with its write failed, so
               // a line that promises nothing, of about the same length, so
               // as not to move those under it. Left as they are, there is
-              // nothing to write, so it is done.
+              // nothing to write, so it is done. Listed still after syncs
+              // that could not carry it out: said, with what happens next.
               if (answer != null)
                 Text(
                   switch ((listed, answer)) {
+                    (true, _)
+                        when p.tries >= ContactSyncCopiesPerson.quietAfter =>
+                      'You chose ${_copiesChoice(p, answer)}; the last '
+                          '${p.tries} syncs could not carry it out, and each '
+                          'sync tries again.',
                     (true, _) => 'You chose ${_copiesChoice(p, answer)}; the '
                         'next sync carries it out.',
                     (false, ContactSyncCopiesPerson.leave) =>

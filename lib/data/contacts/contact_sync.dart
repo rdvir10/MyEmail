@@ -3951,7 +3951,7 @@ class _Copies {
   /// Passes in a row that may meet an answer they cannot carry out before
   /// it stops making a run due ([dueNow]): each run that goes still tries
   /// it, but MyEmail no longer starts one for it each time it is opened.
-  static const quietAfter = 3;
+  static const quietAfter = ContactSyncCopiesPerson.quietAfter;
 
   /// The passes in a row that met [listing]'s answer and could not carry
   /// it out: its person passed over (a copy changed or not in Contacts,
@@ -4235,6 +4235,7 @@ class _Copies {
       ],
       answer: d['answer'] is String ? d['answer']! as String : null,
       version: versionOf(d),
+      tries: triesOf(d),
     );
   }
 }
