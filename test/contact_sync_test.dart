@@ -845,6 +845,100 @@ void main() {
       expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
       await hisEditStands(ann, annH);
     });
+
+    test('answers whose run stops before their writes stay on the pair, '
+        'and the next run carries each out once', () async {
+      // Use Hadco's on a pair that differs, Same person on a new contact,
+      // Delete it here too on a contact kept at its delete.
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      final jo = h.google.seed(
+        person('Jo', 'Smith', email: 'jo@home.example'),
+      );
+      final joH = h.graph.seed(
+        outlook('Jo', 'Smith', email: 'jo@work.example'),
+      );
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      // Ron deletes P0 in Gmail, and edits its Hadco contact just as the
+      // sync reads it ahead of the delete: kept.
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+        }
+      };
+      var status = await h.later();
+      expect(status.halt, isNull);
+      ContactSyncLook lookOf(ContactReviewKind kind) =>
+          status.needsALook.singleWhere((l) => l.kind == kind);
+      final answers = {
+        lookOf(ContactReviewKind.differing).id: ContactSyncChoice.useGraph,
+        lookOf(ContactReviewKind.newContact).id: ContactSyncChoice.samePerson,
+        lookOf(ContactReviewKind.kept).id: ContactSyncChoice.deleteHereToo,
+      };
+      // Each answered with no run carrying it out yet.
+      for (final MapEntry(key: id, value: choice) in answers.entries) {
+        await h.sync.answerLook(id, choice);
+        await h.sync.stop();
+      }
+
+      // The run that plans them stops at its first write, before any of
+      // theirs lands.
+      h.before = (r) async {
+        if (!Harness.readsOnly(r) && !r.url.path.contains('contactFolders')) {
+          throw http.ClientException('lost');
+        }
+      };
+      h.pass(const Duration(minutes: 1));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.failed);
+      expect(companyOf(h.google.person(ann)), 'Acme');
+      expect(await h.paired(), hasLength(2));
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      expect(status.needsALook, isEmpty);
+      final held = jsonDecode((await h.pair()).held ?? '{}') as Map;
+      final kept = held['pending'] as List? ?? const [];
+      expect(
+        [for (final a in kept) (a as Map)['kind']],
+        unorderedEquals(['useGraph', 'samePerson', 'deleteHereToo']),
+      );
+      expect(kept.every((a) => (a as Map).containsKey('writing')), isTrue);
+
+      // The next run carries out all three.
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Corp');
+      expect(
+        (await h.paired()).where((l) => l.googleName == jo && l.graphId == joH),
+        hasLength(1),
+      );
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect((await h.pair()).held ?? '', isNot(contains('pending')));
+      expect(status.needsALook, isEmpty);
+
+      // Once: Ron's next edit of Ann's company stands.
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Inc'},
+        ],
+      });
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Inc');
+      expect(companyOf(h.graph.contact(annH)), 'Acme Inc');
+    });
   });
 
   group('refusals and failures', () {
