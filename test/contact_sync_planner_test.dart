@@ -755,6 +755,40 @@ void main() {
       expect(pair.graphBase!.text(ContactField.mobile), '(212) 555-0100');
     });
 
+    test('an address Gmail held only as text, read now, reaches Hadco as an '
+        'addition', () {
+      // Stored before such an address was read: Gmail's base has no home
+      // address, though Gmail held one as a block of text all along, and
+      // Hadco has none. Eleven at once, past the change brake's ten.
+      final home = syncedFromPerson({
+        'addresses': [
+          {'type': 'home', 'formattedValue': '12 Elm Rd\nSpringfield'},
+        ],
+      })[ContactField.homeAddress];
+      final now = base.withValue(ContactField.homeAddress, home);
+      final plan = run(
+        google: [
+          for (var i = 1; i <= 11; i++) g('people/c$i', now, etag: 'etag-2'),
+        ],
+        links: [
+          for (var i = 1; i <= 11; i++)
+            link(i, 'people/c$i', 'H$i', base: base),
+        ],
+      );
+      expect(plan.links, hasLength(11));
+      for (final pair in plan.links) {
+        expect(pair.graphWrite!.fields, {ContactField.homeAddress});
+        expect(
+          pair.graphWrite!.target.address(ContactField.homeAddress)!.street,
+          '12 Elm Rd\nSpringfield',
+        );
+        expect(pair.googleWrite, isNull, reason: 'nothing written in Gmail');
+        expect(pair.removes, isFalse, reason: 'nothing removed or replaced');
+      }
+      expect(plan.brakes, isEmpty);
+      expect(plan.reviews, isEmpty);
+    });
+
     test('lists merge: an addition on each side keeps both', () {
       final plan = run(
         google: [
