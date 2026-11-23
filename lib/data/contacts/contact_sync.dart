@@ -3882,11 +3882,20 @@ class _Copies {
     final left = json['left'];
     if (left is Map) {
       for (final MapEntry(:key, :value) in left.entries) {
-        if (value is String) copies.left['$key'] = value;
+        if (value is String || value is Map) copies.left['$key'] = value!;
       }
     }
     return copies;
   }
+
+  /// The rules a listing or a leave was made under (`rules`): 3.22.1's,
+  /// under which a photo is never a difference. One without was made by
+  /// 3.22.0, whose rules listed copies for their photos alone.
+  static const rules = 2;
+
+  /// Whether [listing] was made under the rules of now.
+  static bool current(Map<String, Object?> listing) =>
+      listing['rules'] == rules;
 
   /// When a merge was asked; null when none is.
   DateTime? asked;
@@ -3909,14 +3918,37 @@ class _Copies {
   DateTime? lastAt;
 
   /// The people whose copies differ, listed for Ron: `key`, `title`, the
-  /// `fingerprint` of the differences shown, Ron's `answer` (a copy's key,
-  /// or `leave`), and `copies`, each with its `key`, whether `synced`, and
-  /// its differing values (`details`: `label`, `value`).
+  /// `fingerprint` of the differences shown, the `rules` they were listed
+  /// under ([rules]), Ron's `answer` (a copy's key, or `leave`), and
+  /// `copies`, each with its `key`, whether `synced`, and its differing
+  /// values (`details`: `label`, `value`).
   final List<Map<String, Object?>> differing = [];
 
-  /// People Ron chose to leave as they are, by key: the fingerprint of the
-  /// differences he saw. A merge passes them over until it changes.
-  final Map<String, String> left = {};
+  /// People Ron chose to leave as they are, by key: the `fingerprint` of
+  /// the differences, the `rules`, and the `keys` (each copy's
+  /// `changeKey`) as they were. A merge passes them over until one of
+  /// those copies changes ([stillLeft]). One left under 3.22.0 (the
+  /// fingerprint alone) stays left.
+  final Map<String, Object> left = {};
+
+  /// Whether a person left as [leftAs] stays left, its copies ([ids], the
+  /// synced one first) as [read] holds them: always for a leave kept by
+  /// 3.22.0, with no `changeKey`s; else until one of the copies left
+  /// changes or goes, or another joins them.
+  static bool stillLeft(
+    Object leftAs,
+    Map<String, Map<String, Object?>> read,
+    List<String> ids,
+  ) {
+    final keys = leftAs is Map ? leftAs['keys'] : null;
+    if (keys is! Map) return true;
+    final now = {
+      for (final id in ids)
+        if (read[id] case final c?) id: c['changeKey'],
+    };
+    return now.length == keys.length &&
+        keys.entries.every((e) => e.value != null && now[e.key] == e.value);
+  }
 
   /// The person listed under [key], if one is.
   Map<String, Object?>? listed(String key) =>
@@ -3928,8 +3960,9 @@ class _Copies {
       shortStops == 0 &&
       (asked != null || differing.any((d) => d['answer'] != null));
 
-  /// The people listed that Ron has not answered.
-  int get unanswered => differing.where((d) => d['answer'] == null).length;
+  /// The people listed under the rules of now that Ron has not answered.
+  int get unanswered =>
+      differing.where((d) => current(d) && d['answer'] == null).length;
 
   /// [listed]'s version, as the screen is given it: a short stable form of
   /// the fingerprint of its differences.
@@ -3998,12 +4031,14 @@ class _Copies {
           if (!paired.contains(id)) id: ?base[id],
       });
       if (ours.length < g.graphCopies.length) notSynced++;
-      // A person listed with no answer is one a merge reads again (its
-      // differences may since have changed, or a rule): counted. One left,
-      // or answered and waiting for a run, is not.
+      // One left is not counted; nor one listed under the rules of now
+      // (a merge would only list it again), nor one answered and waiting
+      // for a run. One listed under 3.22.0's rules and not answered is: its
+      // differences may be no more (a photo), and a merge reads it again.
+      final l = listed(synced);
       if (ours.isEmpty ||
           left.containsKey(synced) ||
-          listed(synced)?['answer'] != null) {
+          (l != null && (l['answer'] != null || current(l)))) {
         continue;
       }
       people++;
@@ -4109,7 +4144,12 @@ class _Copies {
       (final l?, final at?) => l.shown(at),
       _ => null,
     },
-    differing: [for (final d in differing) _personOf(d)],
+    // One listed by 3.22.0 and not answered is not shown: its
+    // differences may be no more (a photo); the next merge reads it again.
+    differing: [
+      for (final d in differing)
+        if (current(d) || d['answer'] != null) _personOf(d),
+    ],
   );
 
   static ContactSyncCopiesPerson _personOf(Map<String, Object?> d) {
@@ -4246,7 +4286,7 @@ class _CopiesStep {
   var _counts = _CopiesCounts();
   final _listed = <String, Map<String, Object?>>{};
   final _unlisted = <String>{};
-  final _left = <String, String>{};
+  final _left = <String, Object>{};
   final _unleft = <String>{};
   var _gone = 0;
   final _rowsGone = <int>{};
@@ -4339,8 +4379,9 @@ class _CopiesStep {
       }
     }
 
-    // Photos: the other copies asked about; where one has a photo, the
-    // synced copy too.
+    // Photos: the synced copies first; then the other copies only where
+    // theirs can count: a synced copy without one takes the first other
+    // copy's, and Ron's answer naming another copy brings that copy's.
     final photo = <String>{};
     final unknown = <String>{};
     Future<void> check(List<String> ids) async {
@@ -4351,16 +4392,24 @@ class _CopiesStep {
       unknown.addAll(r.unknown);
     }
 
+    bool namesAnother(String key) {
+      final answer = seen.listed(key)?['answer'];
+      return answer is String &&
+          answer != key &&
+          answer != ContactSyncCopiesPerson.leave;
+    }
+
     await check([
       for (final g in groups)
-        for (final id in g.graphCopies)
-          if (read.containsKey(id)) id,
+        if (read.containsKey(g.graphSynced)) g.graphSynced!,
     ]);
     await check([
       for (final g in groups)
-        if (g.graphCopies.any(photo.contains) &&
-            read.containsKey(g.graphSynced))
-          g.graphSynced!,
+        if (read.containsKey(g.graphSynced) &&
+            !unknown.contains(g.graphSynced) &&
+            (!photo.contains(g.graphSynced) || namesAnother(g.graphSynced!)))
+          for (final id in g.graphCopies)
+            if (read.containsKey(id)) id,
     ]);
 
     for (final g in groups) {
@@ -4371,6 +4420,29 @@ class _CopiesStep {
       if (synced == null || !g.graphCopies.any(read.containsKey)) {
         // Not in Contacts as read: passed over this time.
         _passedOver();
+        continue;
+      }
+      // Ron's Leave them always stands, whatever a merge would say now: a
+      // person left stays so until one of its copies changes, then is read
+      // again as any other.
+      final group = [
+        key,
+        for (final id in g.graphCopies)
+          if (read.containsKey(id)) id,
+      ];
+      if (seen.left[key] case final leftAs?) {
+        if (_Copies.stillLeft(leftAs, read, group)) {
+          _personDone();
+          continue;
+        }
+        _unleft.add(key);
+      }
+      final listed = seen.listed(key);
+      if (listed?['answer'] == ContactSyncCopiesPerson.leave) {
+        _leave(key, listed?['fingerprint'] as String? ?? '', {
+          for (final id in group) id: read[id]!['changeKey'],
+        });
+        _personDone();
         continue;
       }
       // The merge's copies only ([_Copies.mergeable]): none another pair
@@ -4432,25 +4504,23 @@ class _CopiesStep {
         ? listed!['answer']! as String
         : null;
     var merge = cp.mergeCopies(kept, others, norm: run.norm);
-    // Ron's answer counts on the differences he saw, and on no others.
-    if (answer != null &&
-        merge.outcome == cp.CopiesOutcome.differs &&
-        merge.fingerprint == listed?['fingerprint']) {
-      if (answer == ContactSyncCopiesPerson.leave) {
-        _leave(key, merge.fingerprint);
-        _personDone();
-        return;
-      }
-      if (answer == key || copies.contains(answer)) {
+    // Ron's answer (Leave them is dealt with before) counts only on the
+    // differences he saw. Given on a listing under the rules of now, on
+    // those very differences (the fingerprint). Given on one 3.22.0 made,
+    // whose differences may no longer be: the synced copy's leaves the
+    // rules of now to decide; another copy's, with nothing differing now,
+    // brings that copy's photo; with something differing, the person is
+    // listed again as it is, the answer dropped.
+    if (answer != null && (answer == key || copies.contains(answer))) {
+      final now = listed != null && _Copies.current(listed);
+      if (now
+          ? merge.outcome == cp.CopiesOutcome.differs &&
+                merge.fingerprint == listed['fingerprint']
+          : merge.outcome != cp.CopiesOutcome.differs && answer != key) {
         merge = cp.mergeCopies(kept, others, keep: answer, norm: run.norm);
       }
     }
     if (merge.outcome == cp.CopiesOutcome.differs) {
-      if (listed == null && seen.left[key] == merge.fingerprint) {
-        // Left as they are, and not changed since.
-        _personDone();
-        return;
-      }
       _list(key, g.title ?? '', merge, others);
       _count(differing: 1);
       _personDone();
@@ -4654,10 +4724,16 @@ class _CopiesStep {
     await save();
   }
 
-  void _leave(String key, String fingerprint) {
+  /// [key] left as Ron chose, with its copies' `changeKey`s as they are
+  /// now ([keys]): passed over until one of them changes.
+  void _leave(String key, String fingerprint, Map<String, Object?> keys) {
     _unlisted.add(key);
     _listed.remove(key);
-    _left[key] = fingerprint;
+    _left[key] = {
+      'fingerprint': fingerprint,
+      'rules': _Copies.rules,
+      'keys': keys,
+    };
     _unleft.remove(key);
   }
 
@@ -4676,6 +4752,7 @@ class _CopiesStep {
       'key': key,
       'title': title,
       'fingerprint': merge.fingerprint,
+      'rules': _Copies.rules,
       'copies': [
         {
           'key': key,

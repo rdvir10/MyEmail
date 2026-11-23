@@ -199,7 +199,8 @@ class CopiesMerge {
 ///   copy's photo, where it has one, stays, and the others' go with their
 ///   copies; where it has none, it takes the photo of the first other copy
 ///   that has one, in id order ([CopiesMerge.photoFrom], an add, "Photo").
-///   An answer does not change which.
+///   An answer naming another copy brings that copy's photo, when it has
+///   one, in place of the synced copy's.
 /// - Any other property with a value on another copy that the synced copy
 ///   lacks or holds differently: a difference, "Other details", never
 ///   merged without Ron.
@@ -210,7 +211,9 @@ class CopiesMerge {
 /// [keep] is Ron's answer to the differences: [kept]'s id keeps the
 /// synced copy's details, another copy's id takes that copy's where it
 /// has one; a list takes the chosen copy's values first, then the synced
-/// copy's, then the others', while within the room. The details only some
+/// copy's, then the others', while within the room. Another copy's id
+/// also takes that copy's photo, when it has one, in place of the synced
+/// copy's, whether or not anything else differed. The details only some
 /// copy has are added either way. The outcome is then same or adds, with
 /// no differences, and the [CopiesMerge.fingerprint] that of the
 /// differences it settled, so the runner can check they are those Ron
@@ -535,6 +538,17 @@ class _Merger {
       }
       differences.clear();
     }
+    // Keep these on another copy brings its photo, when it has one, in
+    // place of the synced copy's: whether or not anything else differed.
+    if (chosen != null &&
+        chosen.id != kept.id &&
+        chosen.photo != null &&
+        photoFrom != chosen.id) {
+      if (photoFrom == null) {
+        adds.add(const CopiesDetail(label: _photoLabel, value: 'a photo'));
+      }
+      photoFrom = chosen.id;
+    }
     return CopiesMerge(
       outcome: differences.isNotEmpty
           ? CopiesOutcome.differs
@@ -782,7 +796,8 @@ class _Merger {
 
   /// The photo, never a difference: the synced copy's stays where it has
   /// one; where it has none, it takes the first other copy's, in id order,
-  /// that has one. Whatever the answer.
+  /// that has one. An answer naming another copy with a photo takes that
+  /// one instead ([result]).
   void _photo() {
     if (kept.photo != null) return;
     final from = _byId.firstWhereOrNull((c) => c.photo != null);
