@@ -638,6 +638,103 @@ void main() {
       expect(h.graph.count, 2);
       expect(status.needsALook, hasLength(1));
     });
+
+    /// Ann's company differs between the two (Acme in Gmail, Acme Corp in
+    /// Hadco), listed under Needs a look by the first sync, beside a pair
+    /// whose Gmail contact Ron deletes: the next run's delete of its
+    /// partner fails, after that run's other writes.
+    Future<({String ann, String annH, ContactSyncLook look})>
+    differingThenFailedDelete() async {
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'DELETE') throw http.ClientException('lost');
+      };
+      h.pass(const Duration(hours: 2));
+      return (ann: ann, annH: annH, look: look);
+    }
+
+    /// After a run stopped by [differingThenFailedDelete]'s delete, Ron
+    /// puts his own company in Gmail: the next run copies it to Hadco.
+    Future<void> hisEditStands(String ann, String annH) async {
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.failed);
+      expect(companyOf(h.google.person(ann)), 'Acme Corp');
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Inc'},
+        ],
+      });
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Inc');
+      expect(companyOf(h.graph.contact(annH)), 'Acme Inc');
+      expect(status.needsALook, isEmpty);
+    }
+
+    test('an answer written by a run that then stops is carried out once: '
+        'an edit Ron makes before the next run stands', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      // Off the pair as soon as its write came back.
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('an answer 3.22.1 kept for a stopped run, stored as it stored it, '
+        'is carried out once too', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      // As 3.22.1 left a run that planned Use Hadco's and stopped before
+      // its write: the item gone, the answer on the pair.
+      final pairId = (await h.pair()).pairId;
+      await h.store.dropReviews([look.id]);
+      await h.store.updatePair(
+        pairId,
+        (p) => p.copyWith(
+          held: jsonEncode({
+            ...?jsonDecode(p.held ?? '{}') as Map<String, Object?>?,
+            'pending': [
+              {
+                'kind': 'useGraph',
+                'googleName': ann,
+                'graphId': annH,
+                'fields': [for (final f in look.fields) f.name],
+              },
+            ],
+          }),
+        ),
+      );
+      await h.sync.syncNow();
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('an answer that needs no write is done with at once, not kept for '
+        'a later run', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      // Ron makes Gmail's company Hadco's himself before he answers Use
+      // Hadco's: nothing is left to write.
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Corp'},
+        ],
+      });
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
   });
 
   group('refusals and failures', () {

@@ -1990,6 +1990,12 @@ class _Run {
   /// can replace its own.
   final savedReviews = <(String, String?, String?), int>{};
 
+  /// The answers kept on the pair for their writes ([_saveFirst]), by the
+  /// plan whose writes carry each out, and for each answer ([_Held.writing])
+  /// those of its plans whose results are not saved yet.
+  final _answersOf = Map<ContactLinkPlan, Set<int>>.identity();
+  final _writesLeft = <int, Set<ContactLinkPlan>>{};
+
   /// True when the run completed.
   Future<bool> go() async {
     watch.start();
@@ -2061,11 +2067,38 @@ class _Run {
     ];
     final outcomes = plan.answers;
 
-    // Answers planned: their items go, and the answers are kept on the
-    // pair until the run is done, so a run stopped before their writes
-    // plans them again.
+    // Answers planned: their items go, and each answer whose plan writes
+    // is kept on the pair, marked, until those writes come back
+    // ([_carriedOut]): a run stopped before them plans it again, and one
+    // stopped after them does not, for planned again it would write the
+    // side Ron chose over an edit he made since. Its plans are those that
+    // write a contact it names. One with nothing to write is carried out
+    // by this transaction, and not kept.
     final pending = <Map<String, Object?>>[];
     final dropReviews = <int>{};
+    final writing = [
+      for (final p in plan.links)
+        if (p.writes) p,
+    ];
+    void keep(Map<String, Object?> answer) {
+      final g = answer['googleName'];
+      final h = answer['graphId'];
+      final name = g is String ? plan.reKeys[g] ?? g : null;
+      final by = [
+        for (final p in writing)
+          if ((name != null && p.googleName == name) ||
+              (h is String && p.graphId == h))
+            p,
+      ];
+      if (by.isEmpty) return;
+      final mark = _writesLeft.length;
+      _writesLeft[mark] = Set.identity()..addAll(by);
+      for (final p in by) {
+        (_answersOf[p] ??= {}).add(mark);
+      }
+      pending.add({...answer, _Held.writing: mark});
+    }
+
     for (final (i, source) in answerSources.indexed) {
       final outcome = i < outcomes.length ? outcomes[i] : null;
       if (outcome == null) continue;
@@ -2074,13 +2107,21 @@ class _Run {
         dropReviews.add(id);
         if (outcome == ContactAnswerOutcome.applied) {
           final r = reviews.firstWhereOrNull((r) => r.reviewId == id);
-          if (_decode(r?.answer) case final answer?) pending.add(answer);
+          if (_decode(r?.answer) case final answer?) keep(answer);
         }
       }
-      if (source.pendingIndex case final at?
-          when outcome != ContactAnswerOutcome.dropped &&
-              at < held.pending.length) {
-        pending.add(held.pending[at]);
+      if (source.pendingIndex case final at? when at < held.pending.length) {
+        final answer = held.pending[at];
+        switch (outcome) {
+          case ContactAnswerOutcome.applied:
+            keep(answer);
+          case ContactAnswerOutcome.waiting:
+            // Kept for a run that reads its contacts, with no mark: a mark
+            // is the run's that made it.
+            pending.add({...answer}..remove(_Held.writing));
+          case ContactAnswerOutcome.dropped:
+            break;
+        }
       }
     }
     // Items about contacts gone this run go too, and those of rows a merge
@@ -2170,6 +2211,26 @@ class _Run {
     });
     final rekeyed = reKeys.length;
     if (rekeyed > 0) debugPrint('[myemail] contacts: $rekeyed Gmail re-keys');
+  }
+
+  /// The answers kept on the pair for [p]'s writes ([_saveFirst]) are
+  /// done once [p]'s result is saved: taken off the pair in the same
+  /// transaction, so that a run stopped later never plans them again. One
+  /// that waits on another plan's writes as well stays until those are
+  /// saved too.
+  Future<void> _carriedOut(ContactLinkPlan p) async {
+    final marks = _answersOf.remove(p);
+    if (marks == null) return;
+    final done = {
+      for (final mark in marks)
+        if ((_writesLeft[mark]?..remove(p))?.isEmpty ?? false) mark,
+    };
+    if (done.isEmpty) return;
+    await store.updatePair(pairId, (pair) {
+      final h = _Held.parse(pair.held);
+      h.pending.removeWhere((a) => done.contains(a[_Held.writing]));
+      return pair.copyWith(held: h.encode());
+    });
   }
 
   /// [item] saved, replacing one of the same kind about the same contacts.
@@ -2432,7 +2493,8 @@ class _Run {
     }
   }
 
-  /// A create landed: its row saved and its journal entry cleared in one.
+  /// A create landed: its row saved, its journal entry cleared and the
+  /// answers it carries out done with, in one.
   Future<void> _created(
     ContactLinkPlan p,
     ContactSyncOp op,
@@ -2460,7 +2522,10 @@ class _Run {
           ? now
           : (p.linkId == null ? null : linkById[p.linkId]?.googleWrittenAt),
     );
-    await store.completeCreates({op.opId: link});
+    await store.transaction(() async {
+      await store.completeCreates({op.opId: link});
+      await _carriedOut(p);
+    });
     copiedFrom.add((create.side.other, create.sourceId));
     if (onGoogle) {
       googleMade++;
@@ -2516,6 +2581,7 @@ class _Run {
           title: p.title,
         ),
       );
+      await _carriedOut(p);
     });
     tally.refused++;
     debugPrint('[myemail] contacts: a new contact was refused by '
@@ -2567,7 +2633,12 @@ class _Run {
         // was written to the other side is kept.
         break;
       } on ContactRefused {
-        await _refusedPair(p, gAnswer: gAnswer, hAnswer: hAnswer);
+        await _refusedPair(
+          p,
+          gAnswer: gAnswer,
+          hAnswer: hAnswer,
+          planned: planned,
+        );
         return;
       }
       if (attempt > 0) break;
@@ -2602,6 +2673,7 @@ class _Run {
             ? link
             : link.copyWith(googleName: googleName),
       );
+      await _carriedOut(planned);
     });
     if (googleWritten) tally.changedGoogle++;
     if (graphWritten) tally.changedGraph++;
@@ -2683,10 +2755,13 @@ class _Run {
 
   /// A server would not take a pair's change: the pair is held as refused
   /// with both ids, under Needs a look, and is tried again when it changes.
+  /// [planned] is the pair's plan as the run made it, before any plan made
+  /// again ([_update]): the answers it carries out are done with.
   Future<void> _refusedPair(
     ContactLinkPlan p, {
     Map<String, Object?>? gAnswer,
     Map<String, Object?>? hAnswer,
+    required ContactLinkPlan planned,
   }) async {
     final bases = p.basesAfter(
       googleAnswer: gAnswer == null ? null : syncedFromPerson(gAnswer),
@@ -2721,6 +2796,7 @@ class _Run {
           title: p.title,
         ),
       );
+      await _carriedOut(planned);
     });
     tally.refused++;
     debugPrint('[myemail] contacts: a change was refused by '
@@ -2752,6 +2828,7 @@ class _Run {
           await store.deleteLinks([p.linkId!]);
         }
         await store.deleteLinks(p.alsoRemove);
+        await _carriedOut(p);
       });
       return;
     }
@@ -2780,6 +2857,7 @@ class _Run {
           ),
         );
         await _saveReview(p.keptReview());
+        await _carriedOut(p);
       });
       debugPrint('[myemail] contacts: a contact due to be deleted had '
           'changed and was kept');
@@ -2814,6 +2892,7 @@ class _Run {
         dropLinkId: p.removeRow ? p.linkId : null,
       );
       await store.deleteLinks(p.alsoRemove);
+      await _carriedOut(p);
     });
   }
 
@@ -3255,15 +3334,6 @@ class _Run {
     final firstSync = pair.firstDoneAt == null;
     final at = sync._now();
     final outcomes = plan.answers;
-    // Answers a stopped run had planned and this one could not: kept.
-    final waitingPending = <Map<String, Object?>>[
-      for (final (i, source) in answerSources.indexed)
-        if (source.pendingIndex case final at?
-            when i < outcomes.length &&
-                outcomes[i] == ContactAnswerOutcome.waiting &&
-                at < held.pending.length)
-          held.pending[at],
-    ];
     // Brake answers this run carried out (or found nothing left to act
     // on), by question and choice: their answers are cleared. Which items
     // stay is the rows' to say (prune): one still held under its brake is
@@ -3317,10 +3387,12 @@ class _Run {
       final rows = await store.links(pairId);
       await store.updatePair(pairId, (p) {
         final h = _Held.parse(p.held);
-        h.pending
-          ..clear()
-          ..addAll(waitingPending)
-          ..addAll(copiesAnswers);
+        // The answers this run planned came off the pair as their writes
+        // came back ([_carriedOut]); one still marked (none should be) goes
+        // with the run done. Those kept for a run that reads their
+        // contacts stay as they are kept, re-keys and all, and so do the
+        // merge's, kept as it wrote them.
+        h.pending.removeWhere((a) => a.containsKey(_Held.writing));
         h.questions.removeWhere(
           (q) => q.kind == ContactSyncQuestionKind.emptyAnswer,
         );
@@ -3710,6 +3782,14 @@ class _Held {
   /// `movedOut` (its Outlook contact is out of Contacts). Set and cleared
   /// at the end of each run.
   static const waits = 'waits';
+
+  /// Under this key in a pending answer, a number the run that planned it
+  /// gives it while its writes are out: the run takes it off by that
+  /// number as soon as they come back ([_Run._carriedOut]). Only that run
+  /// marks answers; the next one, should this stop first, plans the
+  /// answer again and marks it anew. An answer 3.22.1 kept has none, and
+  /// is planned as any.
+  static const writing = 'writing';
 
   /// A brake raised this run: added to its kind's open question, or asked
   /// anew where that one already has an answer queued. An item already
