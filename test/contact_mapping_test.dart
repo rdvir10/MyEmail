@@ -1526,6 +1526,29 @@ void main() {
         isFalse,
       );
     });
+
+    test('given names agree when one starts the other, or one side has '
+        'none', () {
+      bool agree(ContactName? a, ContactName? b) =>
+          ContactNormaliser.givenNamesAgree(a, b);
+      ContactName? given(String g) => ContactName.of(given: g, family: 'Cole');
+      for (final (a, b) in [
+        ('Ann', 'ANN'),
+        ('Ann', 'Annie'),
+        ('Rob', 'Robert'),
+        ('J.', 'John'),
+        ('Mary', 'Mary-Ann'),
+      ]) {
+        expect(agree(given(a), given(b)), isTrue, reason: '$a, $b');
+        expect(agree(given(b), given(a)), isTrue, reason: '$b, $a');
+      }
+      expect(agree(given('Ann'), ContactName.of(family: 'Cole')), isTrue);
+      expect(agree(given('Ann'), ContactName.of(display: 'Acme')), isTrue);
+      expect(agree(given('Ann'), null), isTrue);
+      for (final (a, b) in [('Bob', 'Ann'), ('Bob', 'Robert'), ('Jo', 'Al')]) {
+        expect(agree(given(a), given(b)), isFalse, reason: '$a, $b');
+      }
+    });
   });
 
   test('no value shows in a toString, for the logs', () {

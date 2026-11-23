@@ -418,6 +418,90 @@ void main() {
       expect(plan.reviews, hasLength(1), reason: 'one item for the two');
     });
 
+    test('a unique email or mobile whose given names differ waits', () {
+      // Bob in Gmail, his wife Ann in Hadco, each alone on the home
+      // address (or the mobile): two people, asked about, nothing mixed.
+      final bob = person(
+        given: 'Bob',
+        family: 'Cole',
+        emails: ['home@cole.example'],
+        mobile: '212 555 0111',
+      );
+      final ann = person(
+        given: 'Ann',
+        family: 'Cole',
+        emails: ['home@cole.example'],
+        more: {
+          ContactField.workPhones: ['212 555 0222'],
+        },
+      );
+      final byMobile = person(
+        given: 'Ann',
+        family: 'Cole',
+        mobile: '212 555 0111',
+      );
+      for (final hadco in [ann, byMobile]) {
+        final plan = run(
+          google: [g('people/c1', bob)],
+          graph: [h('H1', hadco)],
+        );
+        expect(
+          plan.links.where((l) => l.state == ContactLinkState.paired),
+          isEmpty,
+        );
+        expect(plan.links.where((l) => l.writes), isEmpty);
+        final review = plan.reviews.single;
+        expect(review.reason, ContactReviewReason.namesDisagree);
+        expect(review.samePersonOffered, isTrue);
+        expect(review.candidates, ['H1']);
+        expect(byGoogle(plan, 'people/c1')!.reason, ContactHeldReason.waiting);
+        expect(byGraph(plan, 'H1')!.reason, ContactHeldReason.candidate);
+      }
+      // A first name alone that is another's is asked about too.
+      final first = run(
+        google: [
+          g('people/c1', person(given: 'Ann', emails: ['front@x.example'])),
+        ],
+        graph: [
+          h(
+            'H1',
+            person(given: 'Bob', family: 'Stone', emails: ['front@x.example']),
+          ),
+        ],
+      );
+      expect(first.reviews.single.reason, ContactReviewReason.namesDisagree);
+      // One the start of the other is one person: an initial pairs.
+      final initial = run(
+        google: [
+          g(
+            'people/c1',
+            bob.withValue(
+              ContactField.name,
+              ContactName.of(given: 'B.', family: 'Cole'),
+            ),
+          ),
+        ],
+        graph: [
+          h(
+            'H1',
+            person(given: 'Bob', family: 'Cole', mobile: '212 555 0111'),
+          ),
+        ],
+      );
+      expect(byGoogle(initial, 'people/c1')!.graphId, 'H1');
+      // A pair already made stays as it is.
+      final made = run(
+        google: [g('people/c1', bob, etag: 'etag-2')],
+        graph: [h('H1', ann)],
+        links: [link(1, 'people/c1', 'H1', googleBase: bob, graphBase: ann)],
+      );
+      expect(
+        made.links.where((l) => l.state != ContactLinkState.paired),
+        isEmpty,
+      );
+      expect(made.reviews, isEmpty);
+    });
+
     test('a side with no family name agrees', () {
       final plan = run(
         google: [

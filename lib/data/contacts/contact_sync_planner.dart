@@ -4405,10 +4405,14 @@ class _Planner {
       if (unique.length == 1) {
         final match = unique.single;
         final status = _status(other, match);
-        final agree = ContactNormaliser.namesAgree(
-          details.name,
-          _detailsOf(other, match).name,
-        );
+        // The family names, and the given names where both have one: Bob
+        // and Ann Cole, alone on one family address, are two people, and
+        // a new pair would mix their details at once with no answer that
+        // splits them again. Ann and Annie, or J. and John, agree.
+        final name = _detailsOf(other, match).name;
+        final agree =
+            ContactNormaliser.namesAgree(details.name, name) &&
+            ContactNormaliser.givenNamesAgree(details.name, name);
         if (!agree) {
           // A partner due to be deleted is not offered: it goes.
           if (status == _Status.orphan) break;
