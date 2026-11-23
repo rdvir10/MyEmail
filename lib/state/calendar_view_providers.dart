@@ -162,15 +162,24 @@ final calendarPrefsProvider =
 
 /// [events] as the views show them: a meeting you declined only where
 /// [prefs] say to show those, and a holiday or a birthday on several
-/// calendars once ([foldSameWholeDays]).
+/// calendars once ([foldSameWholeDays]; [own] is every address of Ron's,
+/// [ownAddressesProvider]).
 List<CalendarEvent> shownEvents(
   Iterable<CalendarEvent> events,
-  CalendarPrefs prefs,
-) =>
+  CalendarPrefs prefs, {
+  Set<String> own = const {},
+}) =>
     foldSameWholeDays([
       for (final e in events)
         if (prefs.showDeclined || !e.declined) e,
-    ]);
+    ], own: own);
+
+/// Every account's address, in lower case: Ron, whichever account a
+/// calendar names him by.
+final ownAddressesProvider = Provider<Set<String>>((ref) => {
+      for (final a in ref.watch(accountsProvider).value ?? const <Account>[])
+        a.emailAddress.trim().toLowerCase(),
+    });
 
 /// The accounts the calendar leaves out, by id, and the calendars, by
 /// `calendarKey`; a calendar from a link by its own account id.

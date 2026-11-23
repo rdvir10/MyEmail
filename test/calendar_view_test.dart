@@ -23,6 +23,7 @@ import 'fakes/fake_webview.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
+import 'package:myemail/domain/account_calendars.dart' show CalendarInfo;
 import 'package:myemail/domain/calendar_event.dart';
 import 'package:myemail/domain/calendar_prefs.dart';
 import 'package:myemail/domain/mail_message.dart';
@@ -86,6 +87,10 @@ void main() {
         EventShowAs showAs = EventShowAs.free,
         EventResponse response = EventResponse.none,
         int days = 1,
+        bool readOnly = true,
+        String? organizer,
+        bool declined = false,
+        bool cancelled = false,
       }) =>
           CalendarEvent(
             id: id,
@@ -96,27 +101,101 @@ void main() {
             end: DateTime(day.year, day.month, day.day + days),
             allDay: true,
             showAs: showAs,
-            response: response,
+            response: declined ? EventResponse.declined : response,
+            cancelled: cancelled,
+            readOnly: readOnly,
+            organizer:
+                organizer == null ? null : MailAddress(email: organizer),
           );
-      final folded = foldSameWholeDays([
-        whole('g', 'Thanksgiving', accountId: 'gmail', calendarId: 'holidays'),
-        whole('h', ' thanksgiving ', accountId: 'hadco'),
-        whole('l', 'Thanksgiving', accountId: 'internet:us'),
-        event('m', DateTime(2026, 10, 27, 9), DateTime(2026, 10, 27, 10),
-            title: 'Thanksgiving'),
-        whole('busy', 'Thanksgiving',
-            accountId: 'hadco', calendarId: 'x', showAs: EventShowAs.busy),
-        whole('ask', 'Thanksgiving',
-            accountId: 'home', response: EventResponse.notResponded),
-        whole('two', 'Thanksgiving', accountId: 'mine', days: 2),
-        whole('two-too', 'Thanksgiving', accountId: 'yours', days: 2),
-        whole('n1', ' ', accountId: 'a'),
-        whole('n2', '', accountId: 'b'),
-      ]);
-      expect([for (final e in folded) e.id],
-          ['g', 'm', 'busy', 'ask', 'two', 'n1', 'n2'],
-          reason: 'the first kept, where it was; one busy or waiting for '
-              'an answer, other days, or no name, as often as it is on');
+      const own = {'ron@hadco.example', 'ron@gmail.example'};
+      List<String> ids(List<CalendarEvent> events) =>
+          [for (final e in foldSameWholeDays(events, own: own)) e.id];
+
+      // Google's holidays (its calendar the organiser) and a public
+      // holidays link (none): the same day, once.
+      expect(
+          ids([
+            whole('g', 'Thanksgiving',
+                accountId: 'gmail',
+                calendarId: 'holidays',
+                organizer: 'en.usa#holiday@group.v.calendar.google.com'),
+            whole('l', ' thanksgiving ', accountId: 'internet:us'),
+          ]),
+          ['g']);
+      // Ron's own on Hadco, which he can change, is the one listed, where
+      // it is, wherever the copies he only reads come.
+      expect(
+          ids([
+            whole('l', 'Thanksgiving', accountId: 'internet:us'),
+            whole('h', 'Thanksgiving',
+                accountId: 'hadco',
+                readOnly: false,
+                organizer: 'Ron@Hadco.example'),
+            whole('g', 'Thanksgiving',
+                accountId: 'gmail',
+                calendarId: 'holidays',
+                organizer: 'en.usa#holiday@group.v.calendar.google.com'),
+          ]),
+          ['h']);
+      // Two he can change are both listed: neither is hidden behind the
+      // other.
+      expect(
+          ids([
+            whole('h', 'Vacation',
+                accountId: 'hadco',
+                readOnly: false,
+                organizer: 'ron@hadco.example'),
+            whole('m', 'Vacation',
+                accountId: 'gmail',
+                readOnly: false,
+                organizer: 'ron@gmail.example'),
+          ]),
+          ['h', 'm']);
+      // Two colleagues' days off, each on her calendar shared to Ron, are
+      // two people's: both listed. One colleague's on two calendars, once.
+      expect(
+          ids([
+            whole('d', 'Vacation',
+                accountId: 'hadco',
+                calendarId: 'dana',
+                organizer: 'dana@hadco.example'),
+            whole('o', 'Vacation',
+                accountId: 'hadco',
+                calendarId: 'moshe',
+                organizer: 'moshe@hadco.example'),
+            whole('d2', 'Vacation',
+                accountId: 'hadco',
+                calendarId: 'team',
+                organizer: 'Dana@hadco.example'),
+          ]),
+          ['d', 'o']);
+      // Read-only copies alone: the one kept is the same whichever comes
+      // first, by account, calendar and id, so a reload or another view
+      // keeps the same colour and opens the same copy.
+      final a = whole('x', 'Purim', accountId: 'gmail', calendarId: 'jewish');
+      final b = whole('y', 'Purim', accountId: 'internet:il');
+      expect(ids([a, b]), ids([b, a]));
+      expect(ids([a, b]), ['x']);
+      // What asks something of Ron or takes his time, other days, or no
+      // name: listed as often as it is on.
+      expect(
+          ids([
+            whole('f', 'Thanksgiving', accountId: 'gmail'),
+            event('m', DateTime(2026, 10, 27, 9), DateTime(2026, 10, 27, 10),
+                title: 'Thanksgiving'),
+            whole('busy', 'Thanksgiving',
+                accountId: 'b1', showAs: EventShowAs.busy),
+            whole('ask', 'Thanksgiving',
+                accountId: 'b2', response: EventResponse.notResponded),
+            whole('maybe', 'Thanksgiving',
+                accountId: 'b3', response: EventResponse.tentative),
+            whole('no', 'Thanksgiving', accountId: 'b4', declined: true),
+            whole('off', 'Thanksgiving', accountId: 'b5', cancelled: true),
+            whole('two', 'Thanksgiving', accountId: 'b6', days: 2),
+            whole('n1', ' ', accountId: 'b7'),
+            whole('n2', '', accountId: 'b8'),
+          ]),
+          ['f', 'm', 'busy', 'ask', 'maybe', 'no', 'off', 'two', 'n1', 'n2']);
     });
 
     test('overlapping meetings side by side, others the full width', () {
@@ -787,14 +866,17 @@ void main() {
     });
 
     testWidgets('a birthday on three calendars is one line, in the month, '
-        'over the hours and in the Agenda', (tester) async {
+        'over the hours and in the Agenda: the copy Ron can change',
+        (tester) async {
       final t = today();
       final board = DateTime(t.year, t.month, t.day == 10 ? 11 : 10);
       await pump(tester, const CalendarScreen(), prepare: (engine, hadco) {
         engine.events[hadco.id] = [
+          // His own on his main calendar, organised by his own address,
+          // and two he only reads, nobody's: one birthday.
           for (final (id, calendar) in [
-            ('b1', CalendarEvent.mainCalendar),
             ('b2', 'birthdays'),
+            ('b1', CalendarEvent.mainCalendar),
             ('b3', 'family'),
           ])
             CalendarEvent(
@@ -806,9 +888,22 @@ void main() {
               end: DateTime(board.year, board.month, board.day + 1),
               allDay: true,
               showAs: EventShowAs.free,
+              readOnly: id != 'b1',
+              organizer: id == 'b1'
+                  ? const MailAddress(email: 'ron@hadco.example')
+                  : null,
+              isOrganizer: id == 'b1',
             ),
           at(hadco, 'board', 'Board',
               DateTime(board.year, board.month, board.day, 10)),
+        ];
+        // Calendars the account lists, read only, as a birthday or a
+        // family calendar followed is: their events are read.
+        engine.calendarLists[hadco.id] = [
+          CalendarInfo.main(hadco.id),
+          for (final id in ['birthdays', 'family'])
+            CalendarInfo(
+                accountId: hadco.id, id: id, name: id, canEdit: false),
         ];
       });
       await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
@@ -1437,7 +1532,7 @@ void main() {
     });
 
     testWidgets('Duplicate of a whole day keeps how it showed: busy stays '
-        'busy, free stays free', (tester) async {
+        'busy, free stays free, out of office stays so', (tester) async {
       final engine = SampleMailEngine();
       final t = today();
       await pump(tester, const CalendarScreen(), using: engine,
@@ -1446,6 +1541,8 @@ void main() {
           for (final (id, showAs) in [
             ('busy', EventShowAs.busy),
             ('free', EventShowAs.free),
+            ('maybe', EventShowAs.tentative),
+            ('away', EventShowAs.outOfOffice),
           ])
             CalendarEvent(
               id: id,
@@ -1463,6 +1560,9 @@ void main() {
       for (final (id, showAs) in [
         ('busy', EventShowAs.busy),
         ('free', EventShowAs.free),
+        // A maybe is busy on the copy; out of office stays so.
+        ('maybe', EventShowAs.busy),
+        ('away', EventShowAs.outOfOffice),
       ]) {
         await openSheet(tester, id);
         await tester.tap(find.byKey(const ValueKey('event-more')));

@@ -163,7 +163,12 @@ class CalendarUpkeep {
       now,
     );
     await _widget(
-      widgetMeetings(shown, now, showDeclined: prefs.showDeclined),
+      widgetMeetings(
+        shown,
+        now,
+        showDeclined: prefs.showDeclined,
+        own: {for (final a in accounts) a.emailAddress.trim().toLowerCase()},
+      ),
       {for (final a in accounts) a.id: a},
       calendars,
     );

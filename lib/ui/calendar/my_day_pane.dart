@@ -108,8 +108,10 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
         ...?nextLoad.value?.calendars,
       },
     );
-    final events = shownEvents(load.value?.events ?? const [], prefs);
-    final nextEvents = shownEvents(nextLoad.value?.events ?? const [], prefs);
+    final own = ref.watch(ownAddressesProvider);
+    final events = shownEvents(load.value?.events ?? const [], prefs, own: own);
+    final nextEvents =
+        shownEvents(nextLoad.value?.events ?? const [], prefs, own: own);
     // Tomorrow's too, for the minutes before midnight.
     final next = nextMeeting([...events, ...nextEvents], now);
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);

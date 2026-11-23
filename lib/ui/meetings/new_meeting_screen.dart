@@ -268,11 +268,15 @@ class MeetingAsWritten {
     required this.failedSends,
     this.savedLink,
     this.optional = const {},
+    this.showAsFollows = false,
   });
 
   final String accountId;
   final String calendarId;
   final String title;
+
+  /// Whether Show as still followed All day: not picked in More.
+  final bool showAsFollows;
 
   /// As the Attendees field had them.
   final String attendees;
@@ -442,11 +446,8 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
   /// changed, or a whole day duplicated, keeps how it shows. The
   /// calendars take an event that says nothing as busy, which kept a
   /// birthday or a day off busy all day to everyone.
-  late bool _showAsFollows = _editing == null &&
-      widget.showAs == null &&
-      (_written == null ||
-          _written!.options.showAs ==
-              (_written!.allDay ? EventShowAs.free : null));
+  late bool _showAsFollows = _written?.showAsFollows ??
+      (_editing == null && widget.showAs == null);
 
   /// All day switched [on], and Show as with it while it follows.
   void _setAllDay(bool on) {
@@ -681,11 +682,9 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         seriesFrom: _canRepeat ? _series?.firstDay : null,
         seriesWeekStart: _weekStart,
         seriesCount: _optionsToBegin.repeat?.count,
-        onChanged: (o) => setState(() {
-          // Picked there: All day no longer moves it.
-          if (o.showAs != _options.showAs) _showAsFollows = false;
-          _options = o;
-        }),
+        // Picked there, even as it was: All day no longer moves it.
+        onShowAsPicked: () => _showAsFollows = false,
+        onChanged: (o) => setState(() => _options = o),
       );
 
   /// The line a meeting is typed in, "Lunch with Dana Thursday 1pm", and
@@ -1682,6 +1681,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         transactionId: _transactionId,
         failedSends: _failedSends,
         savedLink: _pickedLink,
+        showAsFollows: _showAsFollows,
       );
 
   /// A Send or Save that failed once the screen was left: the screen again,

@@ -380,29 +380,56 @@ List<CalendarEvent> eventsOn(DateTime day, Iterable<CalendarEvent> events) =>
       });
 
 /// [events] with a whole day shown as free that another calendar has too,
-/// the same name on the same days, listed once: a holiday on Gmail's
-/// calendar and on Hadco's, a birthday on three (the tablet's month gave
-/// one birthday three lines). The first is kept, where it was. Only those
-/// that ask nothing of Ron fold: one busy or out of office, one waiting for
-/// his answer, declined or cancelled, or one with no name, is listed as
-/// often as it is on. The morning agenda and the all-day reminder say a
-/// name once already.
-List<CalendarEvent> foldSameWholeDays(Iterable<CalendarEvent> events) {
-  final seen = <String>{};
-  bool first(CalendarEvent e) {
-    final key = _wholeDayKey(e);
-    return key == null || seen.add(key);
+/// listed once: a holiday on Gmail's calendar and on a public holidays
+/// link, a birthday on three calendars (the tablet's month gave one
+/// birthday three lines). The same name on the same days, and the same
+/// person's: its organiser, where that is a person other than Ron ([own]
+/// is every one of his addresses, in any case), so two colleagues' days
+/// off, each called "Vacation", stay two. A copy Ron can change is never
+/// hidden: where the copies include one, the ones he only reads go, and
+/// otherwise the one kept is the first by account, calendar and id, the
+/// same whatever order the copies come in. Only what asks nothing of Ron
+/// folds: one busy or out of office, waiting for his answer, declined or
+/// cancelled, or with no name, is listed as often as it is on.
+List<CalendarEvent> foldSameWholeDays(
+  Iterable<CalendarEvent> events, {
+  Set<String> own = const {},
+}) {
+  final list = events.toList();
+  final mine = {for (final a in own) a.trim().toLowerCase()};
+  final keys = [for (final e in list) _wholeDayKey(e, mine)];
+  // The copy of each that is listed where none can be changed, and which
+  // have a copy that can.
+  final kept = <String, CalendarEvent>{};
+  final changeable = <String>{};
+  for (var i = 0; i < list.length; i++) {
+    final key = keys[i];
+    if (key == null) continue;
+    final e = list[i];
+    if (!e.readOnly) changeable.add(key);
+    final was = kept[key];
+    if (was == null || _copyOrder(e).compareTo(_copyOrder(was)) < 0) {
+      kept[key] = e;
+    }
+  }
+  bool listed(int i) {
+    final key = keys[i];
+    if (key == null || !list[i].readOnly) return true;
+    return !changeable.contains(key) && identical(kept[key], list[i]);
   }
 
   return [
-    for (final e in events)
-      if (first(e)) e,
+    for (var i = 0; i < list.length; i++)
+      if (listed(i)) list[i],
   ];
 }
 
-/// [e]'s name and days, for [foldSameWholeDays]; null for one that is
-/// listed whatever else is on.
-String? _wholeDayKey(CalendarEvent e) {
+String _copyOrder(CalendarEvent e) =>
+    '${e.accountId}\u0000${e.calendarId}\u0000${e.id}';
+
+/// [e]'s name, days and person, for [foldSameWholeDays]; null for one that
+/// is listed whatever else is on.
+String? _wholeDayKey(CalendarEvent e, Set<String> own) {
   final name = e.title.trim().toLowerCase();
   if (!e.allDay ||
       e.showAs != EventShowAs.free ||
@@ -413,8 +440,15 @@ String? _wholeDayKey(CalendarEvent e) {
       name.isEmpty) {
     return null;
   }
+  // Nobody's: none named, a Google calendar of its own (its holidays, its
+  // birthdays), or Ron himself on any of his accounts.
+  final by = e.organizer?.email.trim().toLowerCase() ?? '';
+  final person =
+      by.isEmpty || by.endsWith('.calendar.google.com') || own.contains(by)
+          ? ''
+          : by;
   String date(DateTime t) => '${t.year}-${t.month}-${t.day}';
-  return '$name|${date(e.start)}|${date(e.end)}';
+  return '$name|${date(e.start)}|${date(e.end)}|$person';
 }
 
 /// Where a timed event sits across a day's width: its column among those

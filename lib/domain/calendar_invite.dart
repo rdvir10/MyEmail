@@ -367,7 +367,9 @@ class CalendarInvite {
       productId: productId == null || productId.isEmpty ? null : productId,
       rule: rule == null || rule.isEmpty ? null : rule,
       datesChanged: datesChanged,
-      free: intended != null ? intended == 'FREE' : transp == 'TRANSPARENT',
+      free: intended != null && intended.isNotEmpty
+          ? intended == 'FREE'
+          : transp == 'TRANSPARENT',
       attendeeNoted: attendeeNoted,
       responderNote: _noteOf(
         method == 'REPLY' || method == 'COUNTER'

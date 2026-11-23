@@ -1064,7 +1064,8 @@ class _CalendarPageView extends ConsumerWidget {
           ? Center(child: Text('${load.error}'))
           : const Center(child: CircularProgressIndicator());
     }
-    final events = shownEvents(withPending(value.events, pending), prefs);
+    final events = shownEvents(withPending(value.events, pending), prefs,
+        own: ref.watch(ownAddressesProvider));
     if (mode == CalendarViewMode.month) {
       final month = page.month!;
       if (wide) {
@@ -1304,7 +1305,8 @@ class _AgendaLot extends ConsumerWidget {
               ),
       );
     }
-    final events = shownEvents(withPending(value.events, pending), prefs);
+    final events = shownEvents(withPending(value.events, pending), prefs,
+        own: ref.watch(ownAddressesProvider));
     final days = <Widget>[];
     for (var d = range.start; d.isBefore(range.end); d = _plus(d, 1)) {
       final on = eventsOn(d, events);
@@ -2048,7 +2050,8 @@ class _DatePickerState extends ConsumerState<_DatePicker> {
             _MonthGrid(
               days: page.days,
               month: _month,
-              events: shownEvents(load.value?.events ?? const [], prefs),
+              events: shownEvents(load.value?.events ?? const [], prefs,
+                  own: ref.watch(ownAddressesProvider)),
               colours: colours,
               selected: widget.initial,
               titles: false,

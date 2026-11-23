@@ -232,7 +232,10 @@ class _DayToShare extends ConsumerWidget {
     final events = load.value?.events;
     final text = events == null
         ? null
-        : dayText(day, shownEvents(withPending(events, pending), prefs),
+        : dayText(
+            day,
+            shownEvents(withPending(events, pending), prefs,
+                own: ref.watch(ownAddressesProvider)),
             use24h: use24h);
     // Copy and Share wait for the calendars to have read the day: what the
     // device kept may lack an account's meetings until then.

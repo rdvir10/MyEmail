@@ -120,6 +120,7 @@ Future<void> showMeetingOptions(
   DateTime? seriesFrom,
   int seriesWeekStart = DateTime.sunday,
   int? seriesCount,
+  VoidCallback? onShowAsPicked,
 }) {
   var shown = options;
   return showModalBottomSheet<void>(
@@ -145,6 +146,7 @@ Future<void> showMeetingOptions(
               seriesFrom: seriesFrom,
               seriesWeekStart: seriesWeekStart,
               seriesCount: seriesCount,
+              onShowAsPicked: onShowAsPicked,
               onChanged: (o) {
                 setState(() => shown = o);
                 onChanged(o);
@@ -173,6 +175,7 @@ class MeetingOptionsPanel extends StatefulWidget {
     this.seriesFrom,
     this.seriesWeekStart = DateTime.sunday,
     this.seriesCount,
+    this.onShowAsPicked,
   });
 
   final MeetingOptions options;
@@ -182,6 +185,10 @@ class MeetingOptionsPanel extends StatefulWidget {
   final bool allDay;
   final Set<int> workWeek;
   final ValueChanged<MeetingOptions> onChanged;
+
+  /// Show as picked, even as what it already was: from then on it is
+  /// Ron's choice, which All day leaves alone (New meeting).
+  final VoidCallback? onShowAsPicked;
   final bool enabled;
   final bool editing;
   final bool freeOrBusy;
@@ -533,7 +540,10 @@ class _MeetingOptionsPanelState extends State<MeetingOptionsPanel> {
                   ? o.showAs ?? EventShowAs.busy
                   : EventShowAs.busy,
               items: [for (final s in showAsChoices) (s, showAsLabel(s))],
-              onChanged: (s) => widget.onChanged(o.copyWith(showAs: s)),
+              onChanged: (s) {
+                widget.onShowAsPicked?.call();
+                widget.onChanged(o.copyWith(showAs: s));
+              },
             ),
           ),
           row(

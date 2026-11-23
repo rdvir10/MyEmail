@@ -2624,6 +2624,127 @@ void main() {
         expect(engine.meetings.last.allDay, isTrue);
         expect(engine.meetings.last.showAs, EventShowAs.busy);
       });
+
+      testWidgets('Free picked in More, as it already showed, stays when '
+          'All day goes off', (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await pumpScreen(tester);
+        await type(tester, 'meeting-title', 'Quiet day');
+        await allDay(tester);
+        await openMore(tester);
+        await choose(tester, 'meeting-show-as', 'Free');
+        await tester.tapAt(const Offset(500, 20));
+        await tester.pumpAndSettle();
+        await allDay(tester);
+        expect(said('Free'), findsOneWidget);
+
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.allDay, isFalse);
+        expect(m.showAs, EventShowAs.free);
+      });
+
+      // A Send that fails after Leave opens the screen again as it was
+      // written: a Show as picked stays picked, and one not picked still
+      // follows All day.
+      for (final picked in [true, false]) {
+        testWidgets('opened again after a failed Send, Show as '
+            '${picked ? 'picked stays' : 'not picked still follows'}',
+            (tester) async {
+          tester.view.physicalSize = const Size(1000, 2000);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          final slow = _SlowSendFailsOnce();
+          engine = slow;
+          await pumpScreen(tester, accountId: 'acct-ms');
+          await type(tester, 'meeting-title', 'Quiet day');
+          await allDay(tester);
+          if (picked) {
+            await openMore(tester);
+            await choose(tester, 'meeting-show-as', 'Free');
+            await tester.tapAt(const Offset(500, 20));
+            await tester.pumpAndSettle();
+          }
+          await tester.tap(find.byTooltip('Send'));
+          await tester.pump();
+          await tester.pageBack();
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          await tester.tap(find.text('Leave'));
+          await tester.pumpAndSettle();
+          slow.gate.complete();
+          await tester.pump(const Duration(seconds: 1));
+          await tester.pumpAndSettle();
+          expect(find.byType(NewMeetingScreen), findsOneWidget,
+              reason: 'opened again as written');
+
+          await allDay(tester);
+          await tester.tap(find.byTooltip('Send'));
+          await tester.pumpAndSettle();
+          expect(slow.tried.last.allDay, isFalse);
+          expect(slow.tried.last.showAs, picked ? EventShowAs.free : isNull);
+        });
+      }
+
+      testWidgets('a day typed in a line is a whole day, and free',
+          (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final finder = FakeDateFinder({
+          'Friday': (at: DateTime(2026, 10, 9), grain: DateGrain.day),
+        });
+        await pumpScreen(tester, finder: finder);
+        await tester.tap(find.byKey(const ValueKey('meeting-quick-open')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+            find.byKey(const ValueKey('meeting-quick')), 'Holiday Friday');
+        await tester.tap(find.byKey(const ValueKey('meeting-quick-go')));
+        await tester.pumpAndSettle();
+        expect(said('Free'), findsOneWidget);
+
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.allDay, isTrue);
+        expect(m.showAs, EventShowAs.free);
+      });
+
+      testWidgets('Edit never follows: a busy whole day stays busy, All day '
+          'off and on', (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final recording = _RecordingChanges();
+        engine = recording;
+        final day = CalendarEvent(
+          id: 'd1',
+          accountId: 'acct-ms',
+          title: 'Stocktake',
+          start: DateTime(2026, 10, 1),
+          end: DateTime(2026, 10, 2),
+          allDay: true,
+          isOrganizer: true,
+          response: EventResponse.organizer,
+        );
+        await pumpScreen(tester,
+            accountId: 'acct-ms',
+            editing:
+                EventEdit(event: day, notes: const EventNotes(text: '')));
+        await allDay(tester);
+        await allDay(tester);
+        await type(tester, 'meeting-title', 'Stocktake, all hands');
+        await tester.tap(find.byTooltip('Save'));
+        await tester.pumpAndSettle();
+        expect(recording.changes.single.title, 'Stocktake, all hands');
+        expect(recording.changes.single.showAs, isNull,
+            reason: 'how it shows is not changed');
+      });
     });
 
     testWidgets('a weekly repeat goes with the date when it is moved after '
@@ -2730,6 +2851,22 @@ void main() {
     });
   });
 
+}
+
+/// An engine with an account of each kind that keeps each change asked
+/// of a meeting.
+class _RecordingChanges extends _EachKind {
+  final List<EventChange> changes = [];
+
+  @override
+  Future<void> updateEvent(
+    CalendarEvent event,
+    EventChange change, {
+    bool wholeSeries = false,
+  }) async {
+    changes.add(change);
+    await super.updateEvent(event, change, wholeSeries: wholeSeries);
+  }
 }
 
 /// An engine for an account whose calendar cannot be reached: a Gmail

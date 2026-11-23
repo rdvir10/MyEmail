@@ -599,6 +599,7 @@ void main() {
             end: DateTime(2026, 10, 27),
             allDay: true,
             showAs: EventShowAs.free,
+            readOnly: true,
           );
       final shown = widgetMeetings([
         holiday('g', 'gmail'),

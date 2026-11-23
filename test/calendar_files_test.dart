@@ -1122,6 +1122,11 @@ void main() {
           isFalse,
           reason: 'what Outlook means the invited to show as comes first');
       expect(freeOf('TRANSP:nonsense\r\n'), isFalse);
+      expect(
+          freeOf('TRANSP:TRANSPARENT\r\n'
+              'X-MICROSOFT-CDO-INTENDEDSTATUS:\r\n'),
+          isTrue,
+          reason: 'an intended status with nothing in it says nothing');
     });
 
     testWidgets("an invitation's Add to calendar keeps it free",

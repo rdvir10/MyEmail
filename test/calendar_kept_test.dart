@@ -329,6 +329,7 @@ void main() {
             end: DateTime(2026, 11, 27),
             allDay: true,
             showAs: EventShowAs.free,
+            readOnly: true,
           );
       final gmail = holiday('g', 'gmail'), hadco = holiday('h', 'hadco');
       expect(shownEvents([gmail, hadco], const CalendarPrefs()), [gmail]);
