@@ -3307,16 +3307,20 @@ class _DeletedScreen extends ConsumerWidget {
         children: [
           // The sync's deletes in Outlook are Graph's ordinary delete, as
           // the merge's are: where they land is said true either way
-          // ([_deletedCopiesKept]), and shorter, above the list.
+          // ([_deletedCopiesKept]), and shorter, above the list. The bin's
+          // copy is read without any of the details only Outlook keeps
+          // (outlook_only_details.dart), so a Restore brings none back.
+          // Kept short: at the largest text on a phone, a longer one puts
+          // the first Restore below the screen.
           const _Para(
             'Every contact the sync deleted in the last 30 days. Restore '
             'makes it again where it was deleted, with every detail that '
             'can be written, and on the other side too unless it is back '
-            'there already; the two are then paired. Photos, and '
-            "Outlook's fax, pager and anniversary, come back only from "
-            "Google's Trash or, for a while, from Outlook: in Deleted Items, "
-            'or under Recover items deleted from this folder at the top of '
-            'it.',
+            'there already; the two are then paired. Photos, and the '
+            'details only Outlook keeps (faxes and the like), come back '
+            "only from Google's Trash or, for a while, from Outlook: in "
+            'Deleted Items, or under Recover items deleted from this folder '
+            'at the top of it.',
             top: 16,
           ),
           if (deleted.isEmpty)
