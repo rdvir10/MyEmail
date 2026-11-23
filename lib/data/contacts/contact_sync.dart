@@ -4,7 +4,6 @@ import 'dart:math';
 import 'dart:ui' as ui show PlatformDispatcher;
 
 import 'package:collection/collection.dart';
-import 'package:cryptography/cryptography.dart' show Sha256;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
@@ -3219,10 +3218,6 @@ class _Run {
     }
   }
 
-  /// [bytes]' digest, to tell one photo from another.
-  static Future<String> _photoHash(List<int> bytes) async =>
-      base64Encode((await Sha256().hash(bytes)).bytes);
-
   /// Whether [answer], a contact as Graph answered a write, holds [written]
   /// as written: a text the same as the sync compares one (line breaks of
   /// any kind, runs of spaces and the ends aside), a list each value
@@ -4003,7 +3998,12 @@ class _Copies {
           if (!paired.contains(id)) id: ?base[id],
       });
       if (ours.length < g.graphCopies.length) notSynced++;
-      if (ours.isEmpty || left.containsKey(synced) || listed(synced) != null) {
+      // A person listed with no answer is one a merge reads again (its
+      // differences may since have changed, or a rule): counted. One left,
+      // or answered and waiting for a run, is not.
+      if (ours.isEmpty ||
+          left.containsKey(synced) ||
+          listed(synced)?['answer'] != null) {
         continue;
       }
       people++;
@@ -4414,27 +4414,18 @@ class _CopiesStep {
     ContactLink pair,
   ) async {
     final key = g.graphSynced!;
-    final bytes = <String, ({List<int> bytes, String type})>{};
-    final hashes = <String, String>{};
-    for (final id in [key, ...copies]) {
-      if (!photo.contains(id)) continue;
-      // A photo that cannot be read now passes the person over, rather
-      // than reading as none.
-      final ({List<int> bytes, String type})? got;
-      try {
-        got = await run.graph((a) => a.photoBytes(id));
-      } on Exception catch (e) {
-        if (!_Run._failsAlone(e)) rethrow;
-        throw const _PassOver();
-      }
-      if (got == null) throw const _PassOver();
-      bytes[id] = got;
-      hashes[id] = await _Run._photoHash(got.bytes);
-    }
-    final kept = cp.OutlookCopy(id: key, json: read[key]!, photo: hashes[key]);
+    // Which copies have a photo, and no more: a photo is never compared
+    // (3.22.1), and its bytes are read only for the copy the synced one
+    // takes it from.
+    String? hasPhoto(String id) => photo.contains(id) ? 'photo' : null;
+    final kept = cp.OutlookCopy(
+      id: key,
+      json: read[key]!,
+      photo: hasPhoto(key),
+    );
     final others = [
       for (final id in copies)
-        cp.OutlookCopy(id: id, json: read[id]!, photo: hashes[id]),
+        cp.OutlookCopy(id: id, json: read[id]!, photo: hasPhoto(id)),
     ];
     final listed = seen.listed(key);
     final answer = listed?['answer'] is String
@@ -4477,7 +4468,9 @@ class _CopiesStep {
       if (now.length < copies.length + 1 || now.values.contains(false)) {
         throw const _PassOver();
       }
-      syncedKey = await _write(key, merge, read[key]!, bytes, pair);
+      final from = merge.photoFrom;
+      final taken = from == null ? null : await _photoOf(from);
+      syncedKey = await _write(key, merge, read[key]!, taken, pair);
       _count(added: merge.adds.length);
       changedAny = true;
     }
@@ -4495,6 +4488,21 @@ class _CopiesStep {
     for (final id in copies) {
       _expected[id] = read0[id];
     }
+  }
+
+  /// The photo of the copy [id], for the synced copy to take: one that
+  /// cannot be read now passes the person over, rather than reading as
+  /// none.
+  Future<({List<int> bytes, String type})> _photoOf(String id) async {
+    final ({List<int> bytes, String type})? got;
+    try {
+      got = await run.graph((a) => a.photoBytes(id));
+    } on Exception catch (e) {
+      if (!_Run._failsAlone(e)) rethrow;
+      throw const _PassOver();
+    }
+    if (got == null) throw const _PassOver();
+    return got;
   }
 
   /// The contacts [ids] read again by id: for each still there, whether
@@ -4534,7 +4542,7 @@ class _CopiesStep {
     String key,
     cp.CopiesMerge merge,
     Map<String, Object?> before,
-    Map<String, ({List<int> bytes, String type})> bytes,
+    ({List<int> bytes, String type})? photo,
     ContactLink pair,
   ) async {
     var changeKey = before['changeKey'] as String?;
@@ -4570,8 +4578,7 @@ class _CopiesStep {
         }
       }
     }
-    if (merge.photoFrom case final from?) {
-      final photo = bytes[from];
+    if (merge.photoFrom != null) {
       if (photo == null) throw const _CopyNotHeld();
       await run.graph((a) => a.putPhoto(key, photo.bytes, photo.type));
       // The photo there before its copy goes, and the synced copy as the

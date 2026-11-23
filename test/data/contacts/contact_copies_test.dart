@@ -696,11 +696,12 @@ void main() {
       expect(merged.photoFrom, isNull);
     });
 
-    test('the synced copy has none: it takes the others\' one photo', () {
+    test('the synced copy has none: it takes the first other copy\'s, '
+        'in id order', () {
       final merged = merge(copy('A'), [
         copy('B'),
-        copy('C', const {}, 'p1'),
         copy('D', const {}, 'p1'),
+        copy('C', const {}, 'p2'),
       ]);
       expect(merged.outcome, CopiesOutcome.adds);
       expect(merged.photoFrom, 'C');
@@ -708,33 +709,38 @@ void main() {
       expect(merged.adds, [
         const CopiesDetail(label: 'Photo', value: 'a photo'),
       ]);
+      expect(merged.differences, isEmpty);
     });
 
-    test('another photo: a difference', () {
-      final two = merge(copy('A'), [
-        copy('B', const {}, 'p1'),
-        copy('C', const {}, 'p2'),
-        copy('D'),
-      ]);
-      expect(two.outcome, CopiesOutcome.differs);
-      expect(two.photoFrom, isNull);
-      expect(two.differences, [
-        const CopiesDifference(
-          label: 'Photo',
-          others: {'B': 'a photo', 'C': 'another photo', 'D': null},
-        ),
-      ]);
+    test('never a difference (3.22.1): the synced copy\'s photo stays, '
+        'whatever the others\' are', () {
+      // Hadco's tablet: nearly every contact has a photo, and no two
+      // copies' are alike.
       final mine = merge(copy('A', const {}, 'p1'), [
-        copy('B', const {}, 'p1'),
-        copy('C', const {}, 'p2'),
+        copy('B', const {}, 'p2'),
+        copy('C', const {}, 'p3'),
       ]);
-      expect(mine.differences, [
-        const CopiesDifference(
-          label: 'Photo',
-          kept: 'a photo',
-          others: {'B': 'a photo', 'C': 'another photo'},
-        ),
+      expect(mine.outcome, CopiesOutcome.same);
+      expect(mine.photoFrom, isNull);
+      expect(mine.differences, isEmpty);
+      expect(mine.fingerprint, '');
+      expect(mine.adds, isEmpty);
+    });
+
+    test('an answer does not change which photo is kept', () {
+      final kept = copy('A', {'jobTitle': 'Buyer'}, 'p1');
+      final other = copy('B', {'jobTitle': 'Manager'}, 'p2');
+      final unanswered = merge(kept, [other]);
+      expect([for (final d in unanswered.differences) d.label], [
+        'Job title',
       ]);
+      for (final keep in ['A', 'B']) {
+        expect(merge(kept, [other], keep: keep).photoFrom, isNull);
+      }
+      final none = copy('A', {'jobTitle': 'Buyer'});
+      for (final keep in [null, 'A', 'B']) {
+        expect(merge(none, [other], keep: keep).photoFrom, 'B');
+      }
     });
   });
 
@@ -1172,7 +1178,7 @@ void main() {
       expect(merged.outcome, CopiesOutcome.differs);
       expect(
         [for (final d in merged.differences) d.label],
-        ['Home phones', 'Job title', 'Notes', 'Photo', 'Other details'],
+        ['Home phones', 'Job title', 'Notes', 'Other details'],
       );
       expect(merged.patch, {
         'emailAddresses': [email('ann@x.example'), email('ann@y.example')],
@@ -1202,7 +1208,8 @@ void main() {
       final merged = merge(kept, [other, third], keep: 'B');
       expect(merged.outcome, CopiesOutcome.adds);
       expect(merged.differences, isEmpty);
-      expect(merged.photoFrom, 'B');
+      // The synced copy's photo stays, whichever copy's details win.
+      expect(merged.photoFrom, isNull);
       expect(merged.patch, {
         'emailAddresses': [email('ann@x.example'), email('ann@y.example')],
         'department': 'Purchasing',
@@ -1217,7 +1224,6 @@ void main() {
         const CopiesDetail(label: 'Home phones', value: '+1 212 555 0103'),
         const CopiesDetail(label: 'Job title', value: 'Purchasing manager'),
         const CopiesDetail(label: 'Notes', value: 'A cat.'),
-        const CopiesDetail(label: 'Photo', value: 'a photo'),
         const CopiesDetail(
           label: 'Other details',
           value: 'weddingAnniversary: 2001-05-05',
@@ -1240,7 +1246,7 @@ void main() {
     test('an answer naming no copy is no answer', () {
       final merged = merge(kept, [other, third], keep: 'Z');
       expect(merged.outcome, CopiesOutcome.differs);
-      expect(merged.differences, hasLength(5));
+      expect(merged.differences, hasLength(4));
     });
 
     test('an answer with nothing differing changes nothing', () {
