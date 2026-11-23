@@ -2761,6 +2761,104 @@ void main() {
       expect(under(4, 'No longer needs a look.'), findsOneWidget);
     });
 
+    testWidgets('Needs a look: an item whose answer the server refused comes '
+        'back listed, never said to be done', (tester) async {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.notes],
+            googleValues: {ContactField.notes: 'Met at the fair $id'},
+            graphValues: {ContactField.notes: 'Prefers email after 5'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      const refused = ContactSyncLook(
+        id: 3,
+        kind: ContactReviewKind.refused,
+        side: ContactSide.graph,
+        title: 'Person 1',
+        choices: [ContactSyncChoice.retry],
+      );
+      const running = ContactSyncProgress(step: ContactSyncStep.writing);
+      sync = FakeContactSync(status: synced(looks: [
+        differs(1),
+        differs(2),
+        differs(4),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+      Finder said(int id, String text) => find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.textContaining(text),
+          );
+      Future<void> tap(String key) async {
+        await tester.ensureVisible(button(key));
+        await tester.tap(button(key));
+        await tester.pumpAndSettle();
+      }
+
+      const carrying = "You chose Use Gmail's: the sync is carrying it out.";
+      const done = "You chose Use Gmail's: done. No longer needs a look.";
+
+      // Use Gmail's on two: queued (the second's never shown so, the run
+      // too quick), then taken away by the run that carries them out,
+      // said to be carried out while it runs.
+      await tap('contact-sync-look:1:useGoogle');
+      sync.set(synced(looks: [
+        differs(1, answer: ContactSyncChoice.useGoogle),
+        differs(2),
+        differs(4),
+      ]));
+      await tester.pumpAndSettle();
+      await tap('contact-sync-look:2:useGoogle');
+      sync.set(synced(looks: [differs(4)], running: running));
+      await tester.pumpAndSettle();
+      for (final id in [1, 2]) {
+        expect(said(id, carrying), findsOneWidget);
+        expect(said(id, 'done'), findsNothing);
+      }
+      // Leave as they are needs no run: done at once, a run going or not.
+      await tap('contact-sync-look:4:leaveAsTheyAre');
+      sync.set(synced(looks: const [], running: running));
+      await tester.pumpAndSettle();
+      expect(
+        said(4, 'You chose Leave as they are: done. No longer needs a look.'),
+        findsOneWidget,
+      );
+
+      // Outlook refused the first's write: it is put back as it was,
+      // unanswered, beside the refusal, to be answered again. The second
+      // went through.
+      sync.set(synced(looks: [differs(1), refused]));
+      await tester.pumpAndSettle();
+      expect(button('contact-sync-look:1:useGoogle'), findsOneWidget);
+      expect(button('contact-sync-look:1:useGraph'), findsOneWidget);
+      expect(said(1, 'You chose'), findsNothing);
+      expect(said(1, 'No longer needs a look'), findsNothing);
+      expect(said(2, done), findsOneWidget);
+      expect(button('contact-sync-look:3:retry'), findsOneWidget);
+      expect(
+        tester.getTopLeft(button('contact-sync-look:1')).dy,
+        lessThan(tester.getTopLeft(button('contact-sync-look:2')).dy),
+      );
+
+      // Taken away later with no answer (its contacts gone): the answer
+      // that was refused is not said to be done.
+      sync.set(synced(looks: const [refused]));
+      await tester.pumpAndSettle();
+      expect(said(1, 'No longer needs a look.'), findsOneWidget);
+      expect(said(1, 'You chose'), findsNothing);
+      expect(said(2, done), findsOneWidget);
+    });
+
     group('Needs a look: the box for all keeps its place', () {
       ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
           ContactSyncLook(

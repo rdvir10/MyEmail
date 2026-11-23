@@ -2177,6 +2177,210 @@ void main() {
       );
     });
 
+    group('an answer whose write is refused', () {
+      const long = 'Met at the fair, and again at the trade show in May';
+      const hadcos = 'Prefers email after 5';
+
+      /// Ann, paired by the first sync, her notes differing: Gmail's one
+      /// that Outlook will not take.
+      Future<({String ann, String annH, ContactSyncLook shown})>
+          annDiffering() async {
+        final ann = h.google.seed({
+          ...person('Ann', 'Lee', email: 'a@example.com'),
+          'biographies': [
+            {'value': long, 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+        final annH = h.graph.seed({
+          ...outlook('Ann', 'Lee', email: 'a@example.com'),
+          'personalNotes': hadcos,
+        });
+        await h.firstSync();
+        final shown = (await h.status()).needsALook.single;
+        expect(shown.kind, ContactReviewKind.differing);
+        return (ann: ann, annH: annH, shown: shown);
+      }
+
+      /// The item answered is listed again as it was shown, unanswered,
+      /// beside the refusal's, and the answer is not kept to be done again.
+      Future<void> askedAgain(ContactSyncStatus status, ContactSyncLook shown)
+          async {
+        expect(status.halt, isNull);
+        expect(
+          status.needsALook.map((l) => l.kind),
+          unorderedEquals(
+            [ContactReviewKind.differing, ContactReviewKind.refused],
+          ),
+        );
+        final back = status.needsALook.first;
+        expect(back.kind, ContactReviewKind.differing);
+        expect(back.id, shown.id, reason: 'the same item, in its place');
+        expect(back.version, shown.version);
+        expect(back.answer, isNull);
+        expect((await h.pair()).held ?? '', isNot(contains('useGoogle')));
+      }
+
+      test("Use Gmail's: the item comes back as it was, beside the "
+          "refusal, and only an answer of Ron's tries again", () async {
+        final (:ann, :annH, :shown) = await annDiffering();
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        await h.sync.answerLook(shown.id, ContactSyncChoice.useGoogle);
+        await h.sync.syncNow();
+        var status = await h.status();
+        expect(h.graph.contact(annH)!['personalNotes'], hadcos);
+        await askedAgain(status, shown);
+
+        // Nothing loops by itself: the next run writes nothing.
+        h.requests.clear();
+        status = await h.later();
+        expect(status.halt, isNull);
+        expect(h.contactWrites, isEmpty);
+        expect(status.needsALook.map((l) => l.id), contains(shown.id));
+
+        // Ron chooses the other side: carried out at once, the refusal
+        // over with it.
+        await h.sync.answerLook(shown.id, ContactSyncChoice.useGraph);
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(status.halt, isNull);
+        final notes = h.google.person(ann)!['biographies']! as List;
+        expect((notes.single as Map)['value'], hadcos);
+        expect(status.needsALook, isEmpty);
+        expect((await h.links()).single.state, ContactLinkState.paired);
+      });
+
+      test("Use Gmail's for all: the one refused comes back, the others "
+          'are done', () async {
+        final (ann: _, :annH, shown: _) = await annDiffering();
+        h.google.seed(
+          person('Bob', 'Ray', email: 'b@example.com', company: 'GB'),
+        );
+        final bobH = h.graph.seed(
+          outlook('Bob', 'Ray', email: 'b@example.com', company: 'HB'),
+        );
+        var status = await h.later();
+        final looks = status.needsALook;
+        expect(looks, hasLength(2));
+        final ann = looks.firstWhere((l) => l.title == 'Ann Lee');
+
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        final answered = await h.sync.answerAllDiffering(
+          ContactSyncChoice.useGoogle,
+          {for (final l in looks) l.id: l.version},
+        );
+        expect(answered, hasLength(2));
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(companyOf(h.graph.contact(bobH)), 'GB');
+        expect(h.graph.contact(annH)!['personalNotes'], hadcos);
+        await askedAgain(status, ann);
+      });
+
+      test('one a stopped run left to the next comes back as well', () async {
+        final (ann: _, :annH, :shown) = await annDiffering();
+        await h.sync.answerLook(shown.id, ContactSyncChoice.useGoogle);
+        await h.sync.stop();
+        // The run that plans it stops at its write, before it is sent.
+        h.before = (r) async {
+          if (!Harness.readsOnly(r) && !r.url.path.contains('contactFolders')) {
+            throw http.ClientException('lost');
+          }
+        };
+        h.pass(const Duration(minutes: 1));
+        await h.sync.syncNow();
+        var status = await h.status();
+        expect(status.halt!.kind, ContactSyncHaltKind.failed);
+        expect(status.needsALook, isEmpty);
+
+        // The next run sends it, and Outlook refuses it.
+        h.before = null;
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        status = await h.later(after: const Duration(minutes: 6));
+        expect(h.graph.contact(annH)!['personalNotes'], hadcos);
+        await askedAgain(status, shown);
+      });
+
+      test('one a side took is partly carried out, and is not asked again',
+          () async {
+        final g = h.google.seed({
+          ...person('Ann', 'Lee', email: 'a@example.com'),
+          'biographies': [
+            {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+        final o = h.graph.seed({
+          ...outlook('Ann', 'Lee', email: 'a@example.com'),
+          'personalNotes': hadcos,
+        });
+        await h.firstSync();
+        var look = (await h.status()).needsALook.single;
+        await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+        h.google.editFromGmail(g, {
+          'biographies': [
+            {
+              'value': 'Met at the fair\nCall in May',
+              'contentType': 'TEXT_PLAIN',
+            },
+          ],
+        });
+        var status = await h.later();
+        look = status.needsALook.single;
+        expect(look.kind, ContactReviewKind.clash);
+
+        // Use Hadco's instead: Outlook takes its note back, Gmail will not.
+        h.google.refuse = (p) => '${p['biographies']}'.contains('Prefers');
+        await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(status.halt, isNull);
+        expect(h.graph.contact(o)!['personalNotes'], hadcos);
+        expect(status.needsALook.single.kind, ContactReviewKind.refused);
+        expect((await h.pair()).held ?? '', isNot(contains('useValue')));
+      });
+
+      test('Retry refused again: the refusal keeps its item, in its place',
+          () async {
+        final pairs = seedPairs(h, 1);
+        await h.firstSync();
+        h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+        h.google.editFromGmail(pairs[0].google, {
+          'biographies': [
+            {'value': long, 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+        var status = await h.later();
+        final refused = status.needsALook.single;
+        expect(refused.kind, ContactReviewKind.refused);
+
+        await h.sync.answerLook(refused.id, ContactSyncChoice.retry);
+        await h.sync.syncNow();
+        status = await h.status();
+        expect(status.halt, isNull);
+        expect(h.graph.contact(pairs[0].graph)!['personalNotes'], isNull);
+        final again = status.needsALook.single;
+        expect(again.kind, ContactReviewKind.refused);
+        expect(again.id, refused.id);
+        expect(again.answer, isNull);
+      });
+
+      test("...and a new contact's, Retry refused again", () async {
+        h.graph.seed(outlook('Bad', 'Apple', email: 'bad@example.com'));
+        h.google.refuse = (p) => '${p['names']}'.contains('Bad');
+        await h.firstSync();
+        final refused = (await h.status()).needsALook.single;
+        expect(refused.kind, ContactReviewKind.refused);
+
+        await h.sync.answerLook(refused.id, ContactSyncChoice.retry);
+        await h.sync.syncNow();
+        final status = await h.status();
+        expect(status.halt, isNull);
+        expect(h.google.count, 0);
+        final again = status.needsALook.single;
+        expect(again.id, refused.id);
+        expect(again.answer, isNull);
+      });
+    });
+
     test("a value written over in Outlook stays listed when Gmail's write "
         'is planned again', () async {
       final g = h.google.seed({

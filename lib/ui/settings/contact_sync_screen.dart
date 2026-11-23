@@ -1915,6 +1915,18 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
 
   String _versionOf(ContactSyncLook l) => _versions[l] ??= l.version;
 
+  /// The items the last status listed: one listed again after it went has
+  /// been put back, the server having refused the write its answer made,
+  /// to be answered again ([_shown]).
+  Set<int> _listedLast = const {};
+
+  /// Items gone that a status has shown gone with no sync running: the
+  /// run that took them is over, and they are done for the visit. One a
+  /// running sync took to carry out its answer is said to be carried out
+  /// until then, never done: its write may yet be refused, and the item
+  /// put back.
+  final Set<int> _over = {};
+
   /// Where the box for all stands this visit, settled by the first status:
   /// above the items if two or more pairs differed then; one that comes
   /// later goes under them, so that its coming pushes nothing down.
@@ -1932,12 +1944,26 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   }
 
   List<({ContactSyncLook look, bool listed})> _shown(
-    List<ContactSyncLook> looks,
-  ) {
+    List<ContactSyncLook> looks, {
+    required ContactSyncStatus? status,
+  }) {
     final listed = {for (final l in looks) l.id: l};
     for (final l in looks) {
-      if (!_seen.containsKey(l.id)) _order.add(l.id);
+      if (!_seen.containsKey(l.id)) {
+        _order.add(l.id);
+      } else if (!_listedLast.contains(l.id)) {
+        // Put back: the answer given here is no longer its, nor is the
+        // item done.
+        _gaveHere.remove(l.id);
+        _over.remove(l.id);
+      }
       _seen[l.id] = l;
+    }
+    if (status != null) {
+      _listedLast = listed.keys.toSet();
+      if (status.running == null) {
+        _over.addAll(_seen.keys.where((id) => !listed.containsKey(id)));
+      }
     }
     return [
       for (final id in _order)
@@ -1976,7 +2002,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
     final graphName =
         contactSyncAccountName(_byId(accounts, status?.graphAccountId));
     final looks = status?.needsALook ?? const <ContactSyncLook>[];
-    final shown = _shown(looks);
+    final shown = _shown(looks, status: status);
     final differing = [
       for (final l in looks)
         if (l.kind == ContactReviewKind.differing && l.answer == null) l,
@@ -2017,6 +2043,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
               graphName: graphName,
               done: !listed,
               doneWith: listed ? null : _doneWith(look),
+              carrying: !listed && !_over.contains(look.id),
               onAnswer: (choice, {candidateId}) => _act(
                 context,
                 () async {
@@ -2164,6 +2191,7 @@ class _LookTile extends StatelessWidget {
     required this.onAnswer,
     this.done = false,
     this.doneWith,
+    this.carrying = false,
   });
 
   final ContactSyncLook look;
@@ -2175,6 +2203,17 @@ class _LookTile extends StatelessWidget {
   /// done; with none, that it no longer needs a look.
   final bool done;
   final ContactSyncChoice? doneWith;
+
+  /// Done while a sync runs, which may be carrying out [doneWith]: an
+  /// answer a run carries out is said to be carried out, and not yet
+  /// done, for the server may refuse its write.
+  final bool carrying;
+
+  /// The answers that need no run: the item just goes.
+  static const _doneAtOnce = {
+    ContactSyncChoice.leaveAsTheyAre,
+    ContactSyncChoice.keepNewer,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -2206,6 +2245,12 @@ class _LookTile extends StatelessWidget {
           // it wraps as that one did and moves nothing under it.
           if (done)
             switch (doneWith) {
+              final choice? when carrying && !_doneAtOnce.contains(choice) =>
+                Text(
+                  'You chose ${_lookChoiceLabel(l, choice, graphName)}: '
+                  'the sync is carrying it out.',
+                  style: TextStyle(color: theme.colorScheme.primary),
+                ),
               final choice? => Text(
                   'You chose ${_lookChoiceLabel(l, choice, graphName)}: '
                   'done. No longer needs a look.',
