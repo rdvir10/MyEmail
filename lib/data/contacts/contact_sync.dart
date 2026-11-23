@@ -3301,25 +3301,16 @@ class _Run {
 
   // --- the copies on the Microsoft side --------------------------------------
 
-  /// Copies the merge deleted this run (gone too where a delete found one
-  /// gone): the pair's Microsoft count is lowered by them, so the
-  /// empty-answers guard measures against what is left.
-  var copiesGone = 0;
-
   /// People the merge merged this run, by their synced copy: the count of
   /// people to merge leaves them out.
   final copiesMerged = <String>{};
 
-  /// Ron's choices of another copy's details, as answers for the next
-  /// run (Use Hadco's, for the details they replaced): his, so never held
-  /// by the change brake.
-  final copiesAnswers = <Map<String, Object?>>[];
-
   /// The merge of the Microsoft side's copies of one person
   /// ([ContactSyncService.mergeCopies]), when one is asked or Ron has
-  /// answered a person whose copies differ: after the plan's writes, so
-  /// the copies are read as they now are, and before the end, which
-  /// counts what is left.
+  /// answered a person whose copies differ: after the plan's writes and
+  /// the sync's own end ([_finish]), so the copies are read as they now
+  /// are, and before the count of the people left to merge
+  /// ([_countCopies]).
   ///
   /// For each person whose synced Microsoft copy is paired and has held
   /// copies beside it (this plan's duplicates), every copy is read whole,
@@ -4879,7 +4870,6 @@ class _CopiesStep {
             'fields': replaced,
             'googleEtag': ?pair.googleEtag,
           };
-          run.copiesAnswers.add(useHadcos);
           await store.updatePair(run.pairId, (p) {
             final h = _Held.parse(p.held)..pending.add(useHadcos);
             return p.copyWith(held: h.encode());
@@ -4958,7 +4948,6 @@ class _CopiesStep {
     }
     _count(deleted: deleted?.deleted.length ?? 0);
     _gone += gone.length;
-    run.copiesGone += gone.length;
     if (gone.isNotEmpty) changedAny = true;
     await save();
   }
