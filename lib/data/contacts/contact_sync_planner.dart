@@ -371,7 +371,8 @@ class ContactSyncInput {
 // Output.
 
 /// The contact changed after the plan read it: its etag or `changeKey`
-/// is no longer the one the plan was made from. Nothing was built. The
+/// is no longer the one the plan was made from, or a Gmail detail to be
+/// written reads otherwise than the plan saw it. Nothing was built. The
 /// runner plans that pair again ([ContactLinkPlan.replan]) from what it
 /// has just read, with the run's settings, and writes that instead.
 class ContactReadStale implements Exception {
@@ -421,12 +422,26 @@ class ContactWrite {
   /// that etag matching. The body carries that source and etag (see
   /// [GooglePersonUpdate]). List values the plan never saw survive even so
   /// (see [googlePersonUpdate]).
+  ///
+  /// It throws too when a single detail to be written reads otherwise on
+  /// [person] than in [seen], the etag as it was: a plan made from a base
+  /// an older build read (an address held only as text, read as none)
+  /// would write over a value it never saw. Planned again from [person],
+  /// it sees it.
   GooglePersonUpdate googleUpdate(
     Map<String, Object?> person, {
     required ContactNormaliser normaliser,
   }) {
     if (version != null && googleContactEtag(person) != version) {
       throw ContactReadStale(side);
+    }
+    if (seen case final seen?) {
+      final read = syncedFromPerson(person);
+      for (final f in fields) {
+        if (!f.isList && !rawEquals(read[f], seen[f])) {
+          throw ContactReadStale(side);
+        }
+      }
     }
     return googlePersonUpdate(
       person,

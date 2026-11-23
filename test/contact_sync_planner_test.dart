@@ -1213,6 +1213,50 @@ void main() {
       );
     });
 
+    test('a write is built only on the details the plan saw', () {
+      // Hadco added a home address. The feed did not bring the Gmail side,
+      // so the plan is made from its base, which has none; Gmail holds one
+      // at the same version all the same, as an address kept only as text
+      // was read as none by an older build.
+      final plan = run(
+        graph: [
+          h(
+            'H1',
+            base.withValue(
+              ContactField.homeAddress,
+              ContactAddress.of(street: '4 Oak St', city: 'Leeds'),
+            ),
+            key: 'key-2',
+          ),
+        ],
+        links: [link(1, 'people/c1', 'H1', base: base, etag: 'etag-1')],
+      );
+      final write = byLink(plan, 1)!.googleWrite!;
+      expect(write.fields, {ContactField.homeAddress});
+      Map<String, Object?> person(List<Map<String, Object?>> addresses) => {
+        'resourceName': 'people/c1',
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': 'etag-1'},
+          ],
+        },
+        'addresses': addresses,
+      };
+      expect(
+        () => write.googleUpdate(
+          person([
+            {'type': 'home', 'formattedValue': '12 Elm Rd'},
+          ]),
+          normaliser: norm,
+        ),
+        throwsA(isA<ContactReadStale>()),
+        reason: 'planned again from the Person, never written over unseen',
+      );
+      // As the plan saw it: written.
+      final update = write.googleUpdate(person(const []), normaliser: norm);
+      expect(update.updatePersonFields, ['addresses']);
+    });
+
     test('Gmail\'s version is its contact source\'s etag, whatever was read',
         () {
       // The Person's own etag is the answer's entity tag, and differs

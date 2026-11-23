@@ -16,7 +16,13 @@ const googleContactFields =
     'names,nicknames,emailAddresses,phoneNumbers,addresses,organizations,'
     'birthdays,biographies,relations,urls,imClients,memberships,clientData,'
     'metadata';
-const googleContactFieldsVersion = 1;
+
+/// [googleContactFields]' version, and that of how they are read: a pair
+/// stored under another takes a full Gmail listing at its next run, so
+/// every stored Gmail base meets the reading of now before anything is
+/// written from it. 2: an address held only as text is read as the
+/// street (it was read as none).
+const googleContactFieldsVersion = 2;
 
 /// Every field a Person can be read with, beside [googleContactFields]:
 /// for the read just before a delete, which goes into Recently deleted

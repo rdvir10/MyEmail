@@ -424,6 +424,95 @@ void main() {
       expect(h.graph.count, 3);
     });
 
+    // Gmail as 3.22.1 read it: an address held only as text read as none.
+    http.Response? readAsBefore(http.Request r, http.Response response) {
+      if (r.method != 'GET' || r.url.host != 'people.googleapis.com') {
+        return null;
+      }
+      final json = jsonDecode(response.body);
+      if (json is! Map<String, Object?>) return null;
+      const textOnly = {'type', 'formattedType', 'formattedValue', 'metadata'};
+      void strip(Object? person) {
+        if (person is! Map) return;
+        final addresses = person['addresses'];
+        if (addresses is! List) return;
+        addresses.removeWhere(
+          (a) => a is Map && a.keys.every(textOnly.contains),
+        );
+      }
+
+      strip(json);
+      for (final c in json['connections'] as List? ?? const []) {
+        strip(c);
+      }
+      for (final found in json['responses'] as List? ?? const []) {
+        if (found is Map) strip(found['person']);
+      }
+      return http.Response(
+        jsonEncode(json),
+        response.statusCode,
+        headers: response.headers,
+      );
+    }
+
+    // Ann's Gmail home address is only text; Hadco's Ann has none.
+    Future<({String google, String graph})> annReadAsBefore() async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'addresses': [
+          {'type': 'home', 'formattedValue': '12 Elm Rd\nSpringfield'},
+        ],
+      });
+      final o = h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com'));
+      h.reshape = readAsBefore;
+      await h.firstSync();
+      h.reshape = null;
+      expect((h.graph.contact(o)!['homeAddress'] as Map?)?['street'], isNull);
+      return (google: g, graph: o);
+    }
+
+    test('the first run after the update lists Gmail whole: an address an '
+        'older build read as none reaches Hadco, Gmail untouched', () async {
+      final ann = await annReadAsBefore();
+      await h.store.updatePair(
+        (await h.pair()).pairId,
+        (p) => p.copyWith(googleMask: 1),
+      );
+      final full = h.google.fullListings;
+      h.requests.clear();
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.google.fullListings, full + 1);
+      expect(
+        (h.graph.contact(ann.graph)!['homeAddress'] as Map?)?['street'],
+        '12 Elm Rd\nSpringfield',
+      );
+      expect(h.writesTo('people.googleapis.com'), isEmpty);
+      expect(status.needsALook, isEmpty);
+      // Once: the run after takes changes again.
+      await h.later();
+      expect(h.google.fullListings, full + 1);
+    });
+
+    test('a Gmail detail the plan did not see is never written over: the '
+        'pair is planned again from the Person read', () async {
+      // Stored as read before, at the version Gmail still has; the feed
+      // brings nothing of Ann's in Gmail when Hadco gains an address.
+      final ann = await annReadAsBefore();
+      h.pass(const Duration(minutes: 30));
+      h.graph.editFromOutlook(ann.graph, {
+        'homeAddress': {'street': '4 Oak St', 'city': 'Leeds'},
+      });
+      final status = await h.later();
+      expect(status.halt, isNull);
+      // Changed on both sides as read now: Hadco's newer address won, and
+      // Gmail's is a tap away rather than gone.
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.losingSide, ContactSide.google);
+      expect(look.losing, '12 Elm Rd, Springfield');
+    });
+
     test('an expired Outlook delta starts a new one, reconciled with the '
         'rows: nothing doubled, a change still synced', () async {
       final pairs = seedPairs(h, 3);
