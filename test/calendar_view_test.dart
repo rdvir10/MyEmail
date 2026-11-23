@@ -75,6 +75,50 @@ void main() {
           reason: 'one that ends as the day starts was the day before');
     });
 
+    // A holiday on Gmail's calendar and on Hadco's, a birthday on three:
+    // the tablet's month gave one birthday three lines (2026-11-16).
+    test('a free whole day on several calendars is listed once', () {
+      CalendarEvent whole(
+        String id,
+        String title, {
+        String accountId = 'a',
+        String calendarId = CalendarEvent.mainCalendar,
+        EventShowAs showAs = EventShowAs.free,
+        EventResponse response = EventResponse.none,
+        int days = 1,
+      }) =>
+          CalendarEvent(
+            id: id,
+            accountId: accountId,
+            calendarId: calendarId,
+            title: title,
+            start: day,
+            end: DateTime(day.year, day.month, day.day + days),
+            allDay: true,
+            showAs: showAs,
+            response: response,
+          );
+      final folded = foldSameWholeDays([
+        whole('g', 'Thanksgiving', accountId: 'gmail', calendarId: 'holidays'),
+        whole('h', ' thanksgiving ', accountId: 'hadco'),
+        whole('l', 'Thanksgiving', accountId: 'internet:us'),
+        event('m', DateTime(2026, 10, 27, 9), DateTime(2026, 10, 27, 10),
+            title: 'Thanksgiving'),
+        whole('busy', 'Thanksgiving',
+            accountId: 'hadco', calendarId: 'x', showAs: EventShowAs.busy),
+        whole('ask', 'Thanksgiving',
+            accountId: 'home', response: EventResponse.notResponded),
+        whole('two', 'Thanksgiving', accountId: 'mine', days: 2),
+        whole('two-too', 'Thanksgiving', accountId: 'yours', days: 2),
+        whole('n1', ' ', accountId: 'a'),
+        whole('n2', '', accountId: 'b'),
+      ]);
+      expect([for (final e in folded) e.id],
+          ['g', 'm', 'busy', 'ask', 'two', 'n1', 'n2'],
+          reason: 'the first kept, where it was; one busy or waiting for '
+              'an answer, other days, or no name, as often as it is on');
+    });
+
     test('overlapping meetings side by side, others the full width', () {
       DateTime at(int h, [int m = 0]) => DateTime(2026, 10, 27, h, m);
       final slots = {
@@ -740,6 +784,52 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('calendar-previous')));
       await tester.pumpAndSettle();
       expect(find.byKey(ValueKey('day-head:${day(t)}')), findsOneWidget);
+    });
+
+    testWidgets('a birthday on three calendars is one line, in the month, '
+        'over the hours and in the Agenda', (tester) async {
+      final t = today();
+      final board = DateTime(t.year, t.month, t.day == 10 ? 11 : 10);
+      await pump(tester, const CalendarScreen(), prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          for (final (id, calendar) in [
+            ('b1', CalendarEvent.mainCalendar),
+            ('b2', 'birthdays'),
+            ('b3', 'family'),
+          ])
+            CalendarEvent(
+              id: id,
+              accountId: hadco.id,
+              calendarId: calendar,
+              title: "Dana's birthday",
+              start: board,
+              end: DateTime(board.year, board.month, board.day + 1),
+              allDay: true,
+              showAs: EventShowAs.free,
+            ),
+          at(hadco, 'board', 'Board',
+              DateTime(board.year, board.month, board.day, 10)),
+        ];
+      });
+      await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('month-event:b1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('month-event:b2')), findsNothing);
+      expect(find.byKey(const ValueKey('month-event:b3')), findsNothing);
+      expect(find.byKey(const ValueKey('month-event:board')), findsOneWidget);
+
+      await tester.tap(find.byKey(ValueKey('month-day:${day(board)}')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('calendar-event:b1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('calendar-event:b2')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('calendar-view-agenda')));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('agenda-event:board')), 200,
+          scrollable: find.byType(Scrollable).first);
+      expect(find.byKey(const ValueKey('agenda-event:b1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('agenda-event:b2')), findsNothing);
     });
 
     testWidgets('Month on a tablet: titles in the boxes, and a day opens Day '

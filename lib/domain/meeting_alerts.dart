@@ -572,8 +572,9 @@ MorningAgenda? morningAgendaFor(
 }
 
 /// What the calendar widget lists at [now]: today's and tomorrow's
-/// meetings not over yet, whole days among them, earliest first.
-/// [showDeclined] keeps those turned down, as the calendar shows them.
+/// meetings not over yet, whole days among them, earliest first, a holiday
+/// on several calendars once ([foldSameWholeDays]). [showDeclined] keeps
+/// those turned down, as the calendar shows them.
 List<CalendarEvent> widgetMeetings(
   Iterable<CalendarEvent> events,
   DateTime now, {
@@ -582,7 +583,7 @@ List<CalendarEvent> widgetMeetings(
   final today = DateTime(now.year, now.month, now.day);
   final dayAfter = DateTime(today.year, today.month, today.day + 2);
   final seen = <String>{};
-  return [
+  return foldSameWholeDays([
     for (final e in events)
       if (!e.cancelled &&
           (showDeclined || !e.declined) &&
@@ -596,7 +597,7 @@ List<CalendarEvent> widgetMeetings(
         return a.allDay ? -1 : 1;
       }
       return a.start.compareTo(b.start);
-    });
+    }));
 }
 
 bool _sameDay(DateTime a, DateTime b) =>

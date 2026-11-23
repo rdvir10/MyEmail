@@ -319,6 +319,20 @@ void main() {
               [declined, going], const CalendarPrefs(showDeclined: true)),
           [declined, going]);
     });
+
+    test('a free whole day on two calendars is shown once', () {
+      CalendarEvent holiday(String id, String accountId) => CalendarEvent(
+            id: id,
+            accountId: accountId,
+            title: 'Thanksgiving',
+            start: DateTime(2026, 11, 26),
+            end: DateTime(2026, 11, 27),
+            allDay: true,
+            showAs: EventShowAs.free,
+          );
+      final gmail = holiday('g', 'gmail'), hadco = holiday('h', 'hadco');
+      expect(shownEvents([gmail, hadco], const CalendarPrefs()), [gmail]);
+    });
   });
 
   // The calendar keeps up with meeting mail (#74): an account read again

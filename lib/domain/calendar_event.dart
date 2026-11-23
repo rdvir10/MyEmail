@@ -379,6 +379,44 @@ List<CalendarEvent> eventsOn(DateTime day, Iterable<CalendarEvent> events) =>
         return byStart != 0 ? byStart : a.end.compareTo(b.end);
       });
 
+/// [events] with a whole day shown as free that another calendar has too,
+/// the same name on the same days, listed once: a holiday on Gmail's
+/// calendar and on Hadco's, a birthday on three (the tablet's month gave
+/// one birthday three lines). The first is kept, where it was. Only those
+/// that ask nothing of Ron fold: one busy or out of office, one waiting for
+/// his answer, declined or cancelled, or one with no name, is listed as
+/// often as it is on. The morning agenda and the all-day reminder say a
+/// name once already.
+List<CalendarEvent> foldSameWholeDays(Iterable<CalendarEvent> events) {
+  final seen = <String>{};
+  bool first(CalendarEvent e) {
+    final key = _wholeDayKey(e);
+    return key == null || seen.add(key);
+  }
+
+  return [
+    for (final e in events)
+      if (first(e)) e,
+  ];
+}
+
+/// [e]'s name and days, for [foldSameWholeDays]; null for one that is
+/// listed whatever else is on.
+String? _wholeDayKey(CalendarEvent e) {
+  final name = e.title.trim().toLowerCase();
+  if (!e.allDay ||
+      e.showAs != EventShowAs.free ||
+      e.cancelled ||
+      e.declined ||
+      e.response == EventResponse.notResponded ||
+      e.response == EventResponse.tentative ||
+      name.isEmpty) {
+    return null;
+  }
+  String date(DateTime t) => '${t.year}-${t.month}-${t.day}';
+  return '$name|${date(e.start)}|${date(e.end)}';
+}
+
 /// Where a timed event sits across a day's width: its column among those
 /// it overlaps, and how many columns that group has.
 typedef DaySlot = ({CalendarEvent event, int column, int columns});

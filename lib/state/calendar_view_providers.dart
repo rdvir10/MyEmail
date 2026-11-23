@@ -161,15 +161,16 @@ final calendarPrefsProvider =
         CalendarPrefsNotifier.new);
 
 /// [events] as the views show them: a meeting you declined only where
-/// [prefs] say to show those.
+/// [prefs] say to show those, and a holiday or a birthday on several
+/// calendars once ([foldSameWholeDays]).
 List<CalendarEvent> shownEvents(
   Iterable<CalendarEvent> events,
   CalendarPrefs prefs,
 ) =>
-    [
+    foldSameWholeDays([
       for (final e in events)
         if (prefs.showDeclined || !e.declined) e,
-    ];
+    ]);
 
 /// The accounts the calendar leaves out, by id, and the calendars, by
 /// `calendarKey`; a calendar from a link by its own account id.

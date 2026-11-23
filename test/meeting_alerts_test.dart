@@ -590,6 +590,24 @@ void main() {
       expect([for (final e in shown) e.id], ['later', 'day', 'tomorrow']);
     });
 
+    test('a free whole day on two calendars is one row', () {
+      CalendarEvent holiday(String id, String accountId) => CalendarEvent(
+            id: id,
+            accountId: accountId,
+            title: 'Thanksgiving',
+            start: DateTime(2026, 10, 26),
+            end: DateTime(2026, 10, 27),
+            allDay: true,
+            showAs: EventShowAs.free,
+          );
+      final shown = widgetMeetings([
+        holiday('g', 'gmail'),
+        holiday('h', 'hadco'),
+        event('later', DateTime(2026, 10, 26, 15)),
+      ], now);
+      expect([for (final e in shown) e.id], ['g', 'later']);
+    });
+
     test('a meeting tapped there opens it again', () {
       final e = event('AAMk=+/x', DateTime(2026, 10, 27, 10));
       final link = calendarFromWidgetLink(Uri.parse(calendarWidgetLink(e)))!;
