@@ -1974,6 +1974,32 @@ void main() {
       expect(status.needsALook.single.kind, ContactReviewKind.kept);
     });
 
+    test('a contact deleted in Outlook just before its delete is deleted on '
+        'both sides already: not kept, and nothing more sent', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.deleteFromOutlook(pairs[0].graph);
+        }
+      };
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      // Ron's delete, not the sync's: nothing to bring back from here.
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.requests.where((r) => r.method == 'DELETE'), isEmpty);
+      expect(
+        h.graph.contact(pairs[0].graph)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+      expect(await h.links(), hasLength(1));
+    });
+
     /// What 3.22.1 could leave when Microsoft's answer to the sync's delete
     /// of a Hadco contact was lost and the contact lay in Deleted Items:
     /// the next run kept it as moved out (a kept row, and its item under
@@ -1987,6 +2013,8 @@ void main() {
       final o = pairs[0].graph;
       final pairId = (await h.pair()).pairId;
       final row = (await h.links()).firstWhere((l) => l.graphId == o);
+      // A detail only Outlook keeps, in the bin's full copy.
+      h.graph.editFromOutlook(o, {'profession': 'Pilot'});
       final raw = jsonEncode(h.graph.contact(o));
       h.google.deleteFromGmail(g);
       h.graph.deleteFromOutlook(o);
@@ -2060,20 +2088,44 @@ void main() {
       );
     });
 
-    test("Restore never pairs Gmail with a contact that is not in Contacts: "
-        "3.22.1's kept contact lying in Deleted Items", () async {
+    test("Restore of 3.22.1's kept contact lying in Deleted Items makes it "
+        "again in Contacts from Recently deleted's full copy, never pairs "
+        'with the one in Deleted Items, and the kept item then clears',
+        () async {
       final (gmail: _, :hadco, :binId) = await keptBy3221();
       await h.later();
       await h.sync.restore(binId);
       await h.sync.syncNow();
-      final status = await h.status();
+      var status = await h.status();
       expect(status.halt, isNull);
-      // Gmail's contact is made again; nothing pairs it with the contact
-      // in Deleted Items.
-      expect(h.google.nameWithEmail('p0@example.com'), isNotNull);
+      // Both sides made again, and paired with each other.
+      final g = h.google.nameWithEmail('p0@example.com');
+      final o = h.graph.idWithEmail('p0@example.com');
+      expect(g, isNotNull);
+      expect(o, isNotNull);
+      expect(o, isNot(hadco));
+      expect(h.graph.contact(o!)!['profession'], 'Pilot');
       expect(
-        (await h.paired()).where((l) => l.graphId == hadco),
-        isEmpty,
+        (await h.paired()).where((l) => l.googleName == g && l.graphId == o),
+        hasLength(1),
+      );
+      expect((await h.paired()).where((l) => l.graphId == hadco), isEmpty);
+      expect(status.recentlyDeleted, isEmpty);
+
+      // The kept item names the contact in Deleted Items, which no row
+      // holds now: Delete it in Hadco too takes it away, and nothing else.
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(h.graph.contact(o), isNotNull);
+      expect(h.google.person(g!), isNotNull);
+      expect(
+        (await h.paired()).where((l) => l.googleName == g && l.graphId == o),
+        hasLength(1),
       );
     });
 

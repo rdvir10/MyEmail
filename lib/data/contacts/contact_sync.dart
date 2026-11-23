@@ -2868,13 +2868,14 @@ class _Run {
   /// into the bin, pending, before the delete is sent, and is marked done
   /// when the server answers.
   ///
-  /// An Outlook contact out of Contacts that the bin holds as the sync's
-  /// own delete (pending: a delete whose answer was lost; or done) is not
-  /// one Ron moved: it is where Microsoft keeps what it deleted (Deleted
-  /// Items, as for Outlook's own deletes, where a read by its id still
-  /// finds it), and is gone, as a 404 would say. Kept instead, its item
-  /// would come back at every Delete it here too, and a Restore would pair
-  /// Gmail with it.
+  /// An Outlook contact out of Contacts is gone, as a 404 would say, where
+  /// it was deleted already and not moved by Ron: the sync's own delete,
+  /// which the bin holds (pending: a delete whose answer was lost; or
+  /// done), wherever Microsoft keeps what it deleted; or anyone's, in
+  /// Deleted Items, where Outlook's own delete puts it and a read by its
+  /// id still finds it ([_placeGraph]). Kept instead, its item would come
+  /// back at every Delete it here too, and a Restore would pair Gmail with
+  /// it. One in another folder that the bin does not hold is kept.
   Future<void> _delete(ContactLinkPlan p) async {
     final d = p.delete!;
     final onGoogle = d.side == ContactSide.google;
@@ -2882,12 +2883,13 @@ class _Run {
         ? await google((a) => a.get(d.contactId, everyField: true))
         : await graph((a) => a.get(d.contactId, whole: true));
     final already = await store.binEntry(pairId, d.side, d.contactId);
-    final deletedBefore =
-        full != null &&
-        !onGoogle &&
-        !_inContacts(full) &&
-        already != null &&
-        already.state != ContactBinState.back;
+    var deletedBefore = false;
+    if (full != null && !onGoogle && !_inContacts(full)) {
+      deletedBefore =
+          (already != null && already.state != ContactBinState.back) ||
+          full['parentFolderId'] ==
+              (_deletedItems ??= await graph((a) => a.deletedItemsFolderId()));
+    }
     if (full == null || deletedBefore) {
       // Gone already: the delete before a crash, or by someone else.
       await store.transaction(() async {
@@ -3032,12 +3034,32 @@ class _Run {
     ContactBinInput entry() => _binInput(stored);
     String? g = r.googleName;
     String? h = r.graphId;
+    var graphRaw = r.graphRaw;
+    // The plan found the Outlook contact back where the sync deleted it,
+    // through a row that still names it, and so gives no copy to make it
+    // from. One that reads outside Contacts (in Deleted Items, say) or not
+    // at all is not back: it is made again from the bin's full copy, as a
+    // contact not found is, and the pair takes the row over. 3.22.1 kept
+    // such a row when Microsoft's answer to the sync's delete was lost.
+    Map<String, Object?>? graphFound;
+    if (stored.side == ContactSide.graph &&
+        graphRaw == null &&
+        h != null &&
+        !graphRead.containsKey(h)) {
+      final read = await graph((a) => a.get(h!));
+      if (read != null && _inContacts(read)) {
+        graphFound = read;
+      } else {
+        graphRaw = _decode(stored.raw);
+        h = null;
+      }
+    }
     Map<String, Object?>? gMade;
     Map<String, Object?>? hMade;
     try {
       // Tagged with the ids the bin row names (the contacts made so far
       // standing in for them), which is how a later run finds them back.
-      if (r.graphRaw case final raw?) {
+      if (graphRaw case final raw?) {
         hMade = await _restoreCreate(
           r.binId,
           ContactSide.graph,
@@ -3080,7 +3102,7 @@ class _Run {
     tally.restored++;
     // One found back rather than made is paired as it is now.
     var googleNow = gMade ?? (g == null ? null : googleRead[g]);
-    var graphNow = hMade ?? (h == null ? null : graphRead[h]);
+    var graphNow = hMade ?? (h == null ? null : graphRead[h] ?? graphFound);
     if (googleNow == null && g != null) {
       googleNow = await google((a) => a.get(g!));
     }
