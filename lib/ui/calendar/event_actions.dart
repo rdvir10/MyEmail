@@ -642,6 +642,15 @@ Future<void> duplicateEvent(
     start: start,
     length: event.end.difference(event.start),
     allDay: event.allDay,
+    // A whole day keeps how it showed: one free follows All day to free,
+    // one busy or out of office stays so (a maybe is busy on the copy).
+    showAs: !event.allDay
+        ? null
+        : switch (event.showAs) {
+            EventShowAs.free => null,
+            EventShowAs.tentative => EventShowAs.busy,
+            final s => s,
+          },
   );
 }
 

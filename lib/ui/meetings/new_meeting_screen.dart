@@ -57,6 +57,7 @@ Future<void> openNewMeeting(
   String location = '',
   Duration? length,
   bool allDay = false,
+  EventShowAs? showAs,
 }) async {
   final accounts = ref.read(accountsProvider).value ?? const <Account>[];
   final chosen = accountId ??
@@ -87,6 +88,7 @@ Future<void> openNewMeeting(
         location: location,
         length: length,
         allDay: allDay,
+        showAs: showAs,
       ),
     ),
   );
@@ -197,6 +199,7 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
     this.location = '',
     this.length,
     this.allDay = false,
+    this.showAs,
     this.editing,
     this.asWritten,
     this.failure,
@@ -220,6 +223,11 @@ class NewMeetingScreen extends ConsumerStatefulWidget {
   final String location;
   final Duration? length;
   final bool allDay;
+
+  /// How it shows to begin with, as Show as in More: a whole day duplicated
+  /// keeps how its original showed. Null for the usual, which follows
+  /// [allDay]: see `_showAsFollows`.
+  final EventShowAs? showAs;
 
   /// A meeting already on a calendar, being changed: Edit on its sheet.
   /// Everything is filled in from it, From is its account, and Save sends
@@ -422,9 +430,32 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         isPrivate: e.isPrivate,
         repeat: _repeatToBegin,
       ),
-    null => const MeetingOptions(),
+    null => MeetingOptions(
+        showAs: widget.showAs ?? (widget.allDay ? EventShowAs.free : null),
+      ),
   };
   late MeetingOptions _options = _written?.options ?? _optionsToBegin;
+
+  /// Whether Show as follows All day, as Outlook's and Google Calendar's
+  /// do: free for a whole day, the calendar's own way (busy) otherwise,
+  /// until Show as is picked in More. A new meeting's alone: one being
+  /// changed, or a whole day duplicated, keeps how it shows. The
+  /// calendars take an event that says nothing as busy, which kept a
+  /// birthday or a day off busy all day to everyone.
+  late bool _showAsFollows = _editing == null &&
+      widget.showAs == null &&
+      (_written == null ||
+          _written!.options.showAs ==
+              (_written!.allDay ? EventShowAs.free : null));
+
+  /// All day switched [on], and Show as with it while it follows.
+  void _setAllDay(bool on) {
+    _allDay = on;
+    if (!_showAsFollows) return;
+    _options = on
+        ? _options.copyWith(showAs: EventShowAs.free)
+        : _options.copyWith(noShowAsChoice: true);
+  }
 
   /// How the series repeats, as its calendar has it, where every meeting
   /// of one is being changed (calendar idea #55); null otherwise.
@@ -650,7 +681,11 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
         seriesFrom: _canRepeat ? _series?.firstDay : null,
         seriesWeekStart: _weekStart,
         seriesCount: _optionsToBegin.repeat?.count,
-        onChanged: (o) => setState(() => _options = o),
+        onChanged: (o) => setState(() {
+          // Picked there: All day no longer moves it.
+          if (o.showAs != _options.showAs) _showAsFollows = false;
+          _options = o;
+        }),
       );
 
   /// The line a meeting is typed in, "Lunch with Dana Thursday 1pm", and
@@ -1402,7 +1437,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
       if (read.title.isNotEmpty) _title.text = read.title;
       if (read.location.isNotEmpty) _location.text = read.location;
       if (read.start case final start?) {
-        _allDay = read.allDay;
+        _setAllDay(read.allDay);
         _start = start;
         _end = read.end ?? start.add(_defaultLength);
       }
@@ -2094,7 +2129,7 @@ class _NewMeetingScreenState extends ConsumerState<NewMeetingScreen>
                     value: _allDay,
                     onChanged: _sending
                         ? null
-                        : (on) => setState(() => _allDay = on),
+                        : (on) => setState(() => _setAllDay(on)),
                   ),
                   // Who is free, where the account has a calendar to ask:
                   // in this row, since the notes need the height.

@@ -35,6 +35,7 @@ class MeetingOptions {
     Reminder? reminder,
     bool noReminderChoice = false,
     EventShowAs? showAs,
+    bool noShowAsChoice = false,
     bool? isPrivate,
     String? zone,
     bool ownZone = false,
@@ -42,7 +43,7 @@ class MeetingOptions {
       MeetingOptions(
         repeat: noRepeat ? null : repeat ?? this.repeat,
         reminder: noReminderChoice ? null : reminder ?? this.reminder,
-        showAs: showAs ?? this.showAs,
+        showAs: noShowAsChoice ? null : showAs ?? this.showAs,
         isPrivate: isPrivate ?? this.isPrivate,
         zone: ownZone ? null : zone ?? this.zone,
       );

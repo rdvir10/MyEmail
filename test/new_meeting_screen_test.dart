@@ -104,6 +104,8 @@ void main() {
     DateFinder? finder,
     EventEdit? editing,
     List<MeetingLink> links = const [],
+    bool allDay = false,
+    EventShowAs? showAs,
   }) async {
     final c = container(
       oauth: oauth,
@@ -125,6 +127,8 @@ void main() {
                     title: title,
                     start: DateTime(2026, 10, 1, 9),
                     editing: editing,
+                    allDay: allDay,
+                    showAs: showAs,
                   ),
                 ),
               ),
@@ -2529,6 +2533,97 @@ void main() {
       expect(m.reminder, const Reminder.before(30));
       expect(m.showAs, EventShowAs.free);
       expect(m.isPrivate, isTrue);
+    });
+
+    // An all-day event Ron makes is free unless he says otherwise, as
+    // Outlook and Google Calendar make one. The calendars take one that
+    // says nothing as busy, which kept his whole day busy to colleagues
+    // and in Insert free times.
+    group('All day and Show as', () {
+      Future<void> allDay(WidgetTester tester) async {
+        await tester.tap(find.byKey(const ValueKey('meeting-all-day')));
+        await tester.pumpAndSettle();
+      }
+
+      Finder said(String text) => find.descendant(
+            of: find.byKey(const ValueKey('meeting-more-summary')),
+            matching: find.textContaining(text),
+          );
+
+      testWidgets('All day makes it free, said under the place, until Show '
+          'as is chosen', (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await pumpScreen(tester);
+        await type(tester, 'meeting-title', 'Dentist');
+        await allDay(tester);
+        expect(said('Free'), findsOneWidget);
+
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.allDay, isTrue);
+        expect(m.showAs, EventShowAs.free);
+      });
+
+      testWidgets("switched off again, the calendar's own way is back",
+          (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await pumpScreen(tester);
+        await type(tester, 'meeting-title', 'Review');
+        await allDay(tester);
+        await allDay(tester);
+        expect(find.byKey(const ValueKey('meeting-more-summary')),
+            findsNothing);
+
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.allDay, isFalse);
+        expect(m.showAs, isNull);
+      });
+
+      testWidgets('Show as picked in More stays, whatever All day does',
+          (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await pumpScreen(tester);
+        await type(tester, 'meeting-title', 'Offsite');
+        await allDay(tester);
+        await openMore(tester);
+        await choose(tester, 'meeting-show-as', 'Busy');
+        await tester.tapAt(const Offset(500, 20));
+        await tester.pumpAndSettle();
+        await allDay(tester);
+        await allDay(tester);
+
+        await send(tester);
+        final m = engine.meetings.single;
+        expect(m.allDay, isTrue);
+        expect(m.showAs, EventShowAs.busy);
+      });
+
+      testWidgets('one opened as a whole day starts free; one duplicated '
+          'from a busy whole day stays busy', (tester) async {
+        tester.view.physicalSize = const Size(1000, 2000);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await pumpScreen(tester, title: 'Holiday', allDay: true);
+        await send(tester);
+        expect(engine.meetings.last.showAs, EventShowAs.free);
+
+        await pumpScreen(tester,
+            title: 'Away', allDay: true, showAs: EventShowAs.busy);
+        await send(tester);
+        expect(engine.meetings.last.allDay, isTrue);
+        expect(engine.meetings.last.showAs, EventShowAs.busy);
+      });
     });
 
     testWidgets('a weekly repeat goes with the date when it is moved after '

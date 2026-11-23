@@ -1299,6 +1299,47 @@ void main() {
       expect(find.text('Planning'), findsOneWidget);
     });
 
+    testWidgets('Duplicate of a whole day keeps how it showed: busy stays '
+        'busy, free stays free', (tester) async {
+      final engine = SampleMailEngine();
+      final t = today();
+      await pump(tester, const CalendarScreen(), using: engine,
+          prepare: (engine, hadco) {
+        engine.events[hadco.id] = [
+          for (final (id, showAs) in [
+            ('busy', EventShowAs.busy),
+            ('free', EventShowAs.free),
+          ])
+            CalendarEvent(
+              id: id,
+              accountId: hadco.id,
+              title: 'Away $id',
+              start: DateTime(t.year, t.month, t.day + 1),
+              end: DateTime(t.year, t.month, t.day + 2),
+              allDay: true,
+              isOrganizer: true,
+              response: EventResponse.organizer,
+              showAs: showAs,
+            ),
+        ];
+      });
+      for (final (id, showAs) in [
+        ('busy', EventShowAs.busy),
+        ('free', EventShowAs.free),
+      ]) {
+        await openSheet(tester, id);
+        await tester.tap(find.byKey(const ValueKey('event-more')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('event-duplicate')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Send'));
+        await tester.pumpAndSettle();
+        expect(engine.meetings.last.title, 'Away $id');
+        expect(engine.meetings.last.allDay, isTrue);
+        expect(engine.meetings.last.showAs, showAs);
+      }
+    });
+
     testWidgets('a second time zone down the side of Day, set in Settings '
         '(#24)', (tester) async {
       final (c, _) = await pump(tester, const CalendarSettingsScreen(),
