@@ -3925,37 +3925,39 @@ class _Copies {
   final List<Map<String, Object?>> differing = [];
 
   /// People Ron chose to leave as they are, by key: the `fingerprint` of
-  /// the differences, the `rules`, and the `keys` (each copy's
-  /// `changeKey`) as they were. A merge passes them over until one of
-  /// those copies changes ([stillLeft]). One left under 3.22.0 (the
-  /// fingerprint alone) stays left.
+  /// the differences as they were (empty where none was left) and the
+  /// `rules` it was taken under. A merge passes them over while today's
+  /// fingerprint is the leave's. One left under 3.22.0 (its fingerprint
+  /// alone, of rules that counted photos) is stamped anew by the first
+  /// pass that meets it ([currentLeave]).
   final Map<String, Object> left = {};
 
-  /// Whether a leave ([leftAs]) keeps its copies' `changeKey`s: 3.22.0's
-  /// did not.
-  static bool hasKeys(Object leftAs) =>
-      leftAs is Map && leftAs['keys'] is Map;
+  /// Whether a leave ([leftAs]) was taken under the rules of now: one
+  /// 3.22.0 kept was not.
+  static bool currentLeave(Object leftAs) =>
+      leftAs is Map && leftAs['rules'] == rules;
 
-  /// [leftAs] in today's form, with its copies' `changeKey`s as they are
-  /// now ([keys]): a leave kept by 3.22.0, the first time a run sees it.
-  static Map<String, Object?> leftNow(
-    Object leftAs,
-    Map<String, Object?> keys,
-  ) => {
-    'fingerprint': leftAs is Map ? leftAs['fingerprint'] : leftAs,
-    'rules': rules,
-    'keys': keys,
+  /// The fingerprint of the differences a leave ([leftAs]) was taken on.
+  static String? leaveFingerprint(Object leftAs) => switch (leftAs) {
+    final Map m =>
+      m['fingerprint'] is String ? m['fingerprint']! as String : null,
+    final String f => f,
+    _ => null,
   };
 
-  /// Whether a person left as [leftAs] (with its `changeKey`s, [hasKeys])
-  /// stays left, its copies' `changeKey`s now [now] (the synced copy's
-  /// among them): until one of the copies left changes or goes, or another
-  /// joins them.
-  static bool stillLeft(Object leftAs, Map<String, Object?> now) {
-    final keys = leftAs is Map ? leftAs['keys'] : null;
-    if (keys is! Map) return true;
-    return now.length == keys.length &&
-        keys.entries.every((e) => e.value != null && now[e.key] == e.value);
+  /// Whether a [listing] showed a photo among what differed: one 3.22.0
+  /// made could.
+  static bool showedPhoto(Map<String, Object?>? listing) {
+    final copies = listing?['copies'];
+    return copies is List &&
+        copies.any(
+          (c) =>
+              c is Map &&
+              c['details'] is List &&
+              (c['details']! as List).any(
+                (d) => d is Map && d['label'] == 'Photo',
+              ),
+        );
   }
 
   /// The person listed under [key], if one is.
@@ -4018,9 +4020,7 @@ class _Copies {
       for (final l in rows)
         ?l.graphId: SyncedContact.fromJson(_Run._decode(l.graphBase)),
     };
-    final changeKeys = {
-      for (final l in rows) ?l.graphId: l.graphChangeKey,
-    };
+
     final there = {
       for (final g in groups)
         if (g.graphSynced case final synced?
@@ -4046,22 +4046,15 @@ class _Copies {
       // (a merge would only list it again), nor one answered and waiting
       // for a run. One listed under 3.22.0's rules and not answered is: its
       // differences may be no more (a photo), and a merge reads it again.
-      // A person left is not counted while its copies are as they were
-      // left; once one changes, goes, or another joins them (as the rows
-      // hold them), a merge reads it again, so it is. A leave kept by
-      // 3.22.0 is kept in today's form the first time a run sees it.
-      if (left[synced] case final leftAs?) {
-        final keys = {
-          for (final id in [synced, ...g.graphCopies]) id: changeKeys[id],
-        };
-        if (!hasKeys(leftAs)) {
-          left[synced] = leftNow(leftAs, keys);
-          continue;
-        }
-        if (stillLeft(leftAs, keys)) continue;
-      }
+      // Never counted: one left (a pass asked for others finds whether
+      // its differences are still those he left), one listed under the
+      // rules of now (a merge would only list it again), one answered and
+      // waiting for a run. One listed under 3.22.0's rules and not
+      // answered is: its differences may be no more (a photo), and a
+      // merge reads it again.
       final l = listed(synced);
       if (ours.isEmpty ||
+          left.containsKey(synced) ||
           (l != null && (l['answer'] != null || current(l)))) {
         continue;
       }
@@ -4446,37 +4439,6 @@ class _CopiesStep {
         _passedOver();
         continue;
       }
-      // Ron's Leave them always stands, whatever a merge would say now: a
-      // person left stays so until one of its copies changes, then is read
-      // again as any other.
-      final group = [
-        key,
-        for (final id in g.graphCopies)
-          if (read.containsKey(id)) id,
-      ];
-      if (seen.left[key] case final leftAs?) {
-        final keys = {for (final id in group) id: read[id]!['changeKey']};
-        if (!_Copies.hasKeys(leftAs)) {
-          // Left under 3.22.0: kept so, in today's form, its copies as they
-          // are now; a change to them from now on lifts it.
-          _left[key] = _Copies.leftNow(leftAs, keys);
-          _personDone();
-          continue;
-        }
-        if (_Copies.stillLeft(leftAs, keys)) {
-          _personDone();
-          continue;
-        }
-        _unleft.add(key);
-      }
-      final listed = seen.listed(key);
-      if (listed?['answer'] == ContactSyncCopiesPerson.leave) {
-        _leave(key, listed?['fingerprint'] as String? ?? '', {
-          for (final id in group) id: read[id]!['changeKey'],
-        });
-        _personDone();
-        continue;
-      }
       // The merge's copies only ([_Copies.mergeable]): none another pair
       // names, none taken by another person this pass, of the same name,
       // joined by an email or a mobile. Any other is left as it is.
@@ -4488,6 +4450,34 @@ class _CopiesStep {
       if (copies.isEmpty) {
         _personDone();
         continue;
+      }
+      // Ron's Leave them always stands: a person he left (or answered so)
+      // stays so while the differences are those he left (the
+      // fingerprint), whatever else a merge would now say; an added detail
+      // never changes them. A leave 3.22.0 kept is stamped with today's
+      // differences the first time a pass meets it, and stays. Once they
+      // are others, the person is read again as any other: listed for Ron
+      // where they differ, merged where none is left.
+      final leftAs = seen.left[key];
+      final leaving =
+          seen.listed(key)?['answer'] == ContactSyncCopiesPerson.leave;
+      if (leftAs != null || leaving) {
+        // The differences as they are now (a photo never one of them).
+        final now = cp.mergeCopies(
+          cp.OutlookCopy(id: key, json: synced),
+          [for (final id in copies) cp.OutlookCopy(id: id, json: read[id]!)],
+          norm: run.norm,
+        ).fingerprint;
+        if (leaving || leftAs == null || !_Copies.currentLeave(leftAs)) {
+          _leave(key, now);
+          _personDone();
+          continue;
+        }
+        if (_Copies.leaveFingerprint(leftAs) == now) {
+          _personDone();
+          continue;
+        }
+        _unleft.add(key);
       }
       // A copy whose photo could not be checked is not taken as having
       // none.
@@ -4551,13 +4541,13 @@ class _CopiesStep {
                 merge.fingerprint == listed['fingerprint']
           : merge.outcome != cp.CopiesOutcome.differs && answer != key) {
         // On today's listings an answer never touches the photo: the
-        // synced copy's own stays. On 3.22.0's, the photo was the
-        // difference Ron saw: another copy's brings its photo.
+        // synced copy's own stays. On a 3.22.0 listing that showed one,
+        // the photo was a difference Ron saw: another copy's brings it.
         merge = cp.mergeCopies(
           kept,
           others,
           keep: answer,
-          keepsPhoto: !now,
+          keepsPhoto: !now && _Copies.showedPhoto(listed),
           norm: run.norm,
         );
       }
@@ -4766,16 +4756,13 @@ class _CopiesStep {
     await save();
   }
 
-  /// [key] left as Ron chose, with its copies' `changeKey`s as they are
-  /// now ([keys]): passed over until one of them changes.
-  void _leave(String key, String fingerprint, Map<String, Object?> keys) {
+  /// [key] left as Ron chose, with the [fingerprint] of its differences
+  /// as they are now (empty where none is): passed over until they are
+  /// others.
+  void _leave(String key, String fingerprint) {
     _unlisted.add(key);
     _listed.remove(key);
-    _left[key] = {
-      'fingerprint': fingerprint,
-      'rules': _Copies.rules,
-      'keys': keys,
-    };
+    _left[key] = {'fingerprint': fingerprint, 'rules': _Copies.rules};
     _unleft.remove(key);
   }
 
