@@ -7922,11 +7922,14 @@ void main() {
         }
       };
       await h.sync.mergeCopies();
+      // Asked for, not begun.
+      expect((await h.status()).copies.partWay, isFalse);
       await h.sync.syncNow();
       h.before = null;
       var status = await h.status();
       expect(status.halt!.kind, ContactSyncHaltKind.putAway);
       expect(status.copies.asked, isTrue);
+      expect(status.copies.partWay, isTrue, reason: 'carried on, not begun');
       expect(status.copies.last, isNull);
       // A batch of twenty went, and what was queued before the stop.
       expect(h.graph.count, inInclusiveRange(30, 40));
@@ -7935,6 +7938,7 @@ void main() {
       status = await h.later();
       expect(status.halt, isNull);
       expect(status.copies.asked, isFalse);
+      expect(status.copies.partWay, isFalse);
       expect(status.copies.last!.people, 30);
       expect(status.copies.last!.deleted, 30);
       expect(h.graph.count, 30);

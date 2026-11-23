@@ -4582,6 +4582,57 @@ void main() {
       expect(button('contact-sync-copies-sync-now'), findsNothing);
     });
 
+    testWidgets('a merge stopped part way says it carries on, not that it '
+        'starts', (tester) async {
+      const partWay = ContactSyncCopies(
+        people: 600,
+        extras: 700,
+        asked: true,
+        partWay: true,
+      );
+      ContactSyncStatus stopped({ContactSyncProgress? running}) => synced(
+            copies: partWay,
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.notAllowed,
+              at: at1042,
+              side: ContactSide.graph,
+              error: const ContactSyncNeedsSignIn(
+                side: ContactSide.graph,
+                accountId: 'acct-h',
+                message: 'Hadco needs you to sign in again.',
+              ),
+            ),
+            running: running,
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      await openDuplicates(tester, copies: partWay);
+      // A sign-in Hadco asked for during the merge, after the sync's end.
+      sync.set(stopped());
+      await tester.pumpAndSettle();
+      inOrder(tester, button('contact-sync-copies'), [
+        'Merge stopped part way: it carries on once the sync can.',
+        'Contact sync has stopped: not allowed yet for Hadco.',
+        'Hadco needs you to sign in again.',
+        'Sync now',
+      ]);
+      expect(find.textContaining('it starts'), findsNothing);
+
+      // The next sync going: the merge carries on after its changes.
+      sync.set(stopped(
+        running: const ContactSyncProgress(step: ContactSyncStep.reading),
+      ));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge stopped part way: it carries on once the sync has '
+            'made its changes.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('it starts'), findsNothing);
+    });
+
     testWidgets('a merge waiting on a stop that needs a sign-in offers the '
         'sign-in there, as the Contact sync screen does', (tester) async {
       final web = FakeWebViewPlatform.install();

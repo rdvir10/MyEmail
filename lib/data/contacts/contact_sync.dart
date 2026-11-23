@@ -4582,6 +4582,7 @@ class _Copies {
     extras: extras,
     notSynced: notSynced,
     asked: asked != null,
+    partWay: !pass.isEmpty,
     shortStops: shortStops,
     last: switch ((last, lastAt)) {
       (final l?, final at?) => l.shown(at),

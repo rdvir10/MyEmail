@@ -2881,9 +2881,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 final m? when m.total > 0 => 'Merging: ${m.done} of '
                     '${_count(m.total, 'person', 'people')}',
                 _? => 'Merging…',
+                // One stopped part way (a sign-in Hadco asked for during
+                // it, after the sync's end) has begun: it carries on.
+                null when running != null && c.partWay =>
+                  'Merge stopped part way: it carries on once the sync has '
+                      'made its changes.',
                 null when running != null =>
                   'Merge asked for: it starts once the sync has made its '
                       'changes.',
+                null when stop != null && c.partWay =>
+                  'Merge stopped part way: it carries on once the sync can.',
                 null when stop != null =>
                   'Merge asked for: it starts once the sync can carry on.',
                 // The pass before stopped short, and the next waits the
