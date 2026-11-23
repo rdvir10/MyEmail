@@ -2620,8 +2620,9 @@ void main() {
         "Merge Hadco's copies",
         'Keeps the synced copy of each person, adds to it any detail only '
             'another copy has, and deletes the other copies, which Outlook '
-            'keeps in Deleted Items. Copies that differ are left for you to '
-            'choose.',
+            'keeps in Deleted Items. When both copies have a photo, the '
+            'synced copy keeps its own. Copies that differ are left for you '
+            'to choose.',
         'Nothing is deleted in Gmail; it gets the added details at the next '
             'sync.',
         '1336 people have 1515 other copies in Hadco.',
@@ -4401,6 +4402,7 @@ void main() {
         matching: find.byType(Scrollable),
       );
       for (final part in [
+        button('contact-sync-copies-what'),
         button('contact-sync-copies-merge'),
         button('contact-sync-copies-all'),
         button('contact-sync-copies-keep:b:o'),

@@ -4,7 +4,6 @@ import 'dart:math';
 import 'dart:ui' as ui show PlatformDispatcher;
 
 import 'package:collection/collection.dart';
-import 'package:cryptography/cryptography.dart' show Sha256;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
@@ -3219,10 +3218,6 @@ class _Run {
     }
   }
 
-  /// [bytes]' digest, to tell one photo from another.
-  static Future<String> _photoHash(List<int> bytes) async =>
-      base64Encode((await Sha256().hash(bytes)).bytes);
-
   /// Whether [answer], a contact as Graph answered a write, holds [written]
   /// as written: a text the same as the sync compares one (line breaks of
   /// any kind, runs of spaces and the ends aside), a list each value
@@ -3887,11 +3882,20 @@ class _Copies {
     final left = json['left'];
     if (left is Map) {
       for (final MapEntry(:key, :value) in left.entries) {
-        if (value is String) copies.left['$key'] = value;
+        if (value is String || value is Map) copies.left['$key'] = value!;
       }
     }
     return copies;
   }
+
+  /// The rules a listing or a leave was made under (`rules`): 3.22.1's,
+  /// under which a photo is never a difference. One without was made by
+  /// 3.22.0, whose rules listed copies for their photos alone.
+  static const rules = 2;
+
+  /// Whether [listing] was made under the rules of now.
+  static bool current(Map<String, Object?> listing) =>
+      listing['rules'] == rules;
 
   /// When a merge was asked; null when none is.
   DateTime? asked;
@@ -3914,14 +3918,47 @@ class _Copies {
   DateTime? lastAt;
 
   /// The people whose copies differ, listed for Ron: `key`, `title`, the
-  /// `fingerprint` of the differences shown, Ron's `answer` (a copy's key,
-  /// or `leave`), and `copies`, each with its `key`, whether `synced`, and
-  /// its differing values (`details`: `label`, `value`).
+  /// `fingerprint` of the differences shown, the `rules` they were listed
+  /// under ([rules]), Ron's `answer` (a copy's key, or `leave`), and
+  /// `copies`, each with its `key`, whether `synced`, and its differing
+  /// values (`details`: `label`, `value`).
   final List<Map<String, Object?>> differing = [];
 
-  /// People Ron chose to leave as they are, by key: the fingerprint of the
-  /// differences he saw. A merge passes them over until it changes.
-  final Map<String, String> left = {};
+  /// People Ron chose to leave as they are, by key: the `fingerprint` of
+  /// the differences as they were (empty where none was left) and the
+  /// `rules` it was taken under. A merge passes them over while today's
+  /// fingerprint is the leave's. One left under 3.22.0 (its fingerprint
+  /// alone, of rules that counted photos) is stamped anew by the first
+  /// pass that meets it ([currentLeave]).
+  final Map<String, Object> left = {};
+
+  /// Whether a leave ([leftAs]) was taken under the rules of now: one
+  /// 3.22.0 kept was not.
+  static bool currentLeave(Object leftAs) =>
+      leftAs is Map && leftAs['rules'] == rules;
+
+  /// The fingerprint of the differences a leave ([leftAs]) was taken on.
+  static String? leaveFingerprint(Object leftAs) => switch (leftAs) {
+    final Map m =>
+      m['fingerprint'] is String ? m['fingerprint']! as String : null,
+    final String f => f,
+    _ => null,
+  };
+
+  /// Whether a [listing] showed a photo among what differed: one 3.22.0
+  /// made could.
+  static bool showedPhoto(Map<String, Object?>? listing) {
+    final copies = listing?['copies'];
+    return copies is List &&
+        copies.any(
+          (c) =>
+              c is Map &&
+              c['details'] is List &&
+              (c['details']! as List).any(
+                (d) => d is Map && d['label'] == 'Photo',
+              ),
+        );
+  }
 
   /// The person listed under [key], if one is.
   Map<String, Object?>? listed(String key) =>
@@ -3933,8 +3970,9 @@ class _Copies {
       shortStops == 0 &&
       (asked != null || differing.any((d) => d['answer'] != null));
 
-  /// The people listed that Ron has not answered.
-  int get unanswered => differing.where((d) => d['answer'] == null).length;
+  /// The people listed under the rules of now that Ron has not answered.
+  int get unanswered =>
+      differing.where((d) => current(d) && d['answer'] == null).length;
 
   /// [listed]'s version, as the screen is given it: a short stable form of
   /// the fingerprint of its differences.
@@ -3982,6 +4020,7 @@ class _Copies {
       for (final l in rows)
         ?l.graphId: SyncedContact.fromJson(_Run._decode(l.graphBase)),
     };
+
     final there = {
       for (final g in groups)
         if (g.graphSynced case final synced?
@@ -4003,7 +4042,20 @@ class _Copies {
           if (!paired.contains(id)) id: ?base[id],
       });
       if (ours.length < g.graphCopies.length) notSynced++;
-      if (ours.isEmpty || left.containsKey(synced) || listed(synced) != null) {
+      // One left is not counted; nor one listed under the rules of now
+      // (a merge would only list it again), nor one answered and waiting
+      // for a run. One listed under 3.22.0's rules and not answered is: its
+      // differences may be no more (a photo), and a merge reads it again.
+      // Never counted: one left (a pass asked for others finds whether
+      // its differences are still those he left), one listed under the
+      // rules of now (a merge would only list it again), one answered and
+      // waiting for a run. One listed under 3.22.0's rules and not
+      // answered is: its differences may be no more (a photo), and a
+      // merge reads it again.
+      final l = listed(synced);
+      if (ours.isEmpty ||
+          left.containsKey(synced) ||
+          (l != null && (l['answer'] != null || current(l)))) {
         continue;
       }
       people++;
@@ -4109,7 +4161,12 @@ class _Copies {
       (final l?, final at?) => l.shown(at),
       _ => null,
     },
-    differing: [for (final d in differing) _personOf(d)],
+    // One listed by 3.22.0 and not answered is not shown: its
+    // differences may be no more (a photo); the next merge reads it again.
+    differing: [
+      for (final d in differing)
+        if (current(d) || d['answer'] != null) _personOf(d),
+    ],
   );
 
   static ContactSyncCopiesPerson _personOf(Map<String, Object?> d) {
@@ -4246,7 +4303,7 @@ class _CopiesStep {
   var _counts = _CopiesCounts();
   final _listed = <String, Map<String, Object?>>{};
   final _unlisted = <String>{};
-  final _left = <String, String>{};
+  final _left = <String, Object>{};
   final _unleft = <String>{};
   var _gone = 0;
   final _rowsGone = <int>{};
@@ -4339,8 +4396,9 @@ class _CopiesStep {
       }
     }
 
-    // Photos: the other copies asked about; where one has a photo, the
-    // synced copy too.
+    // Photos: the synced copies first; then the other copies only where
+    // theirs can count: a synced copy without one takes the first other
+    // copy's, and Ron's answer naming another copy brings that copy's.
     final photo = <String>{};
     final unknown = <String>{};
     Future<void> check(List<String> ids) async {
@@ -4351,16 +4409,24 @@ class _CopiesStep {
       unknown.addAll(r.unknown);
     }
 
+    bool namesAnother(String key) {
+      final answer = seen.listed(key)?['answer'];
+      return answer is String &&
+          answer != key &&
+          answer != ContactSyncCopiesPerson.leave;
+    }
+
     await check([
       for (final g in groups)
-        for (final id in g.graphCopies)
-          if (read.containsKey(id)) id,
+        if (read.containsKey(g.graphSynced)) g.graphSynced!,
     ]);
     await check([
       for (final g in groups)
-        if (g.graphCopies.any(photo.contains) &&
-            read.containsKey(g.graphSynced))
-          g.graphSynced!,
+        if (read.containsKey(g.graphSynced) &&
+            !unknown.contains(g.graphSynced) &&
+            (!photo.contains(g.graphSynced) || namesAnother(g.graphSynced!)))
+          for (final id in g.graphCopies)
+            if (read.containsKey(id)) id,
     ]);
 
     for (final g in groups) {
@@ -4384,6 +4450,34 @@ class _CopiesStep {
       if (copies.isEmpty) {
         _personDone();
         continue;
+      }
+      // Ron's Leave them always stands: a person he left (or answered so)
+      // stays so while the differences are those he left (the
+      // fingerprint), whatever else a merge would now say; an added detail
+      // never changes them. A leave 3.22.0 kept is stamped with today's
+      // differences the first time a pass meets it, and stays. Once they
+      // are others, the person is read again as any other: listed for Ron
+      // where they differ, merged where none is left.
+      final leftAs = seen.left[key];
+      final leaving =
+          seen.listed(key)?['answer'] == ContactSyncCopiesPerson.leave;
+      if (leftAs != null || leaving) {
+        // The differences as they are now (a photo never one of them).
+        final now = cp.mergeCopies(
+          cp.OutlookCopy(id: key, json: synced),
+          [for (final id in copies) cp.OutlookCopy(id: id, json: read[id]!)],
+          norm: run.norm,
+        ).fingerprint;
+        if (leaving || leftAs == null || !_Copies.currentLeave(leftAs)) {
+          _leave(key, now);
+          _personDone();
+          continue;
+        }
+        if (_Copies.leaveFingerprint(leftAs) == now) {
+          _personDone();
+          continue;
+        }
+        _unleft.add(key);
       }
       // A copy whose photo could not be checked is not taken as having
       // none.
@@ -4414,52 +4508,51 @@ class _CopiesStep {
     ContactLink pair,
   ) async {
     final key = g.graphSynced!;
-    final bytes = <String, ({List<int> bytes, String type})>{};
-    final hashes = <String, String>{};
-    for (final id in [key, ...copies]) {
-      if (!photo.contains(id)) continue;
-      // A photo that cannot be read now passes the person over, rather
-      // than reading as none.
-      final ({List<int> bytes, String type})? got;
-      try {
-        got = await run.graph((a) => a.photoBytes(id));
-      } on Exception catch (e) {
-        if (!_Run._failsAlone(e)) rethrow;
-        throw const _PassOver();
-      }
-      if (got == null) throw const _PassOver();
-      bytes[id] = got;
-      hashes[id] = await _Run._photoHash(got.bytes);
-    }
-    final kept = cp.OutlookCopy(id: key, json: read[key]!, photo: hashes[key]);
+    // Which copies have a photo, and no more: a photo is never compared
+    // (3.22.1), and its bytes are read only for the copy the synced one
+    // takes it from.
+    String? hasPhoto(String id) => photo.contains(id) ? 'photo' : null;
+    final kept = cp.OutlookCopy(
+      id: key,
+      json: read[key]!,
+      photo: hasPhoto(key),
+    );
     final others = [
       for (final id in copies)
-        cp.OutlookCopy(id: id, json: read[id]!, photo: hashes[id]),
+        cp.OutlookCopy(id: id, json: read[id]!, photo: hasPhoto(id)),
     ];
     final listed = seen.listed(key);
     final answer = listed?['answer'] is String
         ? listed!['answer']! as String
         : null;
     var merge = cp.mergeCopies(kept, others, norm: run.norm);
-    // Ron's answer counts on the differences he saw, and on no others.
-    if (answer != null &&
-        merge.outcome == cp.CopiesOutcome.differs &&
-        merge.fingerprint == listed?['fingerprint']) {
-      if (answer == ContactSyncCopiesPerson.leave) {
-        _leave(key, merge.fingerprint);
-        _personDone();
-        return;
-      }
-      if (answer == key || copies.contains(answer)) {
-        merge = cp.mergeCopies(kept, others, keep: answer, norm: run.norm);
+    // Ron's answer (Leave them is dealt with before) counts only on the
+    // differences he saw. Given on a listing under the rules of now, on
+    // those very differences (the fingerprint), and never on the photo.
+    // Given on one 3.22.0 made, whose differences may no longer be: the
+    // synced copy's leaves the rules of now to decide; another copy's, with
+    // nothing differing now, brings that copy's photo (the difference he
+    // saw); with something differing, the person is listed again as it
+    // is, the answer dropped.
+    if (answer != null && (answer == key || copies.contains(answer))) {
+      final now = listed != null && _Copies.current(listed);
+      if (now
+          ? merge.outcome == cp.CopiesOutcome.differs &&
+                merge.fingerprint == listed['fingerprint']
+          : merge.outcome != cp.CopiesOutcome.differs && answer != key) {
+        // On today's listings an answer never touches the photo: the
+        // synced copy's own stays. On a 3.22.0 listing that showed one,
+        // the photo was a difference Ron saw: another copy's brings it.
+        merge = cp.mergeCopies(
+          kept,
+          others,
+          keep: answer,
+          keepsPhoto: !now && _Copies.showedPhoto(listed),
+          norm: run.norm,
+        );
       }
     }
     if (merge.outcome == cp.CopiesOutcome.differs) {
-      if (listed == null && seen.left[key] == merge.fingerprint) {
-        // Left as they are, and not changed since.
-        _personDone();
-        return;
-      }
       _list(key, g.title ?? '', merge, others);
       _count(differing: 1);
       _personDone();
@@ -4477,7 +4570,9 @@ class _CopiesStep {
       if (now.length < copies.length + 1 || now.values.contains(false)) {
         throw const _PassOver();
       }
-      syncedKey = await _write(key, merge, read[key]!, bytes, pair);
+      final from = merge.photoFrom;
+      final taken = from == null ? null : await _photoOf(from);
+      syncedKey = await _write(key, merge, read[key]!, taken, pair);
       _count(added: merge.adds.length);
       changedAny = true;
     }
@@ -4495,6 +4590,21 @@ class _CopiesStep {
     for (final id in copies) {
       _expected[id] = read0[id];
     }
+  }
+
+  /// The photo of the copy [id], for the synced copy to take: one that
+  /// cannot be read now passes the person over, rather than reading as
+  /// none.
+  Future<({List<int> bytes, String type})> _photoOf(String id) async {
+    final ({List<int> bytes, String type})? got;
+    try {
+      got = await run.graph((a) => a.photoBytes(id));
+    } on Exception catch (e) {
+      if (!_Run._failsAlone(e)) rethrow;
+      throw const _PassOver();
+    }
+    if (got == null) throw const _PassOver();
+    return got;
   }
 
   /// The contacts [ids] read again by id: for each still there, whether
@@ -4534,7 +4644,7 @@ class _CopiesStep {
     String key,
     cp.CopiesMerge merge,
     Map<String, Object?> before,
-    Map<String, ({List<int> bytes, String type})> bytes,
+    ({List<int> bytes, String type})? photo,
     ContactLink pair,
   ) async {
     var changeKey = before['changeKey'] as String?;
@@ -4570,8 +4680,7 @@ class _CopiesStep {
         }
       }
     }
-    if (merge.photoFrom case final from?) {
-      final photo = bytes[from];
+    if (merge.photoFrom != null) {
       if (photo == null) throw const _CopyNotHeld();
       await run.graph((a) => a.putPhoto(key, photo.bytes, photo.type));
       // The photo there before its copy goes, and the synced copy as the
@@ -4647,10 +4756,13 @@ class _CopiesStep {
     await save();
   }
 
+  /// [key] left as Ron chose, with the [fingerprint] of its differences
+  /// as they are now (empty where none is): passed over until they are
+  /// others.
   void _leave(String key, String fingerprint) {
     _unlisted.add(key);
     _listed.remove(key);
-    _left[key] = fingerprint;
+    _left[key] = {'fingerprint': fingerprint, 'rules': _Copies.rules};
     _unleft.remove(key);
   }
 
@@ -4669,6 +4781,7 @@ class _CopiesStep {
       'key': key,
       'title': title,
       'fingerprint': merge.fingerprint,
+      'rules': _Copies.rules,
       'copies': [
         {
           'key': key,

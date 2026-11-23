@@ -11,9 +11,10 @@ import 'contact_sync_planner.dart' show contactDetailShownLength;
 // The merge of the copies of one person in Hadco's Contacts into the
 // synced one (3.22.0): pure rules, no reads and no writes. Hadco holds
 // copies of many people from before the first sync, which Outlook cannot
-// merge in bulk. The runner reads each copy whole and hashes its photo;
-// [mergeCopies] says what the synced copy would gain (a PATCH body and a
-// photo), and, where the copies differ, what for Ron to choose. The synced
+// merge in bulk. The runner reads each copy whole and notes which have a
+// photo; [mergeCopies] says what the synced copy would gain (a PATCH body
+// and a photo), and, where the copies differ, what for Ron to choose. The
+// synced
 // copy always stays: the others are deleted once it holds all they hold,
 // or as Ron chose.
 //
@@ -32,7 +33,9 @@ class OutlookCopy {
   /// `$select`.
   final Map<String, Object?> json;
 
-  /// A hash of its photo's bytes; null when it has none.
+  /// Whether it has a photo: any value says it has one, null that it has
+  /// none. The photo itself is never compared (3.22.1): nearly every
+  /// contact in Hadco has one, and no two copies' bytes are alike.
   final String? photo;
 
   @override
@@ -64,8 +67,7 @@ class CopiesDetail {
 
   /// One line: a list's values joined with ", ", line breaks as ", ", cut
   /// to [contactDetailShownLength] with an ellipsis. A long note is
-  /// "(long note)"; a photo "a photo", or "another photo" for a second
-  /// one.
+  /// "(long note)"; a photo "a photo".
   final String? value;
 
   @override
@@ -193,8 +195,12 @@ class CopiesMerge {
 ///   read repeats the first three emails in three slots
 ///   (`primaryEmailAddress` and on): their addresses are the copy's
 ///   emails too, and they are never written.
-/// - The photo (by its hash): the synced copy takes the others' one photo
-///   when it has none; any other photo is a difference.
+/// - The photo is never a difference (3.22.1, Ron's choice): the synced
+///   copy's photo, where it has one, stays, and the others' go with their
+///   copies; where it has none, it takes the photo of the first other copy
+///   that has one, in id order ([CopiesMerge.photoFrom], an add, "Photo").
+///   An answer does not touch the photo, but where [keepsPhoto] says the
+///   photo was among the differences Ron saw.
 /// - Any other property with a value on another copy that the synced copy
 ///   lacks or holds differently: a difference, "Other details", never
 ///   merged without Ron.
@@ -205,8 +211,13 @@ class CopiesMerge {
 /// [keep] is Ron's answer to the differences: [kept]'s id keeps the
 /// synced copy's details, another copy's id takes that copy's where it
 /// has one; a list takes the chosen copy's values first, then the synced
-/// copy's, then the others', while within the room. The details only some
-/// copy has are added either way. The outcome is then same or adds, with
+/// copy's, then the others', while within the room. With [keepsPhoto]
+/// (an answer given on a listing 3.22.0 made, where the photo was among
+/// the differences shown), another copy's id also takes that copy's
+/// photo, when it has one, in place of the synced copy's, whether or not
+/// anything else differs now; without, an answer never touches the photo,
+/// and the synced copy's own stays, never written over unasked. The
+/// details only some copy has are added either way. The outcome is then same or adds, with
 /// no differences, and the [CopiesMerge.fingerprint] that of the
 /// differences it settled, so the runner can check they are those Ron
 /// saw. An answer naming no copy is no answer. A copy given twice, or
@@ -217,6 +228,7 @@ CopiesMerge mergeCopies(
   OutlookCopy kept,
   List<OutlookCopy> others, {
   String? keep,
+  bool keepsPhoto = false,
   required ContactNormaliser norm,
 }) {
   final ids = {kept.id};
@@ -228,7 +240,7 @@ CopiesMerge mergeCopies(
   final chosen = keep == kept.id
       ? kept
       : copies.firstWhereOrNull((c) => c.id == keep);
-  return merger.result(chosen);
+  return merger.result(chosen, keepsPhoto: keepsPhoto);
 }
 
 enum _Kind {
@@ -513,7 +525,7 @@ class _Merger {
     _otherDetails();
   }
 
-  CopiesMerge result(OutlookCopy? chosen) {
+  CopiesMerge result(OutlookCopy? chosen, {bool keepsPhoto = false}) {
     final fingerprint = differences.isEmpty ? '' : _fingerprint(fixed);
     // With a copy not joined, the person differs whatever the answer, and
     // nothing is written: an answer cannot say two people are one.
@@ -529,6 +541,19 @@ class _Merger {
         answer(chosen);
       }
       differences.clear();
+    }
+    // Keep these on another copy, where the photo was among the
+    // differences Ron saw, brings its photo, when it has one, in place of
+    // the synced copy's: whether or not anything else differs now.
+    if (keepsPhoto &&
+        chosen != null &&
+        chosen.id != kept.id &&
+        chosen.photo != null &&
+        photoFrom != chosen.id) {
+      if (photoFrom == null) {
+        adds.add(const CopiesDetail(label: _photoLabel, value: 'a photo'));
+      }
+      photoFrom = chosen.id;
     }
     return CopiesMerge(
       outcome: differences.isNotEmpty
@@ -775,38 +800,17 @@ class _Merger {
     );
   }
 
-  /// The photo, by its hash: the synced copy takes the others' one photo
-  /// when it has none; any other photo is a difference, shown as "a
-  /// photo" (the synced copy's, or the first) and "another photo".
+  /// The photo, never a difference: the synced copy's stays where it has
+  /// one; where it has none, it takes the first other copy's, in id order,
+  /// that has one. An answer naming another copy with a photo takes that
+  /// one instead, but only where the photo was among the differences Ron
+  /// saw ([result]'s keepsPhoto).
   void _photo() {
-    final mine = kept.photo;
-    final theirs = {
-      for (final c in others)
-        if (c.photo case final p? when p != mine) p,
-    };
-    if (theirs.isEmpty) return;
-    if (mine == null && theirs.length == 1) {
-      photoFrom = _byId.firstWhere((c) => c.photo == theirs.single).id;
-      adds.add(const CopiesDetail(label: _photoLabel, value: 'a photo'));
-      return;
-    }
-    final first = mine ?? theirs.first;
-    _differ(
-      // Not a property: no Graph property has an `@` in its name.
-      '@photo',
-      _photoLabel,
-      shown: (c) => switch (c.photo) {
-        null => null,
-        final p when p == first => 'a photo',
-        _ => 'another photo',
-      },
-      fixedOf: (c) => c.photo,
-      answer: (chosen) {
-        if (chosen.photo == null || chosen.photo == mine) return;
-        photoFrom = chosen.id;
-        adds.add(const CopiesDetail(label: _photoLabel, value: 'a photo'));
-      },
-    );
+    if (kept.photo != null) return;
+    final from = _byId.firstWhereOrNull((c) => c.photo != null);
+    if (from == null) return;
+    photoFrom = from.id;
+    adds.add(const CopiesDetail(label: _photoLabel, value: 'a photo'));
   }
 
   /// Any property [_rules] does not name, but annotations: a value on
