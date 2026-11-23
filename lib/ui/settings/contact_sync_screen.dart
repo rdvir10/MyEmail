@@ -31,10 +31,13 @@ import '../shell/put_away.dart' show isInFront;
 class ContactSyncScreen extends ConsumerStatefulWidget {
   const ContactSyncScreen({super.key});
 
-  /// Whether the screen is open: the shell's one-line message about a stop
-  /// says nothing this screen is not already showing.
-  static bool get isOpen => _open > 0;
-  static int _open = 0;
+  /// Whether the screen is open and in front, its own route the current
+  /// one: the shell's one-line message about a stop says nothing this
+  /// screen is not already showing. Under a screen pushed over it
+  /// (Duplicates to merge, Needs a look, Recently deleted, a sign-in),
+  /// which shows no stop, it is not, and the message is said there.
+  static bool get isOpen => _open.any((s) => s._inFront);
+  static final Set<_ContactSyncScreenState> _open = {};
 
   @override
   ConsumerState<ContactSyncScreen> createState() => _ContactSyncScreenState();
@@ -68,17 +71,33 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   /// one once Start has gone, nor one pair's under another's.
   ({String pair, bool forStart})? _backupFor;
 
+  /// The brakes' questions shown during this visit, each where it was
+  /// first shown ([_cards]), and the pair they are of.
+  final List<_ShownQuestion> _shownQuestions = [];
+  (String?, String?)? _shownFor;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
+
+  /// The screen's own route, for [ContactSyncScreen.isOpen].
+  ModalRoute<Object?>? _route;
+
+  bool get _inFront => mounted && (_route?.isCurrent ?? true);
 
   @override
   void initState() {
     super.initState();
-    ContactSyncScreen._open++;
+    ContactSyncScreen._open.add(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
   }
 
   @override
   void dispose() {
-    ContactSyncScreen._open--;
+    ContactSyncScreen._open.remove(this);
     super.dispose();
   }
 
@@ -591,13 +610,19 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           ..._lastResult(s, google, graph, graphName),
       ],
       if (s != null && ours) ...[
-        for (final q in s.questions)
+        for (final card in _cards(s))
           _QuestionCard(
-            question: q,
+            question: card.question,
+            listed: card.listed,
+            shown: card.shown,
             graphName: graphName,
             onAnswer: (choice, {items}) => _act(
               context,
-              () => _sync.answerQuestion(q.kind, choice, items: items),
+              () => _sync.answerQuestion(
+                card.question.kind,
+                choice,
+                items: items,
+              ),
               // Refused, perhaps because the question changed since it was
               // drawn: said, and read again, to be answered as it is now.
               onFailure: () {
@@ -715,6 +740,41 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   void _push(Widget screen) => Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => screen),
       );
+
+  /// The brakes' questions as shown: each where it was first shown during
+  /// this visit, its contacts in the order first shown. A contact the
+  /// runner no longer lists (its answer carried out by the run the answer
+  /// started, or no longer held) stays in its place, shown as done, until
+  /// the screen is left, and so does a question it no longer lists at all,
+  /// so that nothing moves under the finger while Ron answers one by one,
+  /// as on Duplicates to merge. Questions and contacts held since go under
+  /// them.
+  List<_ShownQuestion> _cards(ContactSyncStatus s) {
+    final pair = (s.googleAccountId, s.graphAccountId);
+    if (_shownFor != pair) {
+      _shownFor = pair;
+      _shownQuestions.clear();
+    }
+    final listed = <_ShownQuestion>{};
+    for (final q in s.questions) {
+      var card = _shownQuestions.firstWhereOrNull(
+        (c) => !listed.contains(c) && c.isOf(q),
+      );
+      if (card == null) {
+        card = _ShownQuestion(q);
+        _shownQuestions.add(card);
+      }
+      card.take(q);
+      listed.add(card);
+    }
+    // Gone, with no contact of its own shown (an empty answer's): nothing
+    // on it was answered, so nothing stays.
+    _shownQuestions.removeWhere((c) => !listed.contains(c) && !c.keeps);
+    for (final c in _shownQuestions) {
+      c.listed = listed.contains(c);
+    }
+    return _shownQuestions;
+  }
 
   /// Before the first sync: the preview, the backup, and Start, greyed out
   /// until both are done; all three greyed out until both accounts are
@@ -974,7 +1034,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     // Start's preview and backup from the last hour.
     final firstGated =
         !s.firstStarted && !_stepsFor(google, graph).readyAt(now);
-    final name = _sideOrNot(side, graphName);
+    final line = _stopLine(s, halt, graphName, now, use24h);
+    if (line == null) return const [];
     switch (halt.kind) {
       case ContactSyncHaltKind.notAllowed:
         final account = switch (side) {
@@ -983,7 +1044,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           null => null,
         };
         return [
-          _Para('Contact sync has stopped: not allowed yet for $name.'),
+          _Para(line),
           if (halt.error case final e?)
             _Problem(
               doing: 'Syncing contacts',
@@ -993,17 +1054,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         ];
       case ContactSyncHaltKind.otherDevice:
         return [
-          const _Para(
-            'Contact sync is on on your other device',
-            strong: true,
-          ),
-          _Para(
-            '${switch (halt.claimedAt) {
-              null => 'It has synced there lately',
-              final at => 'It last synced there ${_when(at, now, use24h)}',
-            }}. Only one device may sync, or the two would work against '
-            'each other: turn it off there, or sync here instead.',
-          ),
+          _Para(line, strong: true),
+          _Para(_otherDeviceLine(halt, now, use24h)),
           _Buttons([
             OutlinedButton(
               key: const ValueKey('contact-sync-here'),
@@ -1039,29 +1091,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         )) {
           return const [];
         }
-        return [
-          _Para(
-            'Contact sync has stopped: ${_bookOrNot(side, graphName)} listed '
-            'far fewer contacts than expected.',
-          ),
-        ];
+        return [_Para(line)];
       case ContactSyncHaltKind.quota:
-        final until = halt.until;
-        return [
-          _Para(
-            "Google's daily limit on changes to contacts is spent. Contact "
-            'sync carries on '
-            '${until == null ? 'tomorrow' : 'after ${_clockOrDay(until, now, use24h)}'}.',
-          ),
-        ];
+        return [_Para(line)];
       case ContactSyncHaltKind.failed:
         return [
-          _Para(
-            s.firstStarted
-                ? 'The last sync stopped ${_when(halt.at, now, use24h)}.'
-                : 'The first sync could not begin: it stopped '
-                    '${_when(halt.at, now, use24h)}.',
-          ),
+          _Para(line),
           // Before the first sync, a run goes only through Start, just
           // below, and its preview and backup from the last hour: no Try
           // again beside it.
@@ -1266,6 +1301,86 @@ typedef _QuestionAnswer = void Function(
   Set<String>? items,
 });
 
+/// A brake's question as shown during one visit to the Contact sync
+/// screen ([_ContactSyncScreenState._cards]): as last listed, with its
+/// contacts in the order first shown, each as last listed, so that one
+/// the runner no longer lists stays in its place, done.
+class _ShownQuestion {
+  _ShownQuestion(this.question);
+
+  /// As last listed.
+  ContactSyncQuestion question;
+
+  /// The runner lists it still.
+  bool listed = true;
+
+  /// Its contacts' keys in the order first shown, and each contact as
+  /// last listed, with whether the question's answer for the rest covered
+  /// it then. Kept only where every contact has a key, as the runner's
+  /// always do.
+  final List<String> _order = [];
+  final Map<String, ({ContactSyncQuestionItem item, bool byQuestion})>
+      _seen = {};
+
+  /// It showed contacts of its own, which stay once done.
+  bool get keeps => _order.isNotEmpty;
+
+  /// Whether [q], as listed now, is this question: it names a contact
+  /// shown here; or, with no contacts to tell it by (an empty answer's),
+  /// it is of the same kind and side.
+  bool isOf(ContactSyncQuestion q) {
+    if (q.kind != question.kind) return false;
+    if (_keyed(q)) return q.items.any((i) => _seen.containsKey(i.key));
+    return !keeps && q.side == question.side;
+  }
+
+  void take(ContactSyncQuestion q) {
+    question = q;
+    if (!_keyed(q)) return;
+    for (final i in q.items) {
+      if (!_seen.containsKey(i.key)) _order.add(i.key);
+      _seen[i.key] = (
+        item: i,
+        byQuestion: i.answer == null && q.answer != null,
+      );
+    }
+  }
+
+  /// Its contacts in their places: those listed as listed, the others
+  /// done, as last listed.
+  List<_ShownItem> get shown {
+    if (!keeps) {
+      return [
+        for (final i in question.items)
+          (item: i, done: false, byQuestion: false),
+      ];
+    }
+    final now = {
+      if (listed)
+        for (final i in question.items) i.key: i,
+    };
+    return [
+      for (final key in _order)
+        if (now[key] case final i?)
+          (item: i, done: false, byQuestion: false)
+        else if (_seen[key] case final s?)
+          (item: s.item, done: true, byQuestion: s.byQuestion),
+    ];
+  }
+
+  static bool _keyed(ContactSyncQuestion q) =>
+      q.items.isNotEmpty && q.items.every((i) => i.key.isNotEmpty);
+}
+
+/// A brake's contact as its card shows it: as listed, or [done], as last
+/// listed before the runner stopped listing it; [byQuestion], its answer
+/// then was the question's for the rest, which the card says for it.
+typedef _ShownItem = ({
+  ContactSyncQuestionItem item,
+  bool done,
+  bool byQuestion,
+});
+
 /// A brake's question: what is held, contact by contact with what each
 /// would lose or have deleted, and the two answers, for all of them at
 /// once or for one contact alone.
@@ -1274,11 +1389,22 @@ class _QuestionCard extends StatelessWidget {
     required this.question,
     required this.graphName,
     required this.onAnswer,
+    this.listed = true,
+    this.shown,
   });
 
+  /// As listed; once the runner no longer lists it, as last listed.
   final ContactSyncQuestion question;
   final String graphName;
   final _QuestionAnswer onAnswer;
+
+  /// The runner lists the question still: once it does not, all of it is
+  /// done.
+  final bool listed;
+
+  /// Its contacts in their places, done ones among them; null for those
+  /// the question lists, as it lists them.
+  final List<_ShownItem>? shown;
 
   @override
   Widget build(BuildContext context) {
@@ -1287,7 +1413,14 @@ class _QuestionCard extends StatelessWidget {
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final q = question;
     String side(ContactSide s) => _sideName(s, graphName);
-    final n = q.items.length;
+    // Every contact drawn, in its place, and those the question lists now:
+    // only these can be answered, or be held up.
+    final shown = this.shown ??
+        [
+          for (final i in q.items) (item: i, done: false, byQuestion: false),
+        ];
+    final items = listed ? q.items : const <ContactSyncQuestionItem>[];
+    final n = shown.length;
     // No number, neither the brakes' thresholds (a question stays until
     // answered, and may by then hold fewer than the more than 5 or 10 that
     // raised it) nor a count the title, counting only those still waiting,
@@ -1296,11 +1429,11 @@ class _QuestionCard extends StatelessWidget {
         n == 1 ? ('this contact', 'it is') : ('these contacts', 'they are');
     // The side every contact's change (or deletion) is about, where they
     // share one: said once, rather than under every name.
-    final sides = {for (final i in q.items) ..._sidesOf(i)};
+    final sides = {for (final s in shown) ..._sidesOf(s.item)};
     final oneSide = sides.length == 1 ? sides.single : null;
     // Counted as the Settings row and the one-line message count them:
     // only the contacts still waiting for Ron.
-    final waiting = _waiting(q);
+    final waiting = listed ? _waiting(q) : 0;
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
           waiting > 0
@@ -1316,7 +1449,8 @@ class _QuestionCard extends StatelessWidget {
           'Delete them deletes '
               '${oneSide == null ? "each one's copy on the other side" : 'their copies in ${side(oneSide.other)}'}'
               ', each read again first. '
-              "Don't delete them: ${_staySide(q.items, graphName)} but "
+              "Don't delete them: "
+              '${_staySide([for (final s in shown) s.item], graphName)} but '
               'stop syncing, and each waits under Needs a look, where it '
               'can still be copied back.',
         ),
@@ -1375,17 +1509,20 @@ class _QuestionCard extends StatelessWidget {
     // contacts the runner names. Not an empty answer, which is a count.
     final oneByOne = n > 1 &&
         q.kind != ContactSyncQuestionKind.emptyAnswer &&
-        q.items.every((i) => i.key.isNotEmpty);
-    final open = q.items.where((i) => i.answer == null).length;
+        shown.every((s) => s.item.key.isNotEmpty);
+    final open = items.where((i) => i.answer == null).length;
     final someAnswered = open < n;
+    // Some contact has (or had, done) an answer of its own: the question's
+    // answer is for the rest.
+    final forTheRest = shown.any((s) => s.item.answer != null);
     // What the buttons for all answer: the contacts shown here with no
     // answer of their own, by name, so that one held since Ron last looked
-    // is not answered by a tap made before he saw it. A question of none
-    // (an empty answer), or one whose contacts carry no keys, is answered
-    // whole.
-    final forAll = n > 0 && q.items.every((i) => i.key.isNotEmpty)
+    // is not answered by a tap made before he saw it, nor one done. A
+    // question of none (an empty answer), or one whose contacts carry no
+    // keys, is answered whole.
+    final forAll = items.isNotEmpty && items.every((i) => i.key.isNotEmpty)
         ? {
-            for (final i in q.items)
+            for (final i in items)
               if (i.answer == null) i.key,
           }
         : null;
@@ -1395,7 +1532,7 @@ class _QuestionCard extends StatelessWidget {
     final covered = whole == null
         ? const <ContactSyncQuestionItem>[]
         : [
-            for (final i in q.items)
+            for (final i in items)
               if (i.answer == null) i,
           ];
     final reasons = {for (final i in covered) ?i.answerProblem};
@@ -1423,10 +1560,12 @@ class _QuestionCard extends StatelessWidget {
             // The answer for all comes first: with 58 contacts below, at
             // their foot it would be a long way down.
             if (whole != null) ...[
+              // Done, a line of about the same length, as on each contact.
               Text(
                 'You chose ${_choiceLabel(whole, graphName)}'
-                '${someAnswered ? ' for the rest' : ''}. The next sync '
-                'carries it out.',
+                '${forTheRest ? ' for the rest' : ''}'
+                '${listed ? '. The next sync carries it out.' : ': done. '
+                    '${_capital(they)} no longer held.'}',
                 key: const ValueKey('contact-sync-question-answer'),
                 style: TextStyle(color: theme.colorScheme.primary),
               ),
@@ -1465,17 +1604,21 @@ class _QuestionCard extends StatelessWidget {
               const SizedBox(height: 8),
               Text(explain, style: muted),
             ],
-            if (q.items.isNotEmpty) ...[
+            if (shown.isNotEmpty) ...[
               const SizedBox(height: 4),
-              for (final i in q.items) ...[
+              for (final s in shown) ...[
                 const Divider(height: 17),
                 _QuestionItemTile(
-                  item: i,
+                  item: s.item,
                   kind: q.kind,
                   graphName: graphName,
                   namesSide: oneSide == null,
-                  choices: oneByOne && whole == null ? q.choices : const [],
-                  onAnswer: (c) => onAnswer(c, items: {i.key}),
+                  choices: !s.done && oneByOne && whole == null
+                      ? q.choices
+                      : const [],
+                  done: s.done,
+                  byQuestion: s.byQuestion,
+                  onAnswer: (c) => onAnswer(c, items: {s.item.key}),
                 ),
               ],
             ],
@@ -1509,6 +1652,8 @@ class _QuestionItemTile extends StatelessWidget {
     required this.namesSide,
     required this.choices,
     required this.onAnswer,
+    this.done = false,
+    this.byQuestion = false,
   });
 
   final ContactSyncQuestionItem item;
@@ -1523,6 +1668,15 @@ class _QuestionItemTile extends StatelessWidget {
   /// alone.
   final List<ContactSyncChoice> choices;
   final ValueChanged<ContactSyncChoice> onAnswer;
+
+  /// The runner no longer lists it, as last listed: its answer carried out,
+  /// or it is no longer held. It keeps its place, with no buttons, and its
+  /// answer said as done.
+  final bool done;
+
+  /// Done, and its answer was the question's for the rest, which the card
+  /// says: nothing said here, as nothing was while it waited.
+  final bool byQuestion;
 
   @override
   Widget build(BuildContext context) {
@@ -1575,20 +1729,32 @@ class _QuestionItemTile extends StatelessWidget {
       if (answer != null)
         Padding(
           padding: const EdgeInsets.only(top: 4),
+          // Done, a line of about the same length, so that it wraps as
+          // the one before did and moves nothing under it.
           child: Text(
-            'You chose ${_itemChoiceLabel(answer, graphName, i)}: the next '
-            'sync carries it out.',
+            done
+                ? 'You chose ${_itemChoiceLabel(answer, graphName, i)}: '
+                    'done. It is no longer held.'
+                : 'You chose ${_itemChoiceLabel(answer, graphName, i)}: the '
+                    'next sync carries it out.',
             style: TextStyle(color: theme.colorScheme.primary),
           ),
+        )
+      // Gone from the question with no answer: its rows no longer held
+      // (the change undone, the contact gone).
+      else if (done && !byQuestion)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text('No longer held: nothing to answer.', style: muted),
         ),
       // Held up at the last run: why, as the runner says it.
-      if (i.answerProblem case final problem? when answer != null)
+      if (i.answerProblem case final problem? when answer != null && !done)
         Padding(
           padding: const EdgeInsets.only(top: 2),
           child: Text(problem, style: muted),
         ),
     ];
-    final buttons = answer != null || choices.isEmpty
+    final buttons = done || answer != null || choices.isEmpty
         ? null
         : Wrap(
             spacing: 4,
@@ -1702,20 +1868,81 @@ String _shortValue(String? value) {
 
 /// Needs a look: each contact the sync could not settle on its own, with
 /// its answers, and one answer for every new pair whose details differ.
-class _LooksScreen extends ConsumerWidget {
+class _LooksScreen extends ConsumerStatefulWidget {
   const _LooksScreen();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_LooksScreen> createState() => _LooksScreenState();
+}
+
+class _LooksScreenState extends ConsumerState<_LooksScreen> {
+  /// The items shown during this visit, in the order first shown, each as
+  /// last listed: one the runner no longer lists (its answer carried out
+  /// by the run the answer started, Leave as they are, or its contacts
+  /// gone) stays where it was, shown as done, until the screen is left, so
+  /// that nothing moves under the finger, as on Duplicates to merge. New
+  /// ones go under them.
+  final List<int> _order = [];
+  final Map<int, ContactSyncLook> _seen = {};
+
+  /// The answers given here, with the item's version then: what a done
+  /// item says where the status never showed its answer (Leave as they
+  /// are and Keep the newer take the item away at once).
+  final Map<int, ({ContactSyncChoice choice, String version})> _gaveHere =
+      {};
+
+  ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
+
+  void _readAgain() {
+    if (mounted) ref.invalidate(contactSyncStatusProvider);
+  }
+
+  List<({ContactSyncLook look, bool listed})> _shown(
+    List<ContactSyncLook> looks,
+  ) {
+    final listed = {for (final l in looks) l.id: l};
+    for (final l in looks) {
+      if (!_seen.containsKey(l.id)) _order.add(l.id);
+      _seen[l.id] = l;
+    }
+    return [
+      for (final id in _order)
+        if (listed[id] case final l?)
+          (look: l, listed: true)
+        else if (_seen[id] case final l?)
+          (look: l, listed: false),
+    ];
+  }
+
+  /// The answer a done item was given: its own as last listed, else one
+  /// given here to it as it was then.
+  ContactSyncChoice? _doneWith(ContactSyncLook l) {
+    if (l.answer case final answer?) return answer;
+    final given = _gaveHere[l.id];
+    return given != null && given.version == l.version ? given.choice : null;
+  }
+
+  void _given(Map<int, String> looks, ContactSyncChoice choice) {
+    if (!mounted) return;
+    setState(() {
+      for (final MapEntry(key: id, value: version) in looks.entries) {
+        _gaveHere.putIfAbsent(id, () => (choice: choice, version: version));
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final status = ref.watch(contactSyncStatusProvider).value;
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final graphName =
         contactSyncAccountName(_byId(accounts, status?.graphAccountId));
-    final sync = ref.read(mailEngineProvider).contactSync;
     final looks = status?.needsALook ?? const <ContactSyncLook>[];
-    final differing = looks
-        .where((l) => l.kind == ContactReviewKind.differing && l.answer == null)
-        .length;
+    final shown = _shown(looks);
+    final differing = [
+      for (final l in looks)
+        if (l.kind == ContactReviewKind.differing && l.answer == null) l,
+    ];
     return Scaffold(
       appBar: AppBar(title: const Text('Needs a look'), centerTitle: false),
       body: _Body(
@@ -1725,21 +1952,39 @@ class _LooksScreen extends ConsumerWidget {
             'carried out in the next sync, which starts at once.',
             top: 16,
           ),
-          if (looks.isEmpty) const _Para('Nothing needs a look.'),
-          if (differing > 1)
+          if (shown.isEmpty) const _Para('Nothing needs a look.'),
+          if (differing.length > 1)
             _AllDiffering(
-              count: differing,
+              looks: differing,
               graphName: graphName,
-              onAnswer: (c) => _act(context, () => sync.answerAllDiffering(c)),
+              onAnswer: (c, named) => _act(
+                context,
+                () async {
+                  await _sync.answerAllDiffering(c, named);
+                  _given(named, c);
+                },
+                // Refused, none of them still as shown: said, and read
+                // again, to be answered as they are now.
+                onFailure: _readAgain,
+              ),
             ),
-          for (final look in looks) ...[
+          for (final (:look, :listed) in shown) ...[
             const Divider(height: 1),
             _LookTile(
               look: look,
               graphName: graphName,
+              done: !listed,
+              doneWith: listed ? null : _doneWith(look),
               onAnswer: (choice, {candidateId}) => _act(
                 context,
-                () => sync.answerLook(look.id, choice, candidateId: candidateId),
+                () async {
+                  await _sync.answerLook(
+                    look.id,
+                    choice,
+                    candidateId: candidateId,
+                  );
+                  _given({look.id: look.version}, choice);
+                },
               ),
             ),
           ],
@@ -1749,24 +1994,35 @@ class _LooksScreen extends ConsumerWidget {
   }
 }
 
-/// One answer for every new pair whose details differ, set apart from
-/// each contact's own buttons, and asked again before one side's details
-/// replace the other's on all of them: the brakes do not hold Ron's own
-/// answers back, so this is the only question there is.
+/// One answer for every new pair shown whose details differ, set apart
+/// from each contact's own buttons, and asked again before one side's
+/// details replace the other's on all of them: the brakes do not hold
+/// Ron's own answers back, so this is the only question there is.
 class _AllDiffering extends StatelessWidget {
   const _AllDiffering({
-    required this.count,
+    required this.looks,
     required this.graphName,
     required this.onAnswer,
   });
 
-  final int count;
+  /// The pairs it answers: those shown whose details differ, with no
+  /// answer yet.
+  final List<ContactSyncLook> looks;
   final String graphName;
-  final ValueChanged<ContactSyncChoice> onAnswer;
+
+  /// The answer, for [looks] as they were when it was tapped: each one's
+  /// id to its version.
+  final void Function(ContactSyncChoice choice, Map<int, String> looks)
+      onAnswer;
 
   Future<void> _answer(BuildContext context, ContactSyncChoice c) async {
+    // Those the count came from, taken as the button is tapped: the
+    // question names their number, and the answer covers them alone,
+    // never a pair listed while the question is open.
+    final shown = {for (final l in looks) l.id: l.version};
+    final count = shown.length;
     if (c == ContactSyncChoice.leaveAsTheyAre) {
-      onAnswer(c);
+      onAnswer(c, shown);
       return;
     }
     final (kept, replaced) = c == ContactSyncChoice.useGoogle
@@ -1794,7 +2050,7 @@ class _AllDiffering extends StatelessWidget {
         ],
       ),
     );
-    if (sure == true) onAnswer(c);
+    if (sure == true) onAnswer(c, shown);
   }
 
   @override
@@ -1812,7 +2068,7 @@ class _AllDiffering extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'All $count pairs whose details differ',
+            'All ${looks.length} pairs whose details differ',
             style: theme.textTheme.titleSmall,
           ),
           const SizedBox(height: 4),
@@ -1854,11 +2110,19 @@ class _LookTile extends StatelessWidget {
     required this.look,
     required this.graphName,
     required this.onAnswer,
+    this.done = false,
+    this.doneWith,
   });
 
   final ContactSyncLook look;
   final String graphName;
   final _LookAnswer onAnswer;
+
+  /// The runner no longer lists it, as last listed: it keeps its place,
+  /// with no buttons, and the answer it was given, [doneWith], said as
+  /// done; with none, that it no longer needs a look.
+  final bool done;
+  final ContactSyncChoice? doneWith;
 
   @override
   Widget build(BuildContext context) {
@@ -1886,7 +2150,18 @@ class _LookTile extends StatelessWidget {
               Text('$graphName: ${_valueOf(l.graphValues[f])}'),
             ],
           const SizedBox(height: 8),
-          if (answer != null)
+          // Done, a line of about the same length as the answer's, so that
+          // it wraps as that one did and moves nothing under it.
+          if (done)
+            switch (doneWith) {
+              final choice? => Text(
+                  'You chose ${_lookChoiceLabel(l, choice, graphName)}: '
+                  'done. No longer needs a look.',
+                  style: TextStyle(color: theme.colorScheme.primary),
+                ),
+              null => Text('No longer needs a look.', style: muted),
+            }
+          else if (answer != null)
             Text(
               'You chose ${_lookChoiceLabel(l, answer, graphName)}. The next '
               'sync carries it out.',
@@ -1924,7 +2199,9 @@ class _LookTile extends StatelessWidget {
                     ),
               ],
             ),
-          if (l.kind == ContactReviewKind.refused && answer == null) ...[
+          if (l.kind == ContactReviewKind.refused &&
+              answer == null &&
+              !done) ...[
             const SizedBox(height: 6),
             Text(
               'It is tried again when the contact changes, or with Retry.',
@@ -2192,8 +2469,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         content: Text(
           'For each of the $open people, the synced copy keeps its values '
           'and gains the details only another copy has, and the other '
-          'copies are deleted, to Deleted Items, at the next sync, which '
-          'starts at once.',
+          'copies are deleted at the next sync, which starts at once. '
+          '$_deletedCopiesKept',
         ),
         actions: [
           TextButton(
@@ -2381,6 +2658,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     final fresh = !c.asked && last?.at == _saidWith;
     final said = fresh ? _said : null;
     final problem = fresh ? _problem : null;
+    // Asked for, no sync going, and the last one stopped: nothing starts
+    // another while Ron waits here, and the shell's one-line message may
+    // have come and gone, so the box says why it waits. Not for MyEmail
+    // put away: the next opening carries it on.
+    final stop = c.asked && running == null
+        ? switch (s?.halt) {
+            final h? when h.kind != ContactSyncHaltKind.putAway => h,
+            _ => null,
+          }
+        : null;
     return Container(
       key: const ValueKey('contact-sync-copies'),
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
@@ -2398,10 +2685,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
           // contacts has one, and no two copies' match byte for byte.
           const Text(
             'Keeps the synced copy of each person, adds to it any detail '
-            'only another copy has, and deletes the other copies, which '
-            'Outlook keeps in Deleted Items. When both copies have a photo, '
-            'the synced copy keeps its own. Copies that differ are left for '
-            'you to choose.',
+            'only another copy has, and deletes the other copies. '
+            '$_deletedCopiesKept When both copies have a photo, the synced '
+            'copy keeps its own. Copies that differ are left for you to '
+            'choose.',
             key: ValueKey('contact-sync-copies-what'),
           ),
           const SizedBox(height: 4),
@@ -2461,6 +2748,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 null when running != null =>
                   'Merge asked for: it starts once the sync has made its '
                       'changes.',
+                null when stop != null =>
+                  'Merge asked for: it starts once the sync can carry on.',
                 // The pass before stopped short, and the next waits the
                 // usual hour.
                 null when c.shortStops > 0 =>
@@ -2471,6 +2760,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
               },
               key: const ValueKey('contact-sync-copies-running'),
             ),
+            if (s != null && stop != null) ..._waitsOn(s, stop, graphName),
             // Only while a sync runs: with none, as after a short stop,
             // the next pass may wait the hour.
             if (running != null) ...[
@@ -2534,6 +2824,54 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     );
   }
 
+  /// Why the merge asked for waits: the last sync's [stop], as the Contact
+  /// sync screen says it, and the way on from here, the one that screen
+  /// offers: Sync here for another device's claim, which Sync now would
+  /// only meet again, else Sync now.
+  List<Widget> _waitsOn(
+    ContactSyncStatus s,
+    ContactSyncHalt stop,
+    String graphName,
+  ) {
+    final now = DateTime.now();
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final elsewhere = stop.kind == ContactSyncHaltKind.otherDevice;
+    // The failure itself, under the line, where that screen shows one.
+    final error = switch (stop.kind) {
+      ContactSyncHaltKind.failed => _ContactSyncScreenState._failureOf(stop),
+      ContactSyncHaltKind.notAllowed => stop.error,
+      _ => null,
+    };
+    return [
+      const SizedBox(height: 4),
+      Text(
+        _stopLine(s, stop, graphName, now, use24h) ?? '',
+        key: const ValueKey('contact-sync-copies-stop'),
+      ),
+      if (elsewhere) Text(_otherDeviceLine(stop, now, use24h)),
+      if (error != null) ...[
+        const SizedBox(height: 4),
+        ProblemView(
+          problem: ProblemReport(doing: 'Syncing contacts', error: error),
+        ),
+      ],
+      const SizedBox(height: 8),
+      if (elsewhere)
+        OutlinedButton(
+          key: const ValueKey('contact-sync-copies-here'),
+          onPressed: () => _act(context, _sync.syncHere),
+          child: const Text('Sync here'),
+        )
+      else
+        FilledButton.tonalIcon(
+          key: const ValueKey('contact-sync-copies-sync-now'),
+          onPressed: () => unawaited(_sync.syncNow()),
+          icon: const Icon(Icons.sync),
+          label: const Text('Sync now'),
+        ),
+    ];
+  }
+
   /// The heading of the copies that differ, what the answers do, and the
   /// answer for all of them, set apart from each person's own.
   Widget _differingHead(
@@ -2548,10 +2886,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
           const _Para(
             "Keep these puts that copy's values in the synced copy, which "
             'always stays, and in Gmail at the next sync; then every other '
-            'copy is deleted, to Deleted Items. Values the synced copy loses '
-            'are kept only in your backup file. Leave them leaves every copy '
-            'as it is. An answer is carried out in the next sync, which '
-            'starts at once.',
+            'copy is deleted, and Outlook keeps it for a while. Values the '
+            'synced copy loses are kept only in your backup file. Leave them '
+            'leaves every copy as it is. An answer is carried out in the next '
+            'sync, which starts at once.',
             muted: true,
           ),
           if (open.length > 1)
@@ -2689,6 +3027,16 @@ String _copiesChoice(ContactSyncCopiesPerson p, String answer) {
       ? "$name's details"
       : "the ${name.toLowerCase()}'s details";
 }
+
+/// Where the merge's deleted copies can be had back. Graph's ordinary
+/// delete is used (never `permanentDelete`), but whether Exchange puts a
+/// contact deleted that way in Deleted Items or straight among the
+/// mailbox's recoverable items (kept 14 days unless the organisation
+/// says otherwise) has not been checked, and Microsoft's pages do not
+/// say: this is true either way.
+const _deletedCopiesKept = 'Outlook keeps deleted contacts for a while: in '
+    'Deleted Items, or under Recover items deleted from this folder at the '
+    'top of Deleted Items.';
 
 /// What the last merge of the Microsoft side's copies did: "Merged at
 /// 10:42: 1089 people, 1143 copies deleted, 210 details added.", or that it
@@ -2954,6 +3302,47 @@ String? contactSyncNoticeText(
     ContactSyncHaltKind.putAway => null,
   };
 }
+
+/// Why the last run stopped, [halt], in the line the Contact sync screen
+/// opens that stop with: also said on Duplicates to merge while a merge
+/// waits on it. Null for MyEmail put away, which is no stop to tell.
+String? _stopLine(
+  ContactSyncStatus s,
+  ContactSyncHalt halt,
+  String graphName,
+  DateTime now,
+  bool use24h,
+) {
+  final side = _haltSide(halt);
+  final until = halt.until;
+  return switch (halt.kind) {
+    ContactSyncHaltKind.notAllowed => 'Contact sync has stopped: not allowed '
+        'yet for ${_sideOrNot(side, graphName)}.',
+    ContactSyncHaltKind.otherDevice =>
+      'Contact sync is on on your other device',
+    ContactSyncHaltKind.emptyAnswer => 'Contact sync has stopped: '
+        '${_bookOrNot(side, graphName)} listed far fewer contacts than '
+        'expected.',
+    ContactSyncHaltKind.quota =>
+      "Google's daily limit on changes to contacts is spent. Contact sync "
+          'carries on '
+          '${until == null ? 'tomorrow' : 'after ${_clockOrDay(until, now, use24h)}'}.',
+    ContactSyncHaltKind.failed => s.firstStarted
+        ? 'The last sync stopped ${_when(halt.at, now, use24h)}.'
+        : 'The first sync could not begin: it stopped '
+            '${_when(halt.at, now, use24h)}.',
+    ContactSyncHaltKind.putAway => null,
+  };
+}
+
+/// Under another device's stop: when it last synced there, and what to
+/// do about it.
+String _otherDeviceLine(ContactSyncHalt halt, DateTime now, bool use24h) =>
+    '${switch (halt.claimedAt) {
+      null => 'It has synced there lately',
+      final at => 'It last synced there ${_when(at, now, use24h)}',
+    }}. Only one device may sync, or the two would work against each '
+    'other: turn it off there, or sync here instead.';
 
 /// The Microsoft account's name in what contact sync says: its name in
 /// MyEmail ("Hadco"), or its address where it has none.

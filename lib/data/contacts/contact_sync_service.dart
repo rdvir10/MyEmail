@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter/foundation.dart' show immutable;
 
 import '../../domain/error_report.dart';
@@ -140,10 +143,20 @@ abstract interface class ContactSyncService {
     String? candidateId,
   });
 
-  /// The same answer (Use Gmail's, Use Hadco's, Leave as they are) for
-  /// every new pair whose details differ that has no answer queued yet: an
-  /// answer given to one item stands.
-  Future<void> answerAllDiffering(ContactSyncChoice choice);
+  /// The same answer (Use Gmail's, Use Hadco's, Leave as they are) for the
+  /// new pairs whose details differ that the screen showed ([looks]: each
+  /// one's [ContactSyncLook.id] to the [ContactSyncLook.version] shown),
+  /// all saved in one step and queued for a run that starts at once
+  /// (Leave as they are needs none: the items just go). Only those still
+  /// listed, with no answer yet, and as they were shown, are answered: an
+  /// answer given to one item stands, and an item listed since the screen
+  /// was drawn, or planned again since with other details, is never
+  /// answered by it. Throws [ContactSyncRefused] when none could be
+  /// answered, for the screen to read the status again.
+  Future<void> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  );
 
   /// Restore a contact from Recently deleted ([ContactSyncDeleted.id]),
   /// queued for a run that starts at once.
@@ -163,12 +176,13 @@ abstract interface class ContactSyncService {
   /// ([ContactSyncStatus.copies]), queued for a run that starts at once:
   /// for each person whose synced Microsoft copy is paired and has held
   /// copies beside it, the synced copy stays, takes any detail only
-  /// another copy has, and the other copies are deleted (Outlook keeps
-  /// them in Deleted Items). People whose copies differ are listed
-  /// ([ContactSyncCopies.differing]) and touched only on Ron's answer.
-  /// Gmail's copies are not touched. The screen calls this only once
-  /// Hadco's backup file is saved. Before the first sync is done, or with
-  /// nothing to merge, it does nothing.
+  /// another copy has, and the other copies are deleted (Graph's ordinary
+  /// delete: Outlook keeps them for a while, in Deleted Items or among the
+  /// mailbox's recoverable items; which of the two is not yet checked).
+  /// People whose copies differ are listed ([ContactSyncCopies.differing])
+  /// and touched only on Ron's answer. Gmail's copies are not touched.
+  /// The screen calls this only once Hadco's backup file is saved. Before
+  /// the first sync is done, or with nothing to merge, it does nothing.
   Future<void> mergeCopies();
 
   /// Ron's answer for a person whose copies differ
@@ -253,7 +267,10 @@ class NoContactSync implements ContactSyncService {
   }) async {}
 
   @override
-  Future<void> answerAllDiffering(ContactSyncChoice choice) async {}
+  Future<void> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  ) async {}
 
   @override
   Future<void> restore(int deletedId) async {}
@@ -838,6 +855,28 @@ class ContactSyncLook {
   /// The answer queued, waiting for a run.
   final ContactSyncChoice? answer;
   final DateTime? createdAt;
+
+  /// What the item shows, in a short stable form (the first 16 hex of a
+  /// SHA-256, so no contact's values are in it): an answer for every pair
+  /// whose details differ ([ContactSyncService.answerAllDiffering]) counts
+  /// only on an item still as it was shown, never on one planned again
+  /// since with other details or other values.
+  String get version {
+    final shown = jsonEncode([
+      kind.name,
+      reason?.name,
+      side?.name,
+      title,
+      for (final c in candidates) [c.id, c.title],
+      for (final f in fields) [f.name, googleValues[f], graphValues[f]],
+      losing,
+      losingSide?.name,
+    ]);
+    final hash = const DartSha256().hashSync(utf8.encode(shown));
+    return [
+      for (final b in hash.bytes.take(8)) b.toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
 }
 
 @immutable
