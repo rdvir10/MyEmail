@@ -3766,6 +3766,36 @@ void main() {
       );
     });
 
+    test('an answer says whether it was taken, and the answer for all which '
+        'pairs it answered', () async {
+      h.google.seed(person('Ann', 'Lee', email: 'a@example.com', company: 'A'));
+      h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com', company: 'B'));
+      h.google.seed(person('Bob', 'Ray', email: 'b@example.com', company: 'C'));
+      h.graph.seed(outlook('Bob', 'Ray', email: 'b@example.com', company: 'D'));
+      await h.firstSync();
+      final looks = (await h.status()).needsALook;
+      final shown = {for (final l in looks) l.id: l.version};
+      final ann = looks.firstWhere((l) => l.title == 'Ann Lee').id;
+      final bob = looks.firstWhere((l) => l.title == 'Bob Ray').id;
+
+      // Ann answered on her own before the answer for all: it leaves her
+      // answer be, and says it answered Bob alone.
+      expect(await h.sync.answerLook(ann, ContactSyncChoice.useGraph), isTrue);
+      expect(
+        await h.sync.answerAllDiffering(
+          ContactSyncChoice.leaveAsTheyAre,
+          shown,
+        ),
+        {bob},
+      );
+      // Bob, left as he is, is gone: an answer to him now takes nothing.
+      expect(
+        await h.sync.answerLook(bob, ContactSyncChoice.useGoogle),
+        isFalse,
+      );
+      expect([for (final l in (await h.status()).needsALook) l.id], [ann]);
+    });
+
     test('noticeSeen fires changed', () async {
       seedPairs(h, 1);
       h.refusing.add(Harness.hadco.id);

@@ -686,28 +686,28 @@ class ContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerLook(
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
   }) async {
-    if (await _queueLook(lookId, choice, candidateId: candidateId)) {
-      unawaited(_go(again: true));
-    }
+    final queued = await _queueLook(lookId, choice, candidateId: candidateId);
+    if (queued ?? false) unawaited(_go(again: true));
     _changed();
+    return queued != null;
   }
 
   @override
-  Future<void> answerAllDiffering(
+  Future<Set<int>> answerAllDiffering(
     ContactSyncChoice choice,
     Map<int, String> looks,
   ) async {
     final pair = await _attachedPair();
-    if (pair == null) return;
+    if (pair == null) return const {};
     // One read, and every answer saved together or none: hundreds of them
     // at once.
-    final run = await store.transaction(() async {
-      var any = false;
+    final (:run, :answered) = await store.transaction(() async {
+      final answered = <int>{};
       var run = false;
       for (final r in await store.reviews(pair.pairId)) {
         // Only one shown, as it was shown, with no answer yet: one listed
@@ -722,38 +722,41 @@ class ContactSync implements ContactSyncService {
             looks[id] != _Look.of(r)?.version) {
           continue;
         }
-        any = true;
         if (await _queueReview(r, choice)) run = true;
+        answered.add(id);
       }
-      if (!any) {
+      if (answered.isEmpty) {
         throw const ContactSyncRefused(
           'Those contacts have changed since they were shown. Look at them '
           'again.',
         );
       }
-      return run;
+      return (run: run, answered: answered);
     });
     _changed();
     if (run) unawaited(_go(again: true));
+    return answered;
   }
 
-  /// Queue [choice] on the review [lookId]; true when a run must carry it
-  /// out, false when it was done here (an item that just goes).
-  Future<bool> _queueLook(
+  /// Queue [choice] on the review [lookId]: true when a run must carry it
+  /// out, false when it was done here (an item that just goes), null when
+  /// there is no such item any more and nothing was answered.
+  Future<bool?> _queueLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
   }) async {
     final pair = await _attachedPair();
-    if (pair == null) return false;
+    if (pair == null) return null;
     final review = (await store.reviews(
       pair.pairId,
     )).firstWhereOrNull((r) => r.reviewId == lookId);
-    if (review == null) return false;
+    if (review == null) return null;
     return _queueReview(review, choice, candidateId: candidateId);
   }
 
-  /// Queue [choice] on [review], as just read: as [_queueLook].
+  /// Queue [choice] on [review], as just read: true when a run must carry
+  /// it out, false when it was done here.
   Future<bool> _queueReview(
     ContactReview review,
     ContactSyncChoice choice, {

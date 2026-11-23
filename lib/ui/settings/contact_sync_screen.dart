@@ -39,6 +39,22 @@ class ContactSyncScreen extends ConsumerStatefulWidget {
   static bool get isOpen => _open.any((s) => s._inFront);
   static final Set<_ContactSyncScreenState> _open = {};
 
+  /// Back to the Contact sync screen already open, the nearest if there
+  /// were ever two, closing whatever is over it (Duplicates to merge, Needs
+  /// a look, a sign-in, a question): true when there was one, so that the
+  /// one-line message's Open never piles a second one on top; false when
+  /// none is open, for the caller to open one.
+  static bool showOpen() {
+    final open = _open.lastWhereOrNull(
+      (s) => s.mounted && (s._route?.isActive ?? false),
+    );
+    final route = open?._route;
+    final navigator = route?.navigator;
+    if (route == null || navigator == null) return false;
+    navigator.popUntil((r) => identical(r, route));
+    return true;
+  }
+
   @override
   ConsumerState<ContactSyncScreen> createState() => _ContactSyncScreenState();
 }
@@ -268,51 +284,15 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     return sure ?? false;
   }
 
-  /// A sign-in that asks for the contacts beside the mail, as View's
-  /// address books do: Microsoft's with the contacts permission added, so
-  /// that where the organisation decides, the sign-in sends it the request;
-  /// Google's whole, since an installed app cannot add a permission to a
-  /// sign-in it has. A Gmail account on an app password moves to Google
-  /// sign-in by it. The account keeps everything cached.
+  /// Allow: [account] signed in again asking for its contacts
+  /// ([_signInForContacts]), its row busy meanwhile and asked again after.
   Future<void> _allow(Account account) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final accountsNotifier = ref.read(accountsProvider.notifier);
     setState(() => _allowing.add(account.id));
     try {
-      switch (account.provider) {
-        case MailProvider.outlook:
-          final token = await MicrosoftSignInScreen.show(
-            context,
-            loginHint: account.emailAddress,
-            scopes: [
-              ...MicrosoftOAuth.scopes,
-              ...MicrosoftOAuth.contactSyncScopes,
-            ],
-          );
-          if (token == null) return;
-          await accountsNotifier.signInAgain(
-            accountId: account.id,
-            token: token,
-          );
-        case MailProvider.gmail:
-          final result = await GoogleSignInScreen.show(
-            context,
-            loginHint: account.emailAddress,
-          );
-          if (result == null) return;
-          await accountsNotifier.signInAgain(
-            accountId: account.id,
-            token: result.token,
-            signedInAs: result.identity?.email,
-          );
-          _signedInHere.add(account.id);
+      if (await _signInForContacts(context, ref, account) &&
+          account.provider == MailProvider.gmail) {
+        _signedInHere.add(account.id);
       }
-    } catch (e) {
-      // Queued, never in place of what is there: perhaps a send's Undo.
-      messenger.showSnackBar(SnackBar(
-        duration: kBottomMessage,
-        content: Text(e is ReadableError ? e.message : '$e'),
-      ));
     } finally {
       if (mounted) {
         ref.invalidate(contactSyncAccessProvider(account.id));
@@ -539,6 +519,25 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         graph != null &&
         s.googleAccountId == google.id &&
         s.graphAccountId == graph.id;
+    // Each card a key of its own, kept for the visit: the first of a kind
+    // by the kind alone, any other (one kept done, and one asked since)
+    // numbered in the order shown.
+    final ofKind = <ContactSyncQuestionKind, int>{};
+    final cards = [
+      if (s != null && ours)
+        for (final card in _cards(s))
+          (
+            card: card,
+            key: switch (ofKind.update(
+              card.question.kind,
+              (n) => n + 1,
+              ifAbsent: () => 1,
+            )) {
+              1 => 'contact-sync-question:${card.question.kind.name}',
+              final n => 'contact-sync-question:${card.question.kind.name}:$n',
+            },
+          ),
+    ];
     return [
       if (googles.length > 1)
         ListTile(
@@ -577,6 +576,31 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           onAllow: () => _allow(account),
         ),
       const Divider(height: 24),
+      // The brakes' questions first, while there are any: what follows them
+      // (a stop, the sync going, how the last one went) changes as each
+      // answer's sync starts and ends, and above them it would move them
+      // under Ron's finger as he goes down them.
+      for (final (:card, :key) in cards)
+        _QuestionCard(
+          key: ValueKey(key),
+          question: card.question,
+          listed: card.listed,
+          shown: card.shown,
+          graphName: graphName,
+          onAnswer: (choice, {items}) => _act(
+            context,
+            () => _sync.answerQuestion(
+              card.question.kind,
+              choice,
+              items: items,
+            ),
+            // Refused, perhaps because the question changed since it was
+            // drawn: said, and read again, to be answered as it is now.
+            onFailure: () {
+              if (mounted) ref.invalidate(contactSyncStatusProvider);
+            },
+          ),
+        ),
       if (s == null)
         switch (statusValue) {
           AsyncError(:final error) => Padding(
@@ -610,26 +634,6 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           ..._lastResult(s, google, graph, graphName),
       ],
       if (s != null && ours) ...[
-        for (final card in _cards(s))
-          _QuestionCard(
-            question: card.question,
-            listed: card.listed,
-            shown: card.shown,
-            graphName: graphName,
-            onAnswer: (choice, {items}) => _act(
-              context,
-              () => _sync.answerQuestion(
-                card.question.kind,
-                choice,
-                items: items,
-              ),
-              // Refused, perhaps because the question changed since it was
-              // drawn: said, and read again, to be answered as it is now.
-              onFailure: () {
-                if (mounted) ref.invalidate(contactSyncStatusProvider);
-              },
-            ),
-          ),
         if (s.firstStarted ||
             s.needsALook.isNotEmpty ||
             s.recentlyDeleted.isNotEmpty ||
@@ -1385,7 +1389,10 @@ typedef _ShownItem = ({
 /// would lose or have deleted, and the two answers, for all of them at
 /// once or for one contact alone.
 class _QuestionCard extends StatelessWidget {
+  /// [key]: the card's own among the screen's ([_ContactSyncScreenState
+  /// ._onFor]).
   const _QuestionCard({
+    required super.key,
     required this.question,
     required this.graphName,
     required this.onAnswer,
@@ -1434,6 +1441,17 @@ class _QuestionCard extends StatelessWidget {
     // Counted as the Settings row and the one-line message count them:
     // only the contacts still waiting for Ron.
     final waiting = listed ? _waiting(q) : 0;
+    // With none waiting, which of them were answered and which were let go
+    // with no answer (their change undone, the contact gone): only the
+    // answered are said to be.
+    final letGo =
+        shown.where((s) => s.done && !s.byQuestion && s.item.answer == null);
+    final settled = switch ((n - letGo.length, letGo.length)) {
+      (_, 0) => n == 1 ? ', answered' : ', all answered',
+      (0, _) => ', no longer held',
+      (final answered, final gone) =>
+        ': $answered answered, $gone no longer held',
+    };
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
           waiting > 0
@@ -1442,8 +1460,7 @@ class _QuestionCard extends StatelessWidget {
                   'deletion needs your OK',
                   'deletions need your OK',
                 )
-              : '${_count(n, 'deletion', 'deletions')}, '
-                  '${n == 1 ? 'answered' : 'all answered'}',
+              : '${_count(n, 'deletion', 'deletions')}$settled',
           'One sync would delete $these at once, so $they held for your '
               'OK, and everything else carries on.',
           'Delete them deletes '
@@ -1458,8 +1475,7 @@ class _QuestionCard extends StatelessWidget {
           waiting > 0
               ? 'Changes to ${_count(waiting, 'contact', 'contacts')} need '
                   'your OK'
-              : 'Changes to ${_count(n, 'contact', 'contacts')}, '
-                  '${n == 1 ? 'answered' : 'all answered'}',
+              : 'Changes to ${_count(n, 'contact', 'contacts')}$settled',
           'One sync would remove or replace details '
               '${oneSide == null ? '' : 'in ${side(oneSide)} '}on $these at '
               "once, as Google's Undo changes, a backup imported again or a "
@@ -1544,7 +1560,6 @@ class _QuestionCard extends StatelessWidget {
               if (i.answerProblem case final p?) '${_title(i.title)}: $p',
           ];
     return Card(
-      key: ValueKey('contact-sync-question:${q.kind.name}'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       color: theme.colorScheme.surfaceContainerHighest,
       elevation: 0,
@@ -1885,11 +1900,30 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   final List<int> _order = [];
   final Map<int, ContactSyncLook> _seen = {};
 
-  /// The answers given here, with the item's version then: what a done
-  /// item says where the status never showed its answer (Leave as they
-  /// are and Keep the newer take the item away at once).
+  /// The answers the runner took here, with the item's version then: what
+  /// a done item says where the status never showed its answer (Leave as
+  /// they are and Keep the newer take the item away at once). Only those
+  /// it says it took: an item a run took away as Ron tapped was never
+  /// answered.
   final Map<int, ({ContactSyncChoice choice, String version})> _gaveHere =
       {};
+
+  /// Each item's version, worked out once for each item as listed: a done
+  /// item is drawn again at every status, up to four times a second while
+  /// a sync runs.
+  final Expando<String> _versions = Expando('version');
+
+  String _versionOf(ContactSyncLook l) => _versions[l] ??= l.version;
+
+  /// Where the box for all stands this visit, settled by the first status:
+  /// above the items if two or more pairs differed then; one that comes
+  /// later goes under them, so that its coming pushes nothing down.
+  bool? _boxOnTop;
+
+  /// The box has been shown this visit: it stays until the screen is left,
+  /// its buttons off with fewer than two pairs left, so that its going
+  /// moves nothing up either.
+  bool _boxShown = false;
 
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
@@ -1919,14 +1953,18 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   ContactSyncChoice? _doneWith(ContactSyncLook l) {
     if (l.answer case final answer?) return answer;
     final given = _gaveHere[l.id];
-    return given != null && given.version == l.version ? given.choice : null;
+    return given != null && given.version == _versionOf(l)
+        ? given.choice
+        : null;
   }
 
+  /// [choice] taken for [looks] (id to version), as the runner said: the
+  /// latest answer to an item is the one said.
   void _given(Map<int, String> looks, ContactSyncChoice choice) {
-    if (!mounted) return;
+    if (!mounted || looks.isEmpty) return;
     setState(() {
       for (final MapEntry(key: id, value: version) in looks.entries) {
-        _gaveHere.putIfAbsent(id, () => (choice: choice, version: version));
+        _gaveHere[id] = (choice: choice, version: version);
       }
     });
   }
@@ -1943,6 +1981,24 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
       for (final l in looks)
         if (l.kind == ContactReviewKind.differing && l.answer == null) l,
     ];
+    if (status != null) _boxOnTop ??= differing.length > 1;
+    if (differing.length > 1) _boxShown = true;
+    final box = _boxShown
+        ? _AllDiffering(
+            looks: differing,
+            graphName: graphName,
+            onAnswer: (c, named) => _act(
+              context,
+              () async {
+                final answered = await _sync.answerAllDiffering(c, named);
+                _given({for (final id in answered) id: ?named[id]}, c);
+              },
+              // Refused, none of them still as shown: said, and read
+              // again, to be answered as they are now.
+              onFailure: _readAgain,
+            ),
+          )
+        : null;
     return Scaffold(
       appBar: AppBar(title: const Text('Needs a look'), centerTitle: false),
       body: _Body(
@@ -1953,21 +2009,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
             top: 16,
           ),
           if (shown.isEmpty) const _Para('Nothing needs a look.'),
-          if (differing.length > 1)
-            _AllDiffering(
-              looks: differing,
-              graphName: graphName,
-              onAnswer: (c, named) => _act(
-                context,
-                () async {
-                  await _sync.answerAllDiffering(c, named);
-                  _given(named, c);
-                },
-                // Refused, none of them still as shown: said, and read
-                // again, to be answered as they are now.
-                onFailure: _readAgain,
-              ),
-            ),
+          if (box != null && (_boxOnTop ?? false)) box,
           for (final (:look, :listed) in shown) ...[
             const Divider(height: 1),
             _LookTile(
@@ -1978,16 +2020,17 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
               onAnswer: (choice, {candidateId}) => _act(
                 context,
                 () async {
-                  await _sync.answerLook(
+                  final taken = await _sync.answerLook(
                     look.id,
                     choice,
                     candidateId: candidateId,
                   );
-                  _given({look.id: look.version}, choice);
+                  if (taken) _given({look.id: _versionOf(look)}, choice);
                 },
               ),
             ),
           ],
+          if (box != null && !(_boxOnTop ?? false)) box,
         ],
       ),
     );
@@ -2056,6 +2099,9 @@ class _AllDiffering extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // With fewer than two left the box stays, the same size, its buttons
+    // off: the screen keeps it in its place until it is left.
+    final open = looks.length > 1;
     return Container(
       key: const ValueKey('contact-sync-all'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -2068,12 +2114,18 @@ class _AllDiffering extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'All ${looks.length} pairs whose details differ',
+            open
+                ? 'All ${looks.length} pairs whose details differ'
+                : 'Pairs whose details differ',
             style: theme.textTheme.titleSmall,
           ),
           const SizedBox(height: 4),
           Text(
-            'One answer for every one of them at once.',
+            open
+                ? 'One answer for every one of them at once.'
+                : looks.isEmpty
+                    ? 'Nothing left to answer for all.'
+                    : 'Only one is left: answer it with its own buttons.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
@@ -2089,7 +2141,7 @@ class _AllDiffering extends StatelessWidget {
               ])
                 FilledButton.tonal(
                   key: ValueKey('contact-sync-all:${c.name}'),
-                  onPressed: () => _answer(context, c),
+                  onPressed: open ? () => _answer(context, c) : null,
                   child: Text(label),
                 ),
             ],
@@ -2272,7 +2324,35 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   /// those differences still.
   final Map<String, ({String answer, String version})> _gaveHere = {};
 
+  /// Where Keep the synced copy's for all stands this visit, settled when
+  /// the copies that differ are first shown: in their heading if two or
+  /// more were open then; one that comes later goes under them, so that
+  /// its coming pushes nothing down.
+  bool? _allOnTop;
+
+  /// The button has been shown this visit: it stays until the screen is
+  /// left, off with fewer than two people open, so that its going moves
+  /// nothing up either.
+  bool _allShown = false;
+
+  /// A sign-in asked for from the box is under way.
+  bool _allowing = false;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
+
+  /// The sign-in a stop needs, from the box, as the Contact sync screen
+  /// offers it: once signed in, Sync now beside it carries on.
+  Future<void> _allow(Account account) async {
+    setState(() => _allowing = true);
+    try {
+      await _signInForContacts(context, ref, account);
+    } finally {
+      if (mounted) {
+        ref.invalidate(contactSyncAccessProvider(account.id));
+        setState(() => _allowing = false);
+      }
+    }
+  }
 
   DateTime? _lastNow() =>
       ref.read(contactSyncStatusProvider).value?.copies.last?.at;
@@ -2544,6 +2624,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       for (final s in shown)
         if (s.answer == null) s.person,
     ];
+    if (shown.isNotEmpty) _allOnTop ??= open.length > 1;
+    if (open.length > 1) _allShown = true;
+    // Kept for the visit: in the heading, or under the copies that differ.
+    final allOnTop = _allShown && (_allOnTop ?? false);
+    final allAtFoot = _allShown && !allOnTop && shown.isNotEmpty;
     // By name, to find someone among a few hundred.
     final people = [...?status?.duplicates]..sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
@@ -2574,7 +2659,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     // the copies that differ, under their heading; then everyone with
     // copies, under theirs.
     const differFrom = 1;
-    final peopleFrom = differFrom + (shown.isEmpty ? 0 : shown.length + 1);
+    final peopleFrom = differFrom +
+        (shown.isEmpty ? 0 : shown.length + 1 + (allAtFoot ? 1 : 0));
     return Scaffold(
       appBar: AppBar(
         title: const Text('Duplicates to merge'),
@@ -2601,9 +2687,11 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 if (i == differFrom) {
                   return _differingHead(
                     shown.length,
-                    open,
-                    asked: copies.asked,
+                    allOnTop ? _forAll(open, asked: copies.asked) : null,
                   );
+                }
+                if (i - differFrom - 1 == shown.length) {
+                  return _forAll(open, asked: copies.asked);
                 }
                 final (:person, :answer, :listed) = shown[i - differFrom - 1];
                 return _CopiesPerson(
@@ -2825,9 +2913,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   }
 
   /// Why the merge asked for waits: the last sync's [stop], as the Contact
-  /// sync screen says it, and the way on from here, the one that screen
-  /// offers: Sync here for another device's claim, which Sync now would
-  /// only meet again, else Sync now.
+  /// sync screen says it, and the ways on from here, the ones that screen
+  /// offers: the sign-in a stop needs (Sign in again, its Allow), then
+  /// Sync now; Sync here for another device's claim, which Sync now would
+  /// only meet again.
   List<Widget> _waitsOn(
     ContactSyncStatus s,
     ContactSyncHalt stop,
@@ -2842,6 +2931,15 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       ContactSyncHaltKind.notAllowed => stop.error,
       _ => null,
     };
+    // A stop a sign-in clears: the account that needs it.
+    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final signIn = switch (error) {
+      ContactSyncNeedsSignIn(:final side) => _byId(
+          accounts,
+          side == ContactSide.google ? s.googleAccountId : s.graphAccountId,
+        ),
+      _ => null,
+    };
     return [
       const SizedBox(height: 4),
       Text(
@@ -2853,6 +2951,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         const SizedBox(height: 4),
         ProblemView(
           problem: ProblemReport(doing: 'Syncing contacts', error: error),
+          onRemedy: signIn == null || _allowing ? null : () => _allow(signIn),
         ),
       ],
       const SizedBox(height: 8),
@@ -2873,13 +2972,9 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   }
 
   /// The heading of the copies that differ, what the answers do, and the
-  /// answer for all of them, set apart from each person's own.
-  Widget _differingHead(
-    int n,
-    List<ContactSyncCopiesPerson> open, {
-    required bool asked,
-  }) =>
-      Column(
+  /// answer for all of them ([forAll]) where it stands here, set apart
+  /// from each person's own.
+  Widget _differingHead(int n, Widget? forAll) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _Heading('Copies that differ ($n)'),
@@ -2892,18 +2987,28 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
             'sync, which starts at once.',
             muted: true,
           ),
-          if (open.length > 1)
-            _Buttons([
-              FilledButton.tonal(
-                key: const ValueKey('contact-sync-copies-all'),
-                // Off while a merge is asked for: it lists people as it
-                // goes, under those Ron has seen.
-                onPressed: asked ? null : () => _keepSyncedForAll(open),
-                child: Text("Keep the synced copy's for all ${open.length}"),
-              ),
-            ]),
+          ?forAll,
         ],
       );
+
+  /// Keep the synced copy's for all, for the people [open]; with fewer
+  /// than two it stays, the same size, off, saying why.
+  Widget _forAll(List<ContactSyncCopiesPerson> open, {required bool asked}) =>
+      _Buttons([
+        FilledButton.tonal(
+          key: const ValueKey('contact-sync-copies-all'),
+          // Off while a merge is asked for: it lists people as it goes,
+          // under those Ron has seen.
+          onPressed: asked || open.length < 2
+              ? null
+              : () => _keepSyncedForAll(open),
+          child: Text(switch (open.length) {
+            0 => 'Nothing left to answer for all',
+            1 => 'One left: answer it on its own',
+            final n => "Keep the synced copy's for all $n",
+          }),
+        ),
+      ]);
 }
 
 /// One person whose copies on the Microsoft side differ: each copy's
@@ -3035,11 +3140,12 @@ String _copiesChoice(ContactSyncCopiesPerson p, String answer) {
 }
 
 /// Where the merge's deleted copies can be had back. Graph's ordinary
-/// delete is used (never `permanentDelete`), but whether Exchange puts a
-/// contact deleted that way in Deleted Items or straight among the
-/// mailbox's recoverable items (kept 14 days unless the organisation
-/// says otherwise) has not been checked, and Microsoft's pages do not
-/// say: this is true either way.
+/// delete is used (never `permanentDelete`), as for the sync's own
+/// deletes (Recently deleted says the same of those), but whether
+/// Exchange puts a contact deleted that way in Deleted Items or straight
+/// among the mailbox's recoverable items (kept 14 days unless the
+/// organisation says otherwise) has not been checked, and Microsoft's
+/// pages do not say: this is true either way.
 const _deletedCopiesKept = 'Outlook keeps deleted contacts for a while: in '
     'Deleted Items, or under Recover items deleted from this folder at the '
     'top of Deleted Items.';
@@ -3151,13 +3257,18 @@ class _DeletedScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('Recently deleted'), centerTitle: false),
       body: _Body(
         children: [
+          // The sync's deletes in Outlook are Graph's ordinary delete, as
+          // the merge's are: where they land is said true either way
+          // ([_deletedCopiesKept]), and shorter, above the list.
           const _Para(
             'Every contact the sync deleted in the last 30 days. Restore '
             'makes it again where it was deleted, with every detail that '
             'can be written, and on the other side too unless it is back '
             'there already; the two are then paired. Photos, and '
-            "Outlook's fax, pager and anniversary, come back only through "
-            "Google's Trash or Outlook's Recover deleted items.",
+            "Outlook's fax, pager and anniversary, come back only from "
+            "Google's Trash or, for a while, from Outlook: in Deleted Items, "
+            'or under Recover items deleted from this folder at the top of '
+            'it.',
             top: 16,
           ),
           if (deleted.isEmpty)
@@ -3647,6 +3758,60 @@ Future<void> _act(
       content: Text(e is ReadableError ? e.message : '$e'),
     ));
     onFailure?.call();
+  }
+}
+
+/// A sign-in that asks for the contacts beside the mail, as View's
+/// address books do: Microsoft's with the contacts permission added, so
+/// that where the organisation decides, the sign-in sends it the request;
+/// Google's whole, since an installed app cannot add a permission to a
+/// sign-in it has. A Gmail account on an app password moves to Google
+/// sign-in by it. The account keeps everything cached. True once signed
+/// in again; false when backed out of, or when it failed, which is said
+/// along the bottom.
+Future<bool> _signInForContacts(
+  BuildContext context,
+  WidgetRef ref,
+  Account account,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final accountsNotifier = ref.read(accountsProvider.notifier);
+  try {
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final token = await MicrosoftSignInScreen.show(
+          context,
+          loginHint: account.emailAddress,
+          scopes: [
+            ...MicrosoftOAuth.scopes,
+            ...MicrosoftOAuth.contactSyncScopes,
+          ],
+        );
+        if (token == null) return false;
+        await accountsNotifier.signInAgain(
+          accountId: account.id,
+          token: token,
+        );
+      case MailProvider.gmail:
+        final result = await GoogleSignInScreen.show(
+          context,
+          loginHint: account.emailAddress,
+        );
+        if (result == null) return false;
+        await accountsNotifier.signInAgain(
+          accountId: account.id,
+          token: result.token,
+          signedInAs: result.identity?.email,
+        );
+    }
+    return true;
+  } catch (e) {
+    // Queued, never in place of what is there: perhaps a send's Undo.
+    messenger.showSnackBar(SnackBar(
+      duration: kBottomMessage,
+      content: Text(e is ReadableError ? e.message : '$e'),
+    ));
+    return false;
   }
 }
 
