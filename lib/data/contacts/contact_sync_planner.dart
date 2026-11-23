@@ -900,6 +900,12 @@ enum ContactReviewReason {
   /// copy went (its partner deleted, or kept instead), or the copy no
   /// longer joins any. It is never copied over unasked.
   copyOfGone,
+
+  /// For a clash: changed on one side only, and written over the other
+  /// side's value, which had never been in step with it (left as it was
+  /// when the pair was made, or listed as differing), so it is in no
+  /// other place. A clash with no reason was changed on both sides.
+  notInStep,
 }
 
 /// One Needs a look item.
@@ -1567,14 +1573,23 @@ ContactChecks contactsToRead({
 // One pair.
 
 /// A detail changed on both sides to different values: the newer edit
-/// won, and [losing] is the value that lost, from [losingSide].
+/// won, and [losing] is the value that lost, from [losingSide]. Or, with
+/// [notInStep], a detail changed on one side only over a value of the
+/// other side's that had never been in step with it: [losing] is the
+/// value written over.
 @immutable
 class ContactClash {
-  const ContactClash(this.field, this.losingSide, this.losing);
+  const ContactClash(
+    this.field,
+    this.losingSide,
+    this.losing, {
+    this.notInStep = false,
+  });
 
   final ContactField field;
   final ContactSide losingSide;
   final Object? losing;
+  final bool notInStep;
 }
 
 /// What one pair's comparison comes to.
@@ -1649,9 +1664,12 @@ class ContactPairPlan {
 ///
 /// A detail changed on one side (its raw value differs from that side's
 /// base) is written to the other, unless the other already holds the same
-/// (a fix to capitals still counts as a change). Changed on both sides to
-/// different values, it clashes: the newer edit wins ([googleUpdatedAt]
-/// against [graphUpdatedAt]; Gmail when neither is known). Lists merge
+/// (a fix to capitals still counts as a change); where the value written
+/// over had never been in step with it (the bases differ), it is listed
+/// as a clash's losing value is ([ContactClash.notInStep]). Changed on
+/// both sides to different values, it clashes: the newer edit wins
+/// ([googleUpdatedAt] against [graphUpdatedAt]; Gmail when neither is
+/// known). Lists merge
 /// ([mergeContactList]). A birthday without a year never travels. A
 /// display name that is only an email or the company is no name to copy
 /// ([SyncedContact.copyableName]): it is compared and copied as no name,
@@ -1858,7 +1876,24 @@ ContactPairPlan planPairedContact({
             other is ContactBirthday &&
             !other.hasYear &&
             v.sameDay(other);
-        if (other != null && !addsYear) removes = true;
+        if (other != null && !addsYear) {
+          removes = true;
+          // The value written over had never been in step with this
+          // side's (the two were left as they were, or listed as
+          // differing), so it is in no other place: it is kept a tap
+          // away, as a clash's losing value is. One that was in step is
+          // on this side's base, and goes as any edit's old value does.
+          if (!norm.same(f, _copied(gBase, f), _copied(hBase, f))) {
+            clashes.add(
+              ContactClash(
+                f,
+                fromGoogle ? ContactSide.graph : ContactSide.google,
+                other,
+                notInStep: true,
+              ),
+            );
+          }
+        }
       }
       continue;
     }
@@ -1995,6 +2030,7 @@ _comparePair({
       for (final clash in pair.clashes)
         ContactReviewItem(
           kind: ContactReviewKind.clash,
+          reason: clash.notInStep ? ContactReviewReason.notInStep : null,
           googleName: googleName,
           graphId: graphId,
           fields: [clash.field],
@@ -4816,9 +4852,14 @@ class _Planner {
         items.add(
           _changeItem(
             plan,
+            // Changed on both sides only: a value never in step was
+            // changed on one side, and Copy them back treats it as any
+            // such change.
             clashes: {
               for (final r in p.reviews)
-                if (r.kind == ContactReviewKind.clash) ...r.fields,
+                if (r.kind == ContactReviewKind.clash &&
+                    r.reason != ContactReviewReason.notInStep)
+                  ...r.fields,
             },
           ),
         );
@@ -4896,7 +4937,10 @@ class _Planner {
           changes.add(
             _changeItem(
               made.plan,
-              clashes: {for (final c in made.pair.clashes) c.field},
+              clashes: {
+                for (final c in made.pair.clashes)
+                  if (!c.notInStep) c.field,
+              },
             ),
           );
         default:

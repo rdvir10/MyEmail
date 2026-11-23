@@ -1571,6 +1571,52 @@ void main() {
       expect((await h.status()).needsALook, isEmpty);
       expect(h.requests, isEmpty);
     });
+
+    test('a detail left as it was, then changed on one side: copied, and '
+        "the value it replaced listed, Use Hadco's instead a tap away",
+        () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      var look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair\nCall in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(
+        h.graph.contact(o)!['personalNotes'],
+        'Met at the fair\nCall in May',
+      );
+      look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, ContactReviewReason.notInStep);
+      expect(look.losingSide, ContactSide.graph);
+      expect(look.losing, 'Prefers email after 5');
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+      await h.sync.syncNow();
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      final notes = h.google.person(g)!['biographies']! as List;
+      expect((notes.single as Map)['value'], 'Prefers email after 5');
+      expect((await h.status()).needsALook, isEmpty);
+    });
   });
 
   group('Outlook entries read short', () {

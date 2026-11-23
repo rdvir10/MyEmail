@@ -872,6 +872,104 @@ void main() {
       expect(other.reviews.single.losingSide, ContactSide.graph);
     });
 
+    test('a value never in step that a change writes over is kept a tap '
+        'away', () {
+      // A new pair's notes differed and were left as they were; Ron then
+      // adds a line to the Gmail note.
+      final gBase = base.withValue(
+        ContactField.notes,
+        const ContactNotes('Met at the fair'),
+      );
+      final hBase = base.withValue(
+        ContactField.notes,
+        const ContactNotes('Prefers email after 5'),
+      );
+      final edited = gBase.withValue(
+        ContactField.notes,
+        const ContactNotes('Met at the fair\nCall in May'),
+      );
+      final plan = run(
+        google: [g('people/c1', edited, etag: 'etag-2')],
+        links: [
+          link(1, 'people/c1', 'H1', googleBase: gBase, graphBase: hBase),
+        ],
+      );
+      final pair = byLink(plan, 1)!;
+      // The change is copied as before...
+      expect(pair.graphWrite!.fields, {ContactField.notes});
+      expect(
+        pair.graphWrite!.target.notes!.text,
+        'Met at the fair\nCall in May',
+      );
+      expect(pair.googleWrite, isNull);
+      expect(pair.removes, isTrue);
+      // ...and Hadco's note, never in Gmail, is listed with Use Hadco's
+      // instead, as a clash's losing value is.
+      final review = plan.reviews.single;
+      expect(review.kind, ContactReviewKind.clash);
+      expect(review.reason, ContactReviewReason.notInStep);
+      expect(review.fields, [ContactField.notes]);
+      expect(review.losingSide, ContactSide.graph);
+      expect(review.losing!.notes!.text, 'Prefers email after 5');
+
+      // The other way round: Hadco's new job title over Gmail's, which
+      // differed.
+      final titles = run(
+        graph: [
+          h(
+            'H1',
+            base.withValue(ContactField.jobTitle, 'Director'),
+            key: 'key-2',
+          ),
+        ],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: base.withValue(ContactField.jobTitle, 'Buyer'),
+            graphBase: base,
+          ),
+        ],
+      );
+      expect(
+        byLink(titles, 1)!.googleWrite!.target.text(ContactField.jobTitle),
+        'Director',
+      );
+      final item = titles.reviews.single;
+      expect(item.reason, ContactReviewReason.notInStep);
+      expect(item.losingSide, ContactSide.google);
+      expect(item.losing!.text(ContactField.jobTitle), 'Buyer');
+
+      // A value that was in step, one only added, and a year given to
+      // Gmail's year-less birthday on the same day: no item.
+      final yearLess = base.withValue(
+        ContactField.birthday,
+        const ContactBirthday(month: 7, day: 4),
+      );
+      for (final (gWas, hWas, hNow) in [
+        (base, base, base.withValue(ContactField.jobTitle, 'Director')),
+        (base, base, base.withValue(ContactField.nickname, 'Annie')),
+        (
+          yearLess,
+          base,
+          base.withValue(
+            ContactField.birthday,
+            const ContactBirthday(year: 1980, month: 7, day: 4),
+          ),
+        ),
+      ]) {
+        final plan = run(
+          graph: [h('H1', hNow, key: 'key-2')],
+          links: [
+            link(1, 'people/c1', 'H1', googleBase: gWas, graphBase: hWas),
+          ],
+        );
+        expect(byLink(plan, 1)!.googleWrite, isNotNull);
+        expect(plan.reviews, isEmpty);
+      }
+    });
+
     test('the app\'s own write coming back is a no-op', () {
       // Run one: Gmail changed the job title; Outlook is written.
       final changed = base.withValue(ContactField.jobTitle, 'Director');
@@ -3173,6 +3271,62 @@ void main() {
       final pair = byLink(back, 0)!;
       expect(pair.googleWrite!.target.text(ContactField.company), 'Acme');
       expect(pair.graphWrite!.target.text(ContactField.jobTitle), 'Manager');
+    });
+
+    test('a value never in step that a change would write over is no '
+        'clash; it is listed once Apply them writes it', () {
+      // The job titles were left differing; Gmail's then changed.
+      final gWas = base.withValue(ContactField.jobTitle, 'Buyer');
+      final hWas = base.withValue(ContactField.jobTitle, 'Lead buyer');
+      final gmail = gWas.withValue(ContactField.jobTitle, 'Manager');
+      List<ContactLinkInput> rows({required bool held}) => [
+        for (var i = 0; i < 11; i++)
+          link(
+            i,
+            'people/c$i',
+            'H$i',
+            googleBase: gWas,
+            graphBase: hWas,
+            state: held ? ContactLinkState.held : ContactLinkState.paired,
+            reason: held ? ContactHeldReason.changeBrake : null,
+          ),
+      ];
+      const expected = [
+        ContactDetailChange(
+          field: ContactField.jobTitle,
+          side: ContactSide.graph,
+          before: 'Lead buyer',
+          after: 'Manager',
+        ),
+      ];
+      // Raised this run, and rebuilt for a question held before.
+      for (final held in [false, true]) {
+        final plan = run(
+          google: [for (var i = 0; i < 11; i++) g('people/c$i', gmail)],
+          graph: [for (var i = 0; i < 11; i++) h('H$i', hWas)],
+          links: rows(held: held),
+        );
+        expect(
+          plan.heldBrakes.single.items.first.changes,
+          expected,
+          reason: held ? 'held' : 'raised',
+        );
+        expect(plan.reviews, isEmpty, reason: 'held: nothing written yet');
+      }
+      // Apply them: written, and Hadco's title listed.
+      final apply = run(
+        google: [g('people/c0', gmail)],
+        graph: [h('H0', hWas)],
+        links: [rows(held: true).first],
+        answers: const [ContactAnswer(ContactAnswerKind.applyHeld)],
+      );
+      expect(
+        byLink(apply, 0)!.graphWrite!.target.text(ContactField.jobTitle),
+        'Manager',
+      );
+      final item = apply.reviews.single;
+      expect(item.reason, ContactReviewReason.notInStep);
+      expect(item.losing!.text(ContactField.jobTitle), 'Lead buyer');
     });
 
     test('an item lists the details lost on both sides', () {
