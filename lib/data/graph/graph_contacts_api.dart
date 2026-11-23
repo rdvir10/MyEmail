@@ -305,7 +305,7 @@ class GraphContactsApi {
         'method': 'GET',
         'url': _relative('/me/contacts/${_id(id)}', {
           r'$select': graphContactSelect,
-          if (withTag) r'$expand': _expandOf(graphLinkPropertyId),
+          if (withTag) r'$expand': _expandOf([graphLinkPropertyId]),
         }),
         'headers': {'Prefer': prefer},
       },
