@@ -690,7 +690,10 @@ class ContactLinkPlan {
   /// on as [basesAfter] gives them for that answer, so the sync's own
   /// write never reads as Ron's change, in this plan or in one planned
   /// again from it. Its edit time stays the one read before the write.
-  /// A side has a read or a written answer, not both.
+  /// A side has a read or a written answer, not both. A write already made
+  /// stands: the value it wrote over is gone from that side, so the item
+  /// that keeps it (a clash's losing value, or one never in step) is kept
+  /// among [reviews], though the bases, moved on, would no longer raise it.
   ///
   /// Only a plan with [settings] can be planned again (a [StateError]
   /// otherwise). A read that is no whole contact (Gmail's deleted entry,
@@ -755,7 +758,42 @@ class ContactLinkPlan {
       graphChangeKey: hRead != null ? hRead.changeKey : graphChangeKey,
       fromAnswer: fromAnswer,
     );
-    return (plan: made.plan, reviews: made.reviews);
+    if (googleWritten == null && graphWritten == null) {
+      return (plan: made.plan, reviews: made.reviews);
+    }
+    // The items this plan gave the values its writes already made wrote
+    // over: compared again as it was, the same.
+    final first = _comparePair(
+      settings: s,
+      googleName: g,
+      graphId: h,
+      googleNow: gNow,
+      graphNow: hNow,
+    );
+    bool madeOver(ContactReviewItem r) {
+      if (r.kind != ContactReviewKind.clash || r.fields.isEmpty) return false;
+      final f = r.fields.first;
+      return switch (r.losingSide) {
+        ContactSide.graph =>
+          graphWritten != null && graphWrite!.fields.contains(f),
+        ContactSide.google =>
+          googleWritten != null && googleWrite!.fields.contains(f),
+        null => false,
+      };
+    }
+
+    final kept = first.reviews.where(madeOver).toList();
+    final keptFields = {for (final r in kept) r.fields.first};
+    return (
+      plan: made.plan,
+      reviews: [
+        for (final r in made.reviews)
+          if (r.kind != ContactReviewKind.clash ||
+              !keptFields.contains(r.fields.firstOrNull))
+            r,
+        ...kept,
+      ],
+    );
   }
 
   /// The row to save when the read just before [delete] finds the contact

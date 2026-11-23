@@ -5939,6 +5939,66 @@ void main() {
         throwsArgumentError,
       );
     });
+
+    test('keeps the items of a write already made', () {
+      // Never in step, Gmail's note goes over Hadco's (listed), and
+      // Hadco's new job title goes to Gmail: a write each way.
+      final gWas = base.withValue(
+        ContactField.notes,
+        const ContactNotes('Met at the fair'),
+      );
+      final hWas = base.withValue(
+        ContactField.notes,
+        const ContactNotes('Prefers email after 5'),
+      );
+      final gNow = gWas.withValue(
+        ContactField.notes,
+        const ContactNotes('Met at the fair\nCall in May'),
+      );
+      final hNow = hWas.withValue(ContactField.jobTitle, 'Buyer');
+      final plan = run(
+        google: [g('people/c1', gNow, etag: 'e1')],
+        graph: [h('H1', hNow, key: 'k1')],
+        links: [
+          link(
+            1,
+            'people/c1',
+            'H1',
+            googleBase: gWas,
+            graphBase: hWas,
+            etag: 'e0',
+            key: 'k0',
+          ),
+        ],
+      );
+      final first = byLink(plan, 1)!;
+      expect(first.graphWrite!.fields, {ContactField.notes});
+      expect(first.googleWrite!.fields, {ContactField.jobTitle});
+      expect(plan.reviews.single.reason, ContactReviewReason.notInStep);
+      // Outlook's write went through; Gmail's read before its own finds
+      // Ron added a nickname meanwhile.
+      final again = first.replan(
+        google: g(
+          'people/c1',
+          gNow.withValue(ContactField.nickname, 'Annie'),
+          etag: 'e2',
+        ),
+        graphWritten: h(
+          'H1',
+          hNow.withValue(ContactField.notes, gNow[ContactField.notes]),
+          key: 'k2',
+        ),
+      );
+      expect(again.plan.googleWrite!.fields, {ContactField.jobTitle});
+      expect(again.plan.graphWrite!.fields, {ContactField.nickname});
+      // Hadco's old note is gone from Hadco, though the bases, moved on by
+      // the write, would no longer list it: its item stays.
+      final item = again.reviews.single;
+      expect(item.kind, ContactReviewKind.clash);
+      expect(item.reason, ContactReviewReason.notInStep);
+      expect(item.losingSide, ContactSide.graph);
+      expect(item.losing!.notes!.text, 'Prefers email after 5');
+    });
   });
   group('copies of one person', () {
     // Ann as the tablet holds her: an email and a mobile.

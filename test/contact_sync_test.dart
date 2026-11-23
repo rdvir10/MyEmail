@@ -1806,6 +1806,61 @@ void main() {
         reason: 'no longer held as refused',
       );
     });
+
+    test("a value written over in Outlook stays listed when Gmail's write "
+        'is planned again', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      final differing = (await h.status()).needsALook.single;
+      await h.sync.answerLook(differing.id, ContactSyncChoice.leaveAsTheyAre);
+
+      // A write each way: Gmail's note over Hadco's, never in step, and
+      // Hadco's new job title to Gmail. Ron adds a nickname in Gmail as
+      // the run reads it before its write.
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair\nCall in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      h.graph.editFromOutlook(o, {'jobTitle': 'Buyer'});
+      var edited = false;
+      h.before = (r) async {
+        if (!edited && r.method == 'GET' && r.url.path == '/v1/$g') {
+          edited = true;
+          h.google.editFromGmail(g, {
+            'nicknames': [
+              {'value': 'Annie'},
+            ],
+          });
+        }
+      };
+      final status = await h.later();
+      h.before = null;
+      expect(status.halt, isNull);
+      expect(edited, isTrue);
+      expect(
+        h.graph.contact(o)!['personalNotes'],
+        'Met at the fair\nCall in May',
+      );
+      final organizations = h.google.person(g)!['organizations']! as List;
+      expect((organizations.single as Map)['title'], 'Buyer');
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, ContactReviewReason.notInStep);
+      expect(look.losing, 'Prefers email after 5');
+    });
   });
 
   group('Outlook entries read short', () {
