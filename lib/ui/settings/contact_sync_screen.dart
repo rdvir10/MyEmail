@@ -40,10 +40,14 @@ class ContactSyncScreen extends ConsumerStatefulWidget {
   static final Set<_ContactSyncScreenState> _open = {};
 
   /// Back to the Contact sync screen already open, the nearest if there
-  /// were ever two, closing whatever is over it (Duplicates to merge, Needs
-  /// a look, a sign-in, a question): true when there was one, so that the
-  /// one-line message's Open never piles a second one on top; false when
-  /// none is open, for the caller to open one.
+  /// were ever two, closing what contact sync itself put over it (Needs a
+  /// look, Duplicates to merge, Recently deleted, and a sign-in pushed from
+  /// it or from them): true when it went back, so that the one-line
+  /// message's Open never piles a second one on top. False when none is
+  /// open, or when anything else is over it, for the caller to open one
+  /// over everything: a message or a meeting opened from a notification,
+  /// and a reply or an edit begun there, which Navigator.pop would close
+  /// without its question, losing what Ron had written.
   static bool showOpen() {
     final open = _open.lastWhereOrNull(
       (s) => s.mounted && (s._route?.isActive ?? false),
@@ -51,8 +55,50 @@ class ContactSyncScreen extends ConsumerStatefulWidget {
     final route = open?._route;
     final navigator = route?.navigator;
     if (route == null || navigator == null) return false;
+    // Down from the top, each screen one that contact sync put over the
+    // next, as far as this one.
+    Route<dynamic>? top;
+    navigator.popUntil((r) {
+      top = r;
+      return true;
+    });
+    var over = top;
+    while (!identical(over, route)) {
+      if (over == null || !over.isActive) return false;
+      over = _putOverBy[over];
+    }
     navigator.popUntil((r) => identical(r, route));
     return true;
+  }
+
+  /// Each screen contact sync put over one of its own, with that one: the
+  /// way down that [showOpen] may close.
+  static final _putOverBy = Expando<Route<dynamic>>('contact sync put over');
+
+  /// [push] a screen over the one [context] is in, noted as contact sync's
+  /// own for [showOpen] when that one is in front, so that the new one is
+  /// right over it. One pushed while something else was in front is not
+  /// noted: Open then closes nothing to reach it.
+  static Future<T?> _putOver<T>(
+    BuildContext context,
+    Future<T?> Function() push,
+  ) {
+    final under = ModalRoute.of(context);
+    final navigator = Navigator.of(context);
+    final inFront = under?.isCurrent ?? false;
+    final pushed = push();
+    if (under != null && inFront) {
+      // Pushed at once: the new screen is the top one now.
+      Route<dynamic>? top;
+      navigator.popUntil((r) {
+        top = r;
+        return true;
+      });
+      if (top case final top? when !identical(top, under)) {
+        _putOverBy[top] = under;
+      }
+    }
+    return pushed;
   }
 
   @override
@@ -579,7 +625,10 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       // The brakes' questions first, while there are any: what follows them
       // (a stop, the sync going, how the last one went) changes as each
       // answer's sync starts and ends, and above them it would move them
-      // under Ron's finger as he goes down them.
+      // under Ron's finger as he goes down them. Over them only the slot,
+      // of one height whatever it says, with the stop and its way on,
+      // which under a question of many contacts would be out of sight.
+      if (ours && cards.isNotEmpty) _slot(s, google, graph, graphName),
       for (final (:card, :key) in cards)
         _QuestionCard(
           key: ValueKey(key),
@@ -741,8 +790,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         forStart: forStart,
       );
 
-  void _push(Widget screen) => Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => screen),
+  void _push(Widget screen) => ContactSyncScreen._putOver(
+        context,
+        () => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => screen),
+        ),
       );
 
   /// The brakes' questions as shown: each where it was first shown during
@@ -1034,10 +1086,6 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     final now = DateTime.now();
     final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
     final side = _haltSide(halt);
-    // Before the first sync has started, Sync here would start it without
-    // Start's preview and backup from the last hour.
-    final firstGated =
-        !s.firstStarted && !_stepsFor(google, graph).readyAt(now);
     final line = _stopLine(s, halt, graphName, now, use24h);
     if (line == null) return const [];
     switch (halt.kind) {
@@ -1057,30 +1105,18 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
             ),
         ];
       case ContactSyncHaltKind.otherDevice:
+        final here = _syncHere(s, google, graph, now);
         return [
           _Para(line, strong: true),
           _Para(_otherDeviceLine(halt, now, use24h)),
           _Buttons([
             OutlinedButton(
               key: const ValueKey('contact-sync-here'),
-              onPressed: firstGated
-                  ? null
-                  : () => _act(context, () async {
-                        // Checked again: the screen may have stood open
-                        // past the hour since the button was drawn.
-                        final steps =
-                            _stepsFor(google, graph, watch: false);
-                        if (!s.firstStarted &&
-                            !steps.readyAt(DateTime.now())) {
-                          if (mounted) setState(() {});
-                          return;
-                        }
-                        await _sync.syncHere();
-                      }),
+              onPressed: here,
               child: const Text('Sync here'),
             ),
           ]),
-          if (firstGated)
+          if (here == null)
             const _Para(
               'To sync here instead, see the preview and save the backup '
               'below first.',
@@ -1120,6 +1156,163 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     }
   }
 
+  /// Sync here, for another device's claim; null, greyed out, before the
+  /// first sync has started until Start's preview and backup from the last
+  /// hour are done, since it would start the first sync without them.
+  VoidCallback? _syncHere(
+    ContactSyncStatus s,
+    Account google,
+    Account graph,
+    DateTime now,
+  ) {
+    if (!s.firstStarted && !_stepsFor(google, graph).readyAt(now)) {
+      return null;
+    }
+    return () => _act(context, () async {
+          // Checked again: the screen may have stood open past the hour
+          // since the button was drawn.
+          final steps = _stepsFor(google, graph, watch: false);
+          if (!s.firstStarted && !steps.readyAt(DateTime.now())) {
+            if (mounted) setState(() {});
+            return;
+          }
+          await _sync.syncHere();
+        });
+  }
+
+  /// Over the brakes' questions while any is on the screen: the sync in
+  /// one line, and the one button a stop offers. A question lists every
+  /// contact it holds, so the stop's own section, under the questions, is
+  /// out of sight; and a stop such as Hadco's sign-in run out stops every
+  /// answer's sync at once, with Sign in again its only way on. So here is
+  /// why it stopped, with the way on its section offers (Sign in again,
+  /// Sync here, Try again); with no stop, the sync going or when it last
+  /// synced, and the row left empty. One line and one row whatever it
+  /// says, so that the questions under it do not move as a sync starts,
+  /// ends or stops, nor as a stop goes; all of it is said in full under
+  /// the questions.
+  Widget _slot(
+    ContactSyncStatus s,
+    Account google,
+    Account graph,
+    String graphName,
+  ) {
+    final theme = Theme.of(context);
+    final now = DateTime.now();
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    // As under the questions: the sync going, else why the last one
+    // stopped, else how it went.
+    final stop = switch (s.halt) {
+      final halt? when !s.isRunning =>
+        (halt: halt, line: _stopLine(s, halt, graphName, now, use24h)),
+      _ => null,
+    };
+    final (String line, _WayOn? way) = switch (stop) {
+      _ when s.isRunning => ('Syncing…', null),
+      (:final halt, line: final said?) => (
+          said,
+          _wayOn(s, halt, google, graph, now),
+        ),
+      _ => (_lastLine(s, now, use24h), null),
+    };
+    final style = theme.textTheme.bodyMedium;
+    return Column(
+      key: const ValueKey('contact-sync-slot'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+          child: Text(
+            line,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: stop?.line == null
+                ? style
+                : style?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
+        _Buttons([
+          // With nothing to offer, the row keeps a button's height unseen.
+          Visibility.maintain(
+            visible: way != null,
+            child: FilledButton.tonal(
+              onPressed: way?.onPressed,
+              child: Text(
+                way?.label ?? '',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+        ]),
+      ],
+    );
+  }
+
+  /// The way on that [halt]'s own section offers, for [_slot], named as
+  /// there: Sync here, or its problem's remedy (Sign in again, Try again);
+  /// null where it offers none, as for Google's limit, or for a failure
+  /// that trying again would not help (Sync now, under the last result,
+  /// is not the stop's own).
+  _WayOn? _wayOn(
+    ContactSyncStatus s,
+    ContactSyncHalt halt,
+    Account google,
+    Account graph,
+    DateTime now,
+  ) {
+    switch (halt.kind) {
+      case ContactSyncHaltKind.otherDevice:
+        return (
+          label: 'Sync here',
+          onPressed: _syncHere(s, google, graph, now),
+        );
+      case ContactSyncHaltKind.notAllowed:
+        final account = switch (_haltSide(halt)) {
+          ContactSide.google => google,
+          ContactSide.graph => graph,
+          null => null,
+        };
+        return _remedyOffered(
+          halt.error,
+          account == null ? null : () => _allow(account),
+        );
+      case ContactSyncHaltKind.failed:
+        final failure = _failureOf(halt);
+        return _remedyOffered(
+          failure,
+          _remedy(failure, google, graph, s.firstStarted ? _syncNow : null),
+        );
+      case ContactSyncHaltKind.emptyAnswer:
+      case ContactSyncHaltKind.quota:
+      case ContactSyncHaltKind.putAway:
+        return null;
+    }
+  }
+
+  /// [remedy] for [error] as ProblemView offers it: named as there, and
+  /// only where it shows it.
+  static _WayOn? _remedyOffered(Object? error, VoidCallback? remedy) {
+    if (error == null || remedy == null) return null;
+    final offered = remedyFor(error);
+    return offered.isOffered
+        ? (label: offered.label, onPressed: remedy)
+        : null;
+  }
+
+  /// How the last sync went, in short, for [_slot]: the start of what is
+  /// said of it in full under the questions.
+  static String _lastLine(ContactSyncStatus s, DateTime now, bool use24h) =>
+      switch (s.last) {
+        final l? when l.complete => 'Synced ${_when(l.at, now, use24h)}',
+        final l? when l.firstSync =>
+          'The first sync got ${l.done} of ${l.planned} changes done.',
+        final l? => 'The last sync stopped ${_when(l.at, now, use24h)}, '
+            '${l.done} of ${l.planned} changes done.',
+        null when s.firstUnfinished => 'The first sync has not finished.',
+        null => '',
+      };
+
   /// A failed run's failure, or one worth trying again where the runner
   /// gave none.
   static Object _failureOf(ContactSyncHalt halt) =>
@@ -1153,6 +1346,10 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
   static String _none(int n, String what) =>
       n == 0 ? 'none $what' : '$n $what';
 }
+
+/// A stop's way on, for the slot over the brakes' questions: the button's
+/// name, and what it does (null: greyed out).
+typedef _WayOn = ({String label, VoidCallback? onPressed});
 
 /// One account's line: whether it allows contact sync, and Allow where a
 /// sign-in can allow it. Laid out as View's online address books are.
@@ -3771,7 +3968,8 @@ Future<void> _act(
 /// sign-in it has. A Gmail account on an app password moves to Google
 /// sign-in by it. The account keeps everything cached. True once signed
 /// in again; false when backed out of, or when it failed, which is said
-/// along the bottom.
+/// along the bottom. The sign-in counts among contact sync's own screens,
+/// which a stop's Open closes on its way back to the Contact sync screen.
 Future<bool> _signInForContacts(
   BuildContext context,
   WidgetRef ref,
@@ -3782,13 +3980,16 @@ Future<bool> _signInForContacts(
   try {
     switch (account.provider) {
       case MailProvider.outlook:
-        final token = await MicrosoftSignInScreen.show(
+        final token = await ContactSyncScreen._putOver(
           context,
-          loginHint: account.emailAddress,
-          scopes: [
-            ...MicrosoftOAuth.scopes,
-            ...MicrosoftOAuth.contactSyncScopes,
-          ],
+          () => MicrosoftSignInScreen.show(
+            context,
+            loginHint: account.emailAddress,
+            scopes: [
+              ...MicrosoftOAuth.scopes,
+              ...MicrosoftOAuth.contactSyncScopes,
+            ],
+          ),
         );
         if (token == null) return false;
         await accountsNotifier.signInAgain(
@@ -3796,9 +3997,12 @@ Future<bool> _signInForContacts(
           token: token,
         );
       case MailProvider.gmail:
-        final result = await GoogleSignInScreen.show(
+        final result = await ContactSyncScreen._putOver(
           context,
-          loginHint: account.emailAddress,
+          () => GoogleSignInScreen.show(
+            context,
+            loginHint: account.emailAddress,
+          ),
         );
         if (result == null) return false;
         await accountsNotifier.signInAgain(

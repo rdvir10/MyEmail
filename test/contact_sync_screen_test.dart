@@ -13,12 +13,14 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/draft.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/common/text_size.dart';
+import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart' show formatClock;
 import 'package:myemail/ui/settings/backup_screen.dart';
 import 'package:myemail/ui/settings/contact_sync_screen.dart';
@@ -2351,6 +2353,221 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('Hadco could not be reached.'), findsOneWidget);
         expect(top(), b, reason: 'a sync stopping');
+      });
+
+      testWidgets("a stop's way on is on a phone's first screen, above a "
+          'question of many contacts', (tester) async {
+        // Hadco's password has run out: every answer's sync stops at once,
+        // the access row can only say it could not check, and Sign in again
+        // is the one way on.
+        sync = FakeContactSync(
+          status: synced(
+            halt: ContactSyncHalt(
+              kind: ContactSyncHaltKind.notAllowed,
+              at: at1042,
+              side: ContactSide.graph,
+              error: const ContactSyncNeedsSignIn(
+                side: ContactSide.graph,
+                accountId: 'acct-h',
+                message: "Hadco's sign-in has run out. Sign in again.",
+              ),
+            ),
+            questions: [
+              ContactSyncQuestion(
+                kind: ContactSyncQuestionKind.deletions,
+                items: [
+                  for (var i = 0; i < 40; i++)
+                    ContactSyncQuestionItem(
+                      title: 'Person $i',
+                      side: ContactSide.google,
+                      key: 'k$i',
+                    ),
+                ],
+              ),
+            ],
+          ),
+          access: {
+            'acct-h': const ContactSyncAccess(
+              ContactSyncAccessState.unknown,
+              "Hadco's sign-in has run out.",
+            ),
+          },
+        );
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester, oauth: _grants(), size: const Size(412, 915));
+
+        // On the screen as it opens, unscrolled, and above the question.
+        final signIn = find.text('Sign in again').hitTestable();
+        expect(signIn, findsOneWidget);
+        expect(
+          find
+              .text('Contact sync has stopped: not allowed yet for Hadco.')
+              .hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          tester.getTopLeft(signIn).dy,
+          lessThan(
+            tester.getTopLeft(button('contact-sync-question:deletions')).dy,
+          ),
+        );
+
+        await tester.tap(signIn);
+        for (var i = 0; i < 20; i++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+      });
+
+      testWidgets('above the cards, a line and a button that keep their '
+          'height as a sync starts, ends, stops and its stop clears',
+          (tester) async {
+        final question = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.changes,
+          items: [
+            for (final (key, name) in [
+              ('a', 'Ann Cole'),
+              ('b', 'Ben Day'),
+              ('c', 'Cy Fox'),
+            ])
+              ContactSyncQuestionItem(
+                title: name,
+                side: ContactSide.graph,
+                key: key,
+                changes: const [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Buyer',
+                  ),
+                ],
+              ),
+          ],
+        );
+        ContactSyncStatus held({
+          ContactSyncTally? tally,
+          ContactSyncProgress? running,
+          ContactSyncHalt? halt,
+        }) =>
+            synced(
+              questions: [question],
+              last: tally ?? ContactSyncTally(at: at1042, changedGraph: 1),
+              running: running,
+              halt: halt,
+            );
+        sync = FakeContactSync(status: held());
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester, oauth: _grants(), size: const Size(412, 915));
+        final slot = button('contact-sync-slot');
+        Finder inSlot(String text) =>
+            find.descendant(of: slot, matching: find.text(text));
+        double top() =>
+            tester.getTopLeft(button('contact-sync-question:changes')).dy;
+        final clock = formatClock(at1042, use24h: false);
+
+        expect(inSlot('Synced at $clock'), findsOneWidget);
+        final cards = top();
+        expect(tester.getTopLeft(slot).dy, lessThan(cards));
+
+        // The sync an answer starts, going.
+        sync.set(held(
+          running: const ContactSyncProgress(
+            step: ContactSyncStep.writing,
+            done: 1,
+            total: 3,
+          ),
+        ));
+        await tester.pump();
+        await tester.pump();
+        expect(inSlot('Syncing…'), findsOneWidget);
+        expect(top(), cards, reason: 'a sync starting');
+
+        // Done, with more to say about it: said in full under the cards.
+        sync.set(held(
+          tally: ContactSyncTally(
+            at: at1042,
+            addedToGoogle: 2,
+            changedGraph: 3,
+            deletedGraph: 1,
+            paired: 4,
+            needsALook: 2,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(inSlot('Synced at $clock'), findsOneWidget);
+        expect(top(), cards, reason: 'a sync ending');
+
+        // Stopped by Hadco's sign-in: why, and Sign in again.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.notAllowed,
+            at: at1042,
+            side: ContactSide.graph,
+            error: const ContactSyncNeedsSignIn(
+              side: ContactSide.graph,
+              accountId: 'acct-h',
+              message: 'Hadco has not allowed contact sync.',
+            ),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          inSlot('Contact sync has stopped: not allowed yet for Hadco.'),
+          findsOneWidget,
+        );
+        expect(inSlot('Sign in again'), findsOneWidget);
+        expect(top(), cards, reason: 'a sync stopping, with a way on');
+
+        // Signed in, and synced: the stop and its button go.
+        sync.set(held());
+        await tester.pumpAndSettle();
+        expect(inSlot('Synced at $clock'), findsOneWidget);
+        expect(inSlot('Sign in again'), findsNothing);
+        expect(top(), cards, reason: 'the stop clearing');
+
+        // A failure worth trying again: Try again.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.failed,
+            at: at1042,
+            error: const ContactSyncFailed('Hadco could not be reached.'),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(inSlot('The last sync stopped at $clock.'), findsOneWidget);
+        expect(top(), cards, reason: 'a failure');
+        await tester.tap(inSlot('Try again'));
+        await tester.pumpAndSettle();
+        expect(sync.count('syncNow'), 1);
+
+        // The other device: Sync here.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.otherDevice,
+            at: at1042,
+            claimedAt: at1042.subtract(const Duration(hours: 1)),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          inSlot('Contact sync is on on your other device'),
+          findsOneWidget,
+        );
+        expect(top(), cards, reason: 'the other device');
+        await tester.tap(inSlot('Sync here'));
+        await tester.pumpAndSettle();
+        expect(sync.count('syncHere'), 1);
+
+        // Google's limit, with no way on of its own: the line alone.
+        sync.set(held(
+          halt: ContactSyncHalt(kind: ContactSyncHaltKind.quota, at: at1042),
+        ));
+        await tester.pumpAndSettle();
+        expect(
+          inSlot("Google's daily limit on changes to contacts is spent. "
+              'Contact sync carries on tomorrow.'),
+          findsOneWidget,
+        );
+        expect(top(), cards, reason: "Google's limit");
       });
 
       testWidgets('a question whose contacts are let go unanswered says so, '
@@ -5899,6 +6116,150 @@ void main() {
       expect(ContactSyncScreen.isOpen, isTrue);
       expect(find.text('The last sync stopped at '
           '${formatClock(at, use24h: false)}.'), findsOneWidget);
+    });
+
+    testWidgets("a stop's Open, said over a sign-in pushed from Duplicates "
+        'to merge, goes back to the Contact sync screen under both',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      ContactSyncHalt signIn(DateTime at) => ContactSyncHalt(
+            kind: ContactSyncHaltKind.notAllowed,
+            at: at,
+            side: ContactSide.graph,
+            error: const ContactSyncNeedsSignIn(
+              side: ContactSide.graph,
+              accountId: 'acct-h',
+              message: 'Hadco has not allowed contact sync.',
+            ),
+          );
+      final at = DateTime(today.year, today.month, today.day, 9);
+      sync = FakeContactSync(status: synced(
+        halt: signIn(at),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byKey(const ValueKey('contact-sync-copies')),
+        matching: find.text('Sign in again'),
+      ));
+      // Not pumpAndSettle: the sign-in page never says it has loaded here.
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+
+      // A later run stops the same way, and says so over the sign-in.
+      final later = at.add(const Duration(hours: 1));
+      sync.set(synced(
+        halt: signIn(later),
+        notice: ContactSyncNotice(at: later, halt: signIn(later)),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.text('Contact sync has stopped: not allowed yet for Hadco'),
+          findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen, skipOffstage: false),
+          findsNothing);
+      expect(find.text('Duplicates to merge', skipOffstage: false),
+          findsNothing);
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsOneWidget, reason: 'the one open, not a second');
+      expect(ContactSyncScreen.isOpen, isTrue);
+    });
+
+    testWidgets("a stop's Open, said over a screen from elsewhere, closes "
+        'nothing: a message being written stays as it was', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      final navigator =
+          tester.state<NavigatorState>(find.byType(Navigator).first);
+      unawaited(navigator.push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      // A notification tapped in the shade opens a message over it, and
+      // its Reply a message to write: here, the writing at once.
+      unawaited(navigator.push(MaterialPageRoute<bool>(
+        builder: (_) => const ComposeScreen(
+          draft: Draft(
+            accountId: 'acct-g',
+            kind: ComposeKind.newMessage,
+            subject: 'Numbers',
+            htmlBody: '<p>The figures for Thursday.</p>',
+          ),
+        ),
+      )));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Numbers'),
+        'Numbers for Thursday',
+      );
+      await tester.pumpAndSettle();
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      final halt = ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      );
+      sync.set(synced(
+        halt: halt,
+        notice: ContactSyncNotice(at: at, halt: halt),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing, reason: 'nothing asked');
+      expect(ContactSyncScreen.isOpen, isTrue);
+      expect(find.text('The last sync stopped at '
+          '${formatClock(at, use24h: false)}.'), findsOneWidget);
+      expect(find.byType(ComposeScreen, skipOffstage: false), findsOneWidget,
+          reason: 'still open, under it');
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsNWidgets(2), reason: 'one under the message, one over it');
+
+      // Back from it: the message as Ron left it.
+      Navigator.of(tester.element(find.byType(ContactSyncScreen))).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.text('Numbers for Thursday'), findsOneWidget);
     });
   });
 

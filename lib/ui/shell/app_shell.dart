@@ -333,7 +333,9 @@ class _AppShellState extends ConsumerState<AppShell>
         onPressed: () {
           if (!mounted) return;
           // Said over a screen of its own (Duplicates to merge, say): back
-          // to the Contact sync screen under it, never a second one.
+          // to the Contact sync screen under it, never a second one. Said
+          // over any other (a reply being written, say), one goes on top,
+          // and nothing under it is closed.
           if (ContactSyncScreen.showOpen()) return;
           unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
             builder: (_) => const ContactSyncScreen(),
