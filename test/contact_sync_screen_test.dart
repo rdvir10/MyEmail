@@ -2352,6 +2352,74 @@ void main() {
         expect(find.text('Hadco could not be reached.'), findsOneWidget);
         expect(top(), b, reason: 'a sync stopping');
       });
+
+      testWidgets('a question whose contacts are let go unanswered says so, '
+          'not "all answered"', (tester) async {
+        ContactSyncQuestionItem person(
+          String key,
+          String title, {
+          ContactSide side = ContactSide.graph,
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestionItem(
+              title: title,
+              side: side,
+              key: key,
+              answer: answer,
+            );
+        final deletions = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.deletions,
+          items: [
+            for (final (key, name) in [
+              ('d1', 'Eve Ash'),
+              ('d2', 'Fay Gil'),
+              ('d3', 'Gus Hay'),
+            ])
+              person(key, name, side: ContactSide.google),
+          ],
+        );
+        ContactSyncQuestion changes(List<ContactSyncQuestionItem> items) =>
+            ContactSyncQuestion(
+              kind: ContactSyncQuestionKind.changes,
+              items: items,
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          deletions,
+          changes([
+            person('a', 'Ann Cole'),
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+          ]),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        expect(find.text('3 deletions need your OK'), findsOneWidget);
+
+        // Ann answered on her own; then the deletions undone in Gmail and
+        // Ben's and Cy's changes undone, none of them answered: no longer
+        // held.
+        sync.set(synced(questions: [
+          deletions,
+          changes([
+            person('a', 'Ann Cole', answer: ContactSyncChoice.applyThem),
+            person('b', 'Ben Day'),
+            person('c', 'Cy Fox'),
+          ]),
+        ]));
+        await tester.pumpAndSettle();
+        sync.set(synced(questions: [
+          changes([
+            person('a', 'Ann Cole', answer: ContactSyncChoice.applyThem),
+          ]),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('3 deletions, no longer held'), findsOneWidget);
+        expect(
+          find.text('Changes to 3 contacts: 1 answered, 2 no longer held'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('all answered'), findsNothing);
+      });
     });
 
     testWidgets('Needs a look: each item with its answers', (tester) async {

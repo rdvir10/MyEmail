@@ -1439,6 +1439,17 @@ class _QuestionCard extends StatelessWidget {
     // Counted as the Settings row and the one-line message count them:
     // only the contacts still waiting for Ron.
     final waiting = listed ? _waiting(q) : 0;
+    // With none waiting, which of them were answered and which were let go
+    // with no answer (their change undone, the contact gone): only the
+    // answered are said to be.
+    final letGo =
+        shown.where((s) => s.done && !s.byQuestion && s.item.answer == null);
+    final settled = switch ((n - letGo.length, letGo.length)) {
+      (_, 0) => n == 1 ? ', answered' : ', all answered',
+      (0, _) => ', no longer held',
+      (final answered, final gone) =>
+        ': $answered answered, $gone no longer held',
+    };
     final (String title, String body, String explain) = switch (q.kind) {
       ContactSyncQuestionKind.deletions => (
           waiting > 0
@@ -1447,8 +1458,7 @@ class _QuestionCard extends StatelessWidget {
                   'deletion needs your OK',
                   'deletions need your OK',
                 )
-              : '${_count(n, 'deletion', 'deletions')}, '
-                  '${n == 1 ? 'answered' : 'all answered'}',
+              : '${_count(n, 'deletion', 'deletions')}$settled',
           'One sync would delete $these at once, so $they held for your '
               'OK, and everything else carries on.',
           'Delete them deletes '
@@ -1463,8 +1473,7 @@ class _QuestionCard extends StatelessWidget {
           waiting > 0
               ? 'Changes to ${_count(waiting, 'contact', 'contacts')} need '
                   'your OK'
-              : 'Changes to ${_count(n, 'contact', 'contacts')}, '
-                  '${n == 1 ? 'answered' : 'all answered'}',
+              : 'Changes to ${_count(n, 'contact', 'contacts')}$settled',
           'One sync would remove or replace details '
               '${oneSide == null ? '' : 'in ${side(oneSide)} '}on $these at '
               "once, as Google's Undo changes, a backup imported again or a "
