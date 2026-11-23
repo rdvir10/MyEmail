@@ -1890,11 +1890,20 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   final List<int> _order = [];
   final Map<int, ContactSyncLook> _seen = {};
 
-  /// The answers given here, with the item's version then: what a done
-  /// item says where the status never showed its answer (Leave as they
-  /// are and Keep the newer take the item away at once).
+  /// The answers the runner took here, with the item's version then: what
+  /// a done item says where the status never showed its answer (Leave as
+  /// they are and Keep the newer take the item away at once). Only those
+  /// it says it took: an item a run took away as Ron tapped was never
+  /// answered.
   final Map<int, ({ContactSyncChoice choice, String version})> _gaveHere =
       {};
+
+  /// Each item's version, worked out once for each item as listed: a done
+  /// item is drawn again at every status, up to four times a second while
+  /// a sync runs.
+  final Expando<String> _versions = Expando('version');
+
+  String _versionOf(ContactSyncLook l) => _versions[l] ??= l.version;
 
   /// Where the box for all stands this visit, settled by the first status:
   /// above the items if two or more pairs differed then; one that comes
@@ -1934,14 +1943,18 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   ContactSyncChoice? _doneWith(ContactSyncLook l) {
     if (l.answer case final answer?) return answer;
     final given = _gaveHere[l.id];
-    return given != null && given.version == l.version ? given.choice : null;
+    return given != null && given.version == _versionOf(l)
+        ? given.choice
+        : null;
   }
 
+  /// [choice] taken for [looks] (id to version), as the runner said: the
+  /// latest answer to an item is the one said.
   void _given(Map<int, String> looks, ContactSyncChoice choice) {
-    if (!mounted) return;
+    if (!mounted || looks.isEmpty) return;
     setState(() {
       for (final MapEntry(key: id, value: version) in looks.entries) {
-        _gaveHere.putIfAbsent(id, () => (choice: choice, version: version));
+        _gaveHere[id] = (choice: choice, version: version);
       }
     });
   }
@@ -1967,8 +1980,8 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
             onAnswer: (c, named) => _act(
               context,
               () async {
-                await _sync.answerAllDiffering(c, named);
-                _given(named, c);
+                final answered = await _sync.answerAllDiffering(c, named);
+                _given({for (final id in answered) id: ?named[id]}, c);
               },
               // Refused, none of them still as shown: said, and read
               // again, to be answered as they are now.
@@ -1997,12 +2010,12 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
               onAnswer: (choice, {candidateId}) => _act(
                 context,
                 () async {
-                  await _sync.answerLook(
+                  final taken = await _sync.answerLook(
                     look.id,
                     choice,
                     candidateId: candidateId,
                   );
-                  _given({look.id: look.version}, choice);
+                  if (taken) _given({look.id: _versionOf(look)}, choice);
                 },
               ),
             ),

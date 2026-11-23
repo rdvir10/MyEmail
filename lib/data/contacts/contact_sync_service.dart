@@ -136,8 +136,10 @@ abstract interface class ContactSyncService {
   /// several. Leave as they are, and keeping a clash's newer value, need no
   /// run: the item just goes. Delete it here too and Keep it only here act
   /// on the contact that is left: the one on the other side from
-  /// [ContactSyncLook.side].
-  Future<void> answerLook(
+  /// [ContactSyncLook.side]. True when the answer was taken; false when the
+  /// item was no longer listed (a run took it away meanwhile), and nothing
+  /// was answered.
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
@@ -151,9 +153,10 @@ abstract interface class ContactSyncService {
   /// listed, with no answer yet, and as they were shown, are answered: an
   /// answer given to one item stands, and an item listed since the screen
   /// was drawn, or planned again since with other details, is never
-  /// answered by it. Throws [ContactSyncRefused] when none could be
+  /// answered by it. The ids of those it answered, for the screen to say
+  /// so of them alone. Throws [ContactSyncRefused] when none could be
   /// answered, for the screen to read the status again.
-  Future<void> answerAllDiffering(
+  Future<Set<int>> answerAllDiffering(
     ContactSyncChoice choice,
     Map<int, String> looks,
   );
@@ -260,17 +263,19 @@ class NoContactSync implements ContactSyncService {
   }) async {}
 
   @override
-  Future<void> answerLook(
+  Future<bool> answerLook(
     int lookId,
     ContactSyncChoice choice, {
     String? candidateId,
-  }) async {}
+  }) async =>
+      false;
 
   @override
-  Future<void> answerAllDiffering(
+  Future<Set<int>> answerAllDiffering(
     ContactSyncChoice choice,
     Map<int, String> looks,
-  ) async {}
+  ) async =>
+      const {};
 
   @override
   Future<void> restore(int deletedId) async {}

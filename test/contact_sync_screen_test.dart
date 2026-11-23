@@ -2562,6 +2562,56 @@ void main() {
       expect(sync.allDiffering.single.looks.keys, {4, 5, 6, 7});
     });
 
+    testWidgets('Needs a look: an item is said to be done with an answer '
+        'only where the answer was taken', (tester) async {
+      ContactSyncLook differs(int id) => ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            graphValues: {ContactField.jobTitle: 'Head buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+          );
+      sync = FakeContactSync(status: synced(looks: [
+        for (var id = 1; id <= 4; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (4)'));
+      await tester.pumpAndSettle();
+      Finder under(int id, String text) => find.descendant(
+            of: button('contact-sync-look:$id'),
+            matching: find.text(text),
+          );
+      const left = 'You chose Leave as they are: done. No longer needs a look.';
+
+      // A sync took the first away as Ron tapped: nothing was answered.
+      sync.lookGone.add(1);
+      await tester.tap(button('contact-sync-look:1:leaveAsTheyAre'));
+      await tester.pumpAndSettle();
+      sync.set(synced(looks: [differs(2), differs(3), differs(4)]));
+      await tester.pumpAndSettle();
+      expect(under(1, 'No longer needs a look.'), findsOneWidget);
+      expect(find.textContaining('You chose'), findsNothing);
+
+      // The answer for all took two of the three it named: the third, gone
+      // meanwhile, was not answered.
+      sync.allDifferingAnswered = {2, 3};
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering.single.looks.keys, {2, 3, 4});
+      sync.set(synced(looks: const []));
+      await tester.pumpAndSettle();
+      expect(under(2, left), findsOneWidget);
+      expect(under(3, left), findsOneWidget);
+      expect(under(4, 'No longer needs a look.'), findsOneWidget);
+    });
+
     group('Needs a look: the box for all keeps its place', () {
       ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
           ContactSyncLook(
