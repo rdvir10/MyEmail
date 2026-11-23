@@ -577,6 +577,31 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           onAllow: () => _allow(account),
         ),
       const Divider(height: 24),
+      // The brakes' questions first, while there are any: what follows them
+      // (a stop, the sync going, how the last one went) changes as each
+      // answer's sync starts and ends, and above them it would move them
+      // under Ron's finger as he goes down them.
+      if (s != null && ours)
+        for (final card in _cards(s))
+          _QuestionCard(
+            question: card.question,
+            listed: card.listed,
+            shown: card.shown,
+            graphName: graphName,
+            onAnswer: (choice, {items}) => _act(
+              context,
+              () => _sync.answerQuestion(
+                card.question.kind,
+                choice,
+                items: items,
+              ),
+              // Refused, perhaps because the question changed since it was
+              // drawn: said, and read again, to be answered as it is now.
+              onFailure: () {
+                if (mounted) ref.invalidate(contactSyncStatusProvider);
+              },
+            ),
+          ),
       if (s == null)
         switch (statusValue) {
           AsyncError(:final error) => Padding(
@@ -610,26 +635,6 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           ..._lastResult(s, google, graph, graphName),
       ],
       if (s != null && ours) ...[
-        for (final card in _cards(s))
-          _QuestionCard(
-            question: card.question,
-            listed: card.listed,
-            shown: card.shown,
-            graphName: graphName,
-            onAnswer: (choice, {items}) => _act(
-              context,
-              () => _sync.answerQuestion(
-                card.question.kind,
-                choice,
-                items: items,
-              ),
-              // Refused, perhaps because the question changed since it was
-              // drawn: said, and read again, to be answered as it is now.
-              onFailure: () {
-                if (mounted) ref.invalidate(contactSyncStatusProvider);
-              },
-            ),
-          ),
         if (s.firstStarted ||
             s.needsALook.isNotEmpty ||
             s.recentlyDeleted.isNotEmpty ||

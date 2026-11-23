@@ -2271,6 +2271,87 @@ void main() {
         await tester.pumpAndSettle();
         expect(sync.questionItems.last, {'c', 'd', 'f'});
       });
+
+      testWidgets('the cards keep their place as each sync starts, ends or '
+          'stops', (tester) async {
+        final question = ContactSyncQuestion(
+          kind: ContactSyncQuestionKind.changes,
+          items: [
+            for (final (key, name) in [
+              ('a', 'Ann Cole'),
+              ('b', 'Ben Day'),
+              ('c', 'Cy Fox'),
+            ])
+              ContactSyncQuestionItem(
+                title: name,
+                side: ContactSide.graph,
+                key: key,
+                changes: const [
+                  ContactSyncDetailChange(
+                    field: ContactField.jobTitle,
+                    before: 'Buyer',
+                  ),
+                ],
+              ),
+          ],
+        );
+        final last = ContactSyncTally(at: at1042, changedGraph: 1);
+        ContactSyncStatus held({
+          ContactSyncTally? tally,
+          ContactSyncProgress? running,
+          ContactSyncHalt? halt,
+        }) =>
+            synced(
+              questions: [question],
+              last: tally ?? last,
+              running: running,
+              halt: halt,
+            );
+        sync = FakeContactSync(status: held());
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        double top() => tester.getTopLeft(button('contact-sync-item:b')).dy;
+        final b = top();
+
+        // The sync an answer starts, going.
+        sync.set(held(
+          running: const ContactSyncProgress(
+            step: ContactSyncStep.writing,
+            done: 1,
+            total: 3,
+          ),
+        ));
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('Copying changes: 1 of 3'), findsOneWidget);
+        expect(top(), b, reason: 'a sync starting');
+
+        // Done, with more to say about it.
+        sync.set(held(
+          tally: ContactSyncTally(
+            at: at1042,
+            addedToGoogle: 2,
+            changedGraph: 3,
+            deletedGraph: 1,
+            paired: 4,
+            needsALook: 2,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(top(), b, reason: 'a sync ending');
+
+        // Stopped, with why and the way on.
+        sync.set(held(
+          halt: ContactSyncHalt(
+            kind: ContactSyncHaltKind.failed,
+            at: at1042,
+            error: const ContactSyncFailed('Hadco could not be reached.'),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(find.text('Hadco could not be reached.'), findsOneWidget);
+        expect(top(), b, reason: 'a sync stopping');
+      });
     });
 
     testWidgets('Needs a look: each item with its answers', (tester) async {
