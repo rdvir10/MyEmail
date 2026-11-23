@@ -5090,6 +5090,62 @@ void main() {
       }
     });
 
+    test('a detail the merge replaces where Gmail held something else is '
+        "never Hadco's answer: it goes by the usual rules, which the change "
+        'brake counts', () async {
+      final people = [
+        for (var i = 0; i < 12; i++)
+          copiesOf('P$i', 'Fam$i', notes: 'Met at the fair.'),
+      ];
+      // Eleven whose notes in Gmail differ from Hadco's, left so at the
+      // first sync; the twelfth's agree.
+      for (final p in people.take(11)) {
+        h.google.editFromGmail(p.google, {
+          'biographies': [
+            {'value': 'Lives in Leeds.', 'contentType': 'TEXT_PLAIN'},
+          ],
+        });
+      }
+      await h.firstSync();
+      for (final p in people) {
+        final x = await hadcoOf(p);
+        h.graph.editFromOutlook(x.others.single, {
+          'personalNotes': 'Met at the fair. Likes tea.',
+        });
+      }
+      await h.later();
+      expect((await h.status()).questions, isEmpty);
+      String? pendingAtDelete;
+      h.before = (r) async {
+        if (pendingAtDelete == null &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          pendingAtDelete = (await h.pair()).held;
+        }
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      // Hadco's answer for the twelfth alone.
+      expect(RegExp('useGraph').allMatches(pendingAtDelete!).length, 1);
+      final status = await h.status();
+      expect(status.copies.last!.people, 12);
+      String? gmailNote(String name) =>
+          ((h.google.person(name)!['biographies']! as List).single
+                  as Map)['value']
+              as String?;
+      // Eleven of Gmail's notes to replace: more than the change brake lets
+      // through, so it holds them for Ron.
+      expect(
+        [for (final q in status.questions) q.kind],
+        [ContactSyncQuestionKind.changes],
+      );
+      for (final p in people.take(11)) {
+        expect(gmailNote(p.google), 'Lives in Leeds.');
+      }
+      expect(gmailNote(people.last.google), 'Met at the fair. Likes tea.');
+    });
+
     test('passes that keep stopping short wait the usual hour, and after '
         'three the merge is given up, as its result says', () async {
       copiesOf('Ann', 'Cole');

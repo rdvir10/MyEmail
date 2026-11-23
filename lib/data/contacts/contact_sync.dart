@@ -4701,9 +4701,18 @@ class _CopiesStep {
       if (pair.googleName case final googleName?) {
         final was = syncedFromGraph(before);
         final now = syncedFromGraph(answer);
+        // Hadco's for a detail replaced only where Gmail held what the
+        // synced copy held before (by the pair's Gmail base): that is the
+        // merge carrying on what was already in step. Where Gmail held
+        // something else, its value was never Hadco's to replace unasked:
+        // the usual rules decide, and the change brake counts it.
+        final gmail = SyncedContact.fromJson(_Run._decode(pair.googleBase));
         final replaced = [
           for (final f in ContactField.values)
-            if (!_empty(was[f]) && !run.norm.same(f, was[f], now[f])) f.name,
+            if (!_empty(was[f]) &&
+                !run.norm.same(f, was[f], now[f]) &&
+                run.norm.same(f, gmail[f], was[f]))
+              f.name,
         ];
         if (replaced.isNotEmpty) {
           // With the Gmail contact's version as the write found it: should
