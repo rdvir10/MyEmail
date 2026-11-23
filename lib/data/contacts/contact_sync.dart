@@ -1364,7 +1364,8 @@ class _Run {
     deltaLink = delta.deltaLink;
   }
 
-  /// What the listings left to be read by id.
+  /// What the listings left to be read by id. Outlook's go twenty to a
+  /// `$batch` ([_readGraphs]).
   Future<void> _readMore() async {
     // Outlook: an entry that lacks a synced property is read whole, and a
     // contact with no row is read with its hidden tag (once per change),
@@ -1382,10 +1383,18 @@ class _Run {
             sync._tags[id]?.changeKey != c['changeKey'])
           id,
     };
-    for (final id in {...wanted, ...tagged}) {
-      _checkStop();
-      await _readGraphId(id, withTag: tagged.contains(id));
-    }
+    await _readGraphs(
+      [
+        for (final id in wanted)
+          if (!tagged.contains(id)) id,
+      ],
+      (id, c) => _placeWhole(id, c, withTag: false),
+    );
+    await _readGraphs(
+      [...tagged],
+      (id, c) => _placeWhole(id, c, withTag: true),
+      withTag: true,
+    );
 
     // Gmail: a listing lags behind writes by minutes, so a contact the
     // sync wrote in the last hour, listed with another version than the
@@ -1453,10 +1462,7 @@ class _Run {
       now: now,
     );
     await _confirmGoogle(confirm.google);
-    for (final id in confirm.graph) {
-      _checkStop();
-      await _confirmGraph(id);
-    }
+    await _readGraphs({...confirm.graph}.toList(), _confirmed);
 
     final toRead = contactsToRead(
       links: inputs,
@@ -1481,11 +1487,13 @@ class _Run {
     await _confirmGoogle(
       toRead.google.where((n) => !heldGoogle.contains(n) && unreadGoogle(n)),
     );
-    for (final id in toRead.graph) {
-      if (heldGraph.contains(id) || !unreadGraph(id)) continue;
-      _checkStop();
-      await _confirmGraph(id);
-    }
+    await _readGraphs(
+      {
+        for (final id in toRead.graph)
+          if (!heldGraph.contains(id) && unreadGraph(id)) id,
+      }.toList(),
+      _confirmed,
+    );
     await _readHeldPairs(
       [
         for (final n in toRead.google)
@@ -1571,14 +1579,55 @@ class _Run {
   /// An Outlook contact asked about by id: there, gone (not found, or in
   /// Deleted Items, where Outlook's own delete puts it), or moved to
   /// another folder.
-  Future<void> _confirmGraph(String id) async {
-    final c = await graph((a) => a.get(id));
+  Future<void> _confirmGraph(String id) async =>
+      _confirmed(id, await graph((a) => a.get(id)));
+
+  /// [c], the Outlook contact [id] asked about as read by id, or null when
+  /// not found: gone, or placed ([_placeGraph]).
+  Future<void> _confirmed(String id, Map<String, Object?>? c) async {
     if (c == null) {
       graphRead.remove(id);
       graphGone.add(id);
       return;
     }
     await _placeGraph(id, c);
+  }
+
+  /// The Outlook contacts [ids] read by id, each handed to [place] as read
+  /// (null when not found), [GraphContactsApi.batchLimit] to a `$batch`
+  /// ([GraphContactsApi.getBatch]) and with their tags where [withTag]:
+  /// candidates are read at every run, and a GET apiece made a hundred or
+  /// more requests one after another. A part left with no answer
+  /// (throttled past the wait, or failed on its own), and every part of a
+  /// batch refused as a whole, is read alone, as all were before: what
+  /// that read finds is placed, and its failure is the run's, as any
+  /// read's is.
+  Future<void> _readGraphs(
+    List<String> ids,
+    Future<void> Function(String id, Map<String, Object?>? c) place, {
+    bool withTag = false,
+  }) async {
+    const most = GraphContactsApi.batchLimit;
+    for (var start = 0; start < ids.length; start += most) {
+      final asking = ids.sublist(start, min(start + most, ids.length));
+      _checkStop();
+      GraphBatchRead? read;
+      try {
+        read = await graph((a) => a.getBatch(asking, withTag: withTag));
+      } on ContactRefused {
+        read = null;
+      }
+      for (final id in asking) {
+        if (read?.found[id] case final c?) {
+          await place(id, c);
+        } else if (read != null && read.notFound.contains(id)) {
+          await place(id, null);
+        } else {
+          _checkStop();
+          await place(id, await graph((a) => a.get(id, withTag: withTag)));
+        }
+      }
+    }
   }
 
   /// Why the answer given to [item], a held change, waits: its Outlook
@@ -1688,9 +1737,13 @@ class _Run {
   static bool _failsAlone(Exception e) =>
       e is ConnectionFailed || e is ContactRefused || e is ContactGone;
 
-  /// An Outlook contact read whole by id, with its tag where asked.
-  Future<void> _readGraphId(String id, {required bool withTag}) async {
-    final c = await graph((a) => a.get(id, withTag: withTag));
+  /// [c], an Outlook contact read whole by [id], with its tag where asked,
+  /// or null when not found.
+  Future<void> _placeWhole(
+    String id,
+    Map<String, Object?>? c, {
+    required bool withTag,
+  }) async {
     if (c == null || !_inContacts(c)) {
       // Gone or moved since the listing: left to the next listing, which
       // says so.

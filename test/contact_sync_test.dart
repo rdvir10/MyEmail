@@ -161,15 +161,40 @@ class Harness {
 
   List<http.Request> writesTo(String host) => [
     for (final r in requests)
-      if (r.url.host == host && r.method != 'GET') r,
+      if (r.url.host == host && !readsOnly(r)) r,
   ];
 
   /// Requests that change contacts, either side (the claim's PATCH on the
   /// folder left out).
   List<http.Request> get contactWrites => [
     for (final r in requests)
-      if (r.method != 'GET' && !r.url.path.contains('contactFolders')) r,
+      if (!readsOnly(r) && !r.url.path.contains('contactFolders')) r,
   ];
+
+  /// The parts of a Graph `$batch`, or none.
+  static List<Map<Object?, Object?>> partsOf(http.Request r) {
+    if (!r.url.path.endsWith(r'$batch')) return const [];
+    return [
+      for (final p in (jsonDecode(r.body) as Map)['requests'] as List)
+        if (p is Map) p,
+    ];
+  }
+
+  /// Whether [r] only reads: a GET, or a Graph `$batch` of GETs (Hadco's
+  /// contacts read by id twenty at a time, or their photos checked).
+  static bool readsOnly(http.Request r) =>
+      r.method == 'GET' ||
+      (partsOf(r).isNotEmpty && partsOf(r).every((p) => p['method'] == 'GET'));
+
+  /// Whether [r] reads the Outlook contact [id] by its id: alone, or as a
+  /// part of a `$batch`.
+  static bool readsContact(http.Request r, String id) =>
+      (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$id')) ||
+      partsOf(r).any(
+        (p) =>
+            p['method'] == 'GET' &&
+            Uri.parse('${p['url']}').path == '/me/contacts/$id',
+      );
 }
 
 Map<String, Object?> person(
@@ -439,6 +464,67 @@ void main() {
         h.requests.where((r) => r.url.path.endsWith('/delta')).length,
         greaterThanOrEqualTo(2),
       );
+    });
+
+    test('the Hadco contacts a run reads by id go twenty to a batch: tags, '
+        'candidates, a contact a listing says was removed', () async {
+      // Twenty-five people in both books under other addresses: each Gmail
+      // one waits under Needs a look, its Hadco namesake held as its
+      // candidate, read again at every run.
+      for (var i = 0; i < 25; i++) {
+        h.google.seed(person('Jo$i', 'Smith', email: 'g$i@example.com'));
+        h.graph.seed(outlook('Jo$i', 'Smith', email: 'h$i@example.com'));
+      }
+      final pairs = seedPairs(h, 2);
+      bool alone(http.Request r) =>
+          r.method == 'GET' &&
+          r.url.host == 'graph.microsoft.com' &&
+          RegExp(r'/me/contacts/[^/]+$').hasMatch(r.url.path);
+      bool batch(http.Request r) =>
+          r.url.host == 'graph.microsoft.com' &&
+          r.url.path.endsWith(r'$batch');
+      await h.firstSync();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      final looks = status.needsALook.length;
+      expect(looks, greaterThanOrEqualTo(25));
+      // Each of the 27 contacts read with its tag: two batches.
+      expect(h.requests.where(alone), isEmpty);
+      expect(h.requests.where(batch), hasLength(2));
+
+      // A contact deleted in Outlook is confirmed in a batch of its own,
+      // the candidates in two. A part throttled past the wait and a part
+      // that failed are each read alone, as every read was.
+      h.graph
+        ..deleteFromOutlook(pairs[1].graph)
+        ..throttleInBatch(1, retryAfter: 60)
+        ..throttleInBatch(1, status: 500);
+      h.requests.clear();
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.requests.where(batch), hasLength(3));
+      expect(h.requests.where(alone), hasLength(2));
+      expect(status.needsALook, hasLength(looks));
+      expect(h.google.person(pairs[1].google), isNull);
+      expect(h.google.person(pairs[0].google), isNotNull);
+
+      // A batch refused as a whole: each contact in it is read alone.
+      var refused = false;
+      h.answer = (r) {
+        if (refused || !batch(r)) return null;
+        refused = true;
+        return http.Response(
+          '{"error":{"code":"BadRequest","message":"x"}}',
+          400,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      h.requests.clear();
+      status = await h.later();
+      h.answer = null;
+      expect(status.halt, isNull);
+      expect(h.requests.where(alone), hasLength(20));
+      expect(status.needsALook, hasLength(looks));
     });
   });
 
@@ -1281,9 +1367,7 @@ void main() {
       var reads = 0;
       var edited = false;
       h.before = (r) async {
-        if (r.method == 'GET' &&
-            r.url.path.endsWith('/me/contacts/$annH') &&
-            ++reads == 2) {
+        if (Harness.readsContact(r, annH) && ++reads == 2) {
           edited = true;
           h.graph.editFromOutlook(annH, {'jobTitle': 'Boss'});
         }
@@ -1637,10 +1721,7 @@ void main() {
       expect(status.halt, isNull);
       expect(status.last!.passedOver, 1);
       expect(
-        h.requests.where(
-          (r) => r.method == 'GET' &&
-              r.url.path.endsWith('/me/contacts/${pairs[0].graph}'),
-        ),
+        h.requests.where((r) => Harness.readsContact(r, pairs[0].graph)),
         isNotEmpty,
       );
       // Nothing it left out was cleared in Gmail.
