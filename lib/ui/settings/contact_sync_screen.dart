@@ -2395,13 +2395,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
           Text("Merge $graphName's copies", style: theme.textTheme.titleSmall),
           const SizedBox(height: 6),
           // A photo is never a difference: nearly every one of Hadco's
-          // contacts has one, and no two copies' match byte for byte.
+          // contacts has one, and no two copies' match byte for byte. What
+          // the merge does not read goes with a copy, and is said here.
           const Text(
             'Keeps the synced copy of each person, adds to it any detail '
-            'only another copy has, and deletes the other copies, which '
-            'Outlook keeps in Deleted Items. When both copies have a photo, '
-            'the synced copy keeps its own. Copies that differ are left for '
-            'you to choose.',
+            "only another copy has (Outlook's own faxes, PO boxes, user "
+            'fields and the like among them), and deletes the other copies, '
+            'which Outlook keeps in Deleted Items. Files attached to a copy, '
+            'and its gender, billing and mileage, are not compared and go '
+            'with the copy. When both copies have a photo, the synced copy '
+            'keeps its own. Copies that differ are left for you to choose.',
             key: ValueKey('contact-sync-copies-what'),
           ),
           const SizedBox(height: 4),
