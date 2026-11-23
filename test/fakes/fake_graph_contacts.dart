@@ -16,15 +16,21 @@ import 'package:myemail/data/contacts/contact_mapping.dart'
 /// which expires ([expireDeltaLinks]); a contact's `changeKey` moved by
 /// every write; `displayName` made again from the name parts by a PATCH
 /// that does not send it; single-value extended properties on contacts and
-/// on the folder; `$batch` of up to twenty, answered in any order; and
-/// throttling, outside a batch and inside one.
+/// on the folder, given only to a read whose `$expand` names them (several
+/// joined by `or`), under their ids as Exchange writes them back (a tag in
+/// small letters without leading zeros: "String 0x3a24"); `$batch` of up
+/// to twenty, answered in any order; and throttling, outside a batch and
+/// inside one.
 ///
 /// It is stricter than Graph where a mistake would otherwise pass
 /// silently: a request without `Prefer: IdType="ImmutableId"`, outside a
 /// batch or inside one, is refused, because Graph would answer it with ids
 /// that change when Outlook moves the contact; a delta link sent with the
 /// `$select` again is refused; and so is a `$batch` request with a body
-/// and no Content-Type of its own.
+/// and no Content-Type of its own. Where Microsoft's documentation sets a
+/// rule it refuses as Graph would: an extended property whose id is in no
+/// form Graph takes, or whose value is not text, and an `$expand` filter
+/// other than `id eq` on its ids.
 ///
 /// A contact's photo is kept apart from its properties, as Graph keeps it:
 /// GET .../photo answers its details or 404, GET and PUT .../photo/$value
@@ -112,9 +118,10 @@ class FakeGraphContacts {
 
   // --- helpers for tests -----------------------------------------------------
 
-  /// Add a contact with [fields] (Graph contact properties) to [folderId],
-  /// the main Contacts folder unless given, carrying [tag] where given, as
-  /// though made in Outlook, and answer with its immutable id.
+  /// Add a contact with [fields] (Graph contact properties, extended ones
+  /// among them) to [folderId], the main Contacts folder unless given,
+  /// carrying [tag] where given, as though made in Outlook, and answer with
+  /// its immutable id.
   String addFromOutlook(
     Map<String, Object?> fields, {
     String? folderId,
@@ -126,6 +133,9 @@ class FakeGraphContacts {
     final c = _Contact(_newId(), folderId ?? mainFolderId, _newKey(), now);
     _store(c.fields, _writable(fields));
     c.fields['displayName'] ??= _composed(c.fields);
+    for (final MapEntry(:key, :value) in _extendedIn(fields).entries) {
+      _put(c.properties, key, value);
+    }
     if (tag != null) c.properties[graphLinkPropertyId] = tag;
     _contacts[c.id] = c;
     _record(c.id, null, c.folder, null);
@@ -139,13 +149,14 @@ class FakeGraphContacts {
 
   /// Change the properties in [changes] on [id], as an edit in Outlook
   /// does; a null value clears one. The display name is made again from
-  /// the name parts unless it is among the changes.
+  /// the name parts unless it is among the changes. Extended properties
+  /// among them are set.
   void editFromOutlook(String id, Map<String, Object?> changes) {
     if (_unknownIn(changes) case final name?) {
       throw ArgumentError.value(name, 'changes', 'not a contact property');
     }
     final c = _there(id);
-    _apply(c, changes);
+    _apply(c, changes, _extendedIn(changes));
   }
 
   /// Delete [id] in Outlook: it goes to Deleted Items, where a GET by its
@@ -531,14 +542,12 @@ class FakeGraphContacts {
     final json = _decode(body);
     _known(json);
     _refused(json);
+    final extended = _extendedIn(json);
     final c = _Contact(_newId(), mainFolderId, _newKey(), now);
     _store(c.fields, _writable(json));
     c.fields['displayName'] ??= _composed(c.fields);
-    final props = json['singleValueExtendedProperties'];
-    for (final p in props is List ? props : const []) {
-      if (p is Map && p['id'] is String && p['value'] is String) {
-        c.properties[p['id'] as String] = p['value'] as String;
-      }
+    for (final MapEntry(:key, :value) in extended.entries) {
+      _put(c.properties, key, value);
     }
     _contacts[c.id] = c;
     _record(c.id, null, c.folder, null);
@@ -551,7 +560,8 @@ class FakeGraphContacts {
     final json = _decode(body);
     _known(json);
     _refused(json);
-    _apply(c, json);
+    _apply(c, json, _extendedIn(json));
+    // Graph's answer never shows the extended properties written.
     return _ok(_json(c, null));
   }
 
@@ -659,7 +669,11 @@ class FakeGraphContacts {
     return changed;
   }
 
-  void _apply(_Contact c, Map<String, Object?> changes) {
+  void _apply(
+    _Contact c,
+    Map<String, Object?> changes,
+    Map<String, String> extended,
+  ) {
     final writable = _writable(changes);
     final changed = _store(c.fields, writable);
     const parts = {
@@ -676,11 +690,8 @@ class FakeGraphContacts {
       c.fields['displayName'] = _composed(c.fields);
       changed.add('displayName');
     }
-    final props = changes['singleValueExtendedProperties'];
-    for (final p in props is List ? props : const []) {
-      if (p is Map && p['id'] is String && p['value'] is String) {
-        c.properties[p['id'] as String] = p['value'] as String;
-      }
+    for (final MapEntry(:key, :value) in extended.entries) {
+      _put(c.properties, key, value);
     }
     c
       ..changeKey = _newKey()
@@ -915,35 +926,88 @@ class FakeGraphContacts {
     return names;
   }
 
-  /// The extended property id an `$expand` asks for.
-  static String? _expandOf(Map<String, String> q) {
+  /// The extended property ids an `$expand` asks for: a filter of
+  /// `id eq '...'`, the one Microsoft documents, several joined by `or`
+  /// as they are in use. Any other filter is refused, and so is an id in
+  /// no form Graph takes.
+  static Set<String>? _expandOf(Map<String, String> q) {
     final expand = q[r'$expand'];
     if (expand == null) return null;
     final m = RegExp(
-      r"^singleValueExtendedProperties\(\$filter=id eq '([^']*)'\)$",
+      r'^singleValueExtendedProperties\(\$filter=(.+)\)$',
     ).firstMatch(expand);
-    if (m == null) {
+    final ids = <String>{};
+    for (final clause in m == null ? const <String>[] : m[1]!.split(' or ')) {
+      final id = RegExp(r"^id eq '([^']*)'$").firstMatch(clause)?[1];
+      ids.add(
+        _propertyId(id) ??
+            (throw _Refusal(_error(400, 'BadRequest', 'Unsupported expand.'))),
+      );
+    }
+    if (ids.isEmpty) {
       throw _Refusal(_error(400, 'BadRequest', 'Unsupported expand.'));
     }
-    return m[1];
+    return ids;
   }
 
-  /// [properties] as an `$expand` of [id] puts them on the answer: Exchange
-  /// matches the id whatever the case of its letters.
+  /// [properties] as an `$expand` of [ids] puts them on the answer: only
+  /// those asked for, matched whatever the case of an id's letters, each
+  /// under its id as Exchange writes it; none asked for there, no list.
   static Map<String, Object?> _expanded(
     Map<String, String> properties,
-    String id,
+    Set<String> ids,
   ) {
-    for (final MapEntry(:key, :value) in properties.entries) {
-      if (key.toLowerCase() == id.toLowerCase()) {
-        return {
-          'singleValueExtendedProperties': [
-            {'id': key, 'value': value},
-          ],
-        };
+    final asked = {for (final id in ids) id.toLowerCase()};
+    final found = [
+      for (final MapEntry(:key, :value) in properties.entries)
+        if (asked.contains(key.toLowerCase())) {'id': key, 'value': value},
+    ];
+    return found.isEmpty ? const {} : {'singleValueExtendedProperties': found};
+  }
+
+  /// The single-value extended properties [json] writes, by their ids as
+  /// Exchange keeps them ([_propertyId]). Graph documents an id in one of
+  /// its forms and a text value as required: anything else is refused.
+  static Map<String, String> _extendedIn(Map<String, Object?> json) {
+    final props = json['singleValueExtendedProperties'];
+    if (props == null) return const {};
+    final written = <String, String>{};
+    for (final p in props is List ? props : [props]) {
+      final id = p is Map ? _propertyId(p['id']) : null;
+      final value = p is Map ? p['value'] : null;
+      if (id == null || value is! String) {
+        throw _Refusal(
+          _error(400, 'ErrorInvalidRequest', 'Invalid extended property.'),
+        );
       }
+      written[id] = value;
     }
-    return const {};
+    return written;
+  }
+
+  /// [id] as Exchange writes an extended property's id back: one in the
+  /// tag form with the tag in small letters and no leading zeros ("String
+  /// 0x3a24"), a named one as it came. Null for an id in none of Graph's
+  /// forms (a type, then a tag; or a type, a set's GUID, then a Name or an
+  /// Id).
+  static String? _propertyId(Object? id) {
+    if (id is! String) return null;
+    final tag = RegExp(r'^([A-Za-z]+) 0x([0-9A-Fa-f]{1,4})$').firstMatch(id);
+    if (tag != null) {
+      return '${tag[1]} 0x${int.parse(tag[2]!, radix: 16).toRadixString(16)}';
+    }
+    final named = RegExp(
+      r'^[A-Za-z]+ \{[0-9A-Fa-f-]{36}\} (Name \S.*|Id 0x[0-9A-Fa-f]{1,4})$',
+    );
+    return named.hasMatch(id) ? id : null;
+  }
+
+  /// Set the extended property [id] of [properties] to [value], in place
+  /// of one under the same id in other letters: Exchange keeps one.
+  static void _put(Map<String, String> properties, String id, String value) {
+    properties
+      ..removeWhere((key, _) => key.toLowerCase() == id.toLowerCase())
+      ..[id] = value;
   }
 
   /// One page of [pages], with the link to the next, or the delta link.

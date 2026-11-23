@@ -25,6 +25,7 @@ import 'contact_sync_service.dart';
 import 'contact_sync_store.dart';
 import 'contact_wire_errors.dart';
 import 'google_contacts_api.dart';
+import 'outlook_only_details.dart';
 
 /// An account's token for [scopes]: `OAuthTokenRepository.accessToken`.
 typedef ContactSyncToken =
@@ -3888,14 +3889,27 @@ class _Copies {
     return copies;
   }
 
-  /// The rules a listing or a leave was made under (`rules`): 3.22.1's,
-  /// under which a photo is never a difference. One without was made by
-  /// 3.22.0, whose rules listed copies for their photos alone.
-  static const rules = 2;
+  /// The rules a listing or a leave was made under (`rules`): 3, under
+  /// which the details only Outlook keeps (a fax, the anniversary) are
+  /// read and compared too. 2 was 3.22.1's, which never saw them, and
+  /// under which a photo is never a difference, as now; one without was
+  /// made by 3.22.0, whose rules listed copies for their photos alone.
+  static const rules = 3;
 
   /// Whether [listing] was made under the rules of now.
   static bool current(Map<String, Object?> listing) =>
       listing['rules'] == rules;
+
+  /// Whether [listing]'s fingerprint is the one today's rules give the
+  /// differences it showed: one made under 3.22.1's rules or since. A
+  /// detail only Outlook keeps adds to a fingerprint only where it
+  /// differs, so an answer on a 3.22.1 listing is carried out while its
+  /// differences are still all there are, and never once such a detail
+  /// differs too.
+  static bool comparable(Map<String, Object?> listing) {
+    final made = listing['rules'];
+    return made is int && made >= 2;
+  }
 
   /// When a merge was asked; null when none is.
   DateTime? asked;
@@ -3927,13 +3941,15 @@ class _Copies {
   /// People Ron chose to leave as they are, by key: the `fingerprint` of
   /// the differences as they were (empty where none was left) and the
   /// `rules` it was taken under. A merge passes them over while today's
-  /// fingerprint is the leave's. One left under 3.22.0 (its fingerprint
-  /// alone, of rules that counted photos) is stamped anew by the first
-  /// pass that meets it ([currentLeave]).
+  /// fingerprint is the leave's. One left under older rules (3.22.0's
+  /// fingerprint alone, of rules that counted photos; 3.22.1's, of rules
+  /// that never saw the details only Outlook keeps) is stamped anew by
+  /// the first pass that meets it ([currentLeave]): left still, never
+  /// asked again.
   final Map<String, Object> left = {};
 
   /// Whether a leave ([leftAs]) was taken under the rules of now: one
-  /// 3.22.0 kept was not.
+  /// 3.22.0 or 3.22.1 kept was not.
   static bool currentLeave(Object leftAs) =>
       leftAs is Map && leftAs['rules'] == rules;
 
@@ -4042,16 +4058,13 @@ class _Copies {
           if (!paired.contains(id)) id: ?base[id],
       });
       if (ours.length < g.graphCopies.length) notSynced++;
-      // One left is not counted; nor one listed under the rules of now
-      // (a merge would only list it again), nor one answered and waiting
-      // for a run. One listed under 3.22.0's rules and not answered is: its
-      // differences may be no more (a photo), and a merge reads it again.
       // Never counted: one left (a pass asked for others finds whether
       // its differences are still those he left), one listed under the
       // rules of now (a merge would only list it again), one answered and
-      // waiting for a run. One listed under 3.22.0's rules and not
-      // answered is: its differences may be no more (a photo), and a
-      // merge reads it again.
+      // waiting for a run. One listed under older rules and not answered
+      // is: its differences may be no more (3.22.0's photo) or not all
+      // there are (3.22.1 never read the details only Outlook keeps), and
+      // a merge reads it again.
       final l = listed(synced);
       if (ours.isEmpty ||
           left.containsKey(synced) ||
@@ -4161,8 +4174,10 @@ class _Copies {
       (final l?, final at?) => l.shown(at),
       _ => null,
     },
-    // One listed by 3.22.0 and not answered is not shown: its
-    // differences may be no more (a photo); the next merge reads it again.
+    // One listed under older rules and not answered is not shown: its
+    // differences may be no more (3.22.0's photo) or not all there are
+    // (3.22.1's, without the details only Outlook keeps); the next merge
+    // reads it again.
     differing: [
       for (final d in differing)
         if (current(d) || d['answer'] != null) _personOf(d),
@@ -4378,11 +4393,16 @@ class _CopiesStep {
     _progress();
     if (groups.isEmpty) return;
 
+    // Each copy whole, with the details only Outlook keeps (a fax, the
+    // anniversary), which Graph gives only to a read that names them: read
+    // without them, a copy holding one would seem the same and be deleted.
+    // A refusal of them stops the pass short, nothing deleted; it is never
+    // answered by a read without them.
     final read = <String, Map<String, Object?>>{};
     if (whole) {
       final folder = run.folderId;
       for (final c in await run.graph(
-        (a) => a.listAll(folderId: folder, whole: true),
+        (a) => a.listAll(folderId: folder, whole: true, withOutlookOnly: true),
       )) {
         if (c['id'] case final String id) read[id] = c;
       }
@@ -4390,7 +4410,9 @@ class _CopiesStep {
       for (final g in groups) {
         for (final id in [g.graphSynced!, ...g.graphCopies]) {
           run._checkStop();
-          final c = await run.graph((a) => a.get(id, whole: true));
+          final c = await run.graph(
+            (a) => a.get(id, whole: true, withOutlookOnly: true),
+          );
           if (c != null && run._inContacts(c)) read[id] = c;
         }
       }
@@ -4454,10 +4476,11 @@ class _CopiesStep {
       // Ron's Leave them always stands: a person he left (or answered so)
       // stays so while the differences are those he left (the
       // fingerprint), whatever else a merge would now say; an added detail
-      // never changes them. A leave 3.22.0 kept is stamped with today's
-      // differences the first time a pass meets it, and stays. Once they
-      // are others, the person is read again as any other: listed for Ron
-      // where they differ, merged where none is left.
+      // never changes them. A leave kept under older rules (3.22.0's,
+      // 3.22.1's) is stamped with today's differences the first time a
+      // pass meets it, and stays. Once they are others, the person is read
+      // again as any other: listed for Ron where they differ, merged where
+      // none is left.
       final leftAs = seen.left[key];
       final leaving =
           seen.listed(key)?['answer'] == ContactSyncCopiesPerson.leave;
@@ -4527,16 +4550,17 @@ class _CopiesStep {
         : null;
     var merge = cp.mergeCopies(kept, others, norm: run.norm);
     // Ron's answer (Leave them is dealt with before) counts only on the
-    // differences he saw. Given on a listing under the rules of now, on
-    // those very differences (the fingerprint), and never on the photo.
-    // Given on one 3.22.0 made, whose differences may no longer be: the
-    // synced copy's leaves the rules of now to decide; another copy's, with
-    // nothing differing now, brings that copy's photo (the difference he
-    // saw); with something differing, the person is listed again as it
-    // is, the answer dropped.
+    // differences he saw. Given on a listing of 3.22.1's rules or since,
+    // on those very differences (the fingerprint: a detail only Outlook
+    // keeps that differs, which 3.22.1 never showed, lists the person
+    // again), and never on the photo. Given on one 3.22.0 made, whose
+    // differences may no longer be: the synced copy's leaves the rules of
+    // now to decide; another copy's, with nothing differing now, brings
+    // that copy's photo (the difference he saw); with something
+    // differing, the person is listed again as it is, the answer dropped.
     if (answer != null && (answer == key || copies.contains(answer))) {
-      final now = listed != null && _Copies.current(listed);
-      if (now
+      final comparable = listed != null && _Copies.comparable(listed);
+      if (comparable
           ? merge.outcome == cp.CopiesOutcome.differs &&
                 merge.fingerprint == listed['fingerprint']
           : merge.outcome != cp.CopiesOutcome.differs && answer != key) {
@@ -4547,7 +4571,7 @@ class _CopiesStep {
           kept,
           others,
           keep: answer,
-          keepsPhoto: !now && _Copies.showedPhoto(listed),
+          keepsPhoto: !comparable && _Copies.showedPhoto(listed),
           norm: run.norm,
         );
       }
@@ -4635,11 +4659,12 @@ class _CopiesStep {
   }
 
   /// Write what [merge] adds to the synced copy [key] ([before] as read),
-  /// check the answer holds each value, and give it a photo where the
-  /// merge says, read back before any copy goes. The details it replaced
-  /// go to Gmail at the next run as an answer (Use Hadco's), kept on the
-  /// pair at once: the merge's own, never held by the change brake. The
-  /// synced copy's `changeKey` as the write left it.
+  /// check the answer holds each value, the details only Outlook keeps
+  /// read back for it, and give it a photo where the merge says, read back
+  /// before any copy goes. The details it replaced go to Gmail at the next
+  /// run as an answer (Use Hadco's), kept on the pair at once: the merge's
+  /// own, never held by the change brake. The synced copy's `changeKey` as
+  /// the write left it.
   Future<String?> _write(
     String key,
     cp.CopiesMerge merge,
@@ -4651,9 +4676,14 @@ class _CopiesStep {
     if (merge.patch.isNotEmpty) {
       final answer = await run.graph((a) => a.update(key, merge.patch));
       for (final MapEntry(key: name, value: value) in merge.patch.entries) {
+        if (name == _extended) continue;
         if (!_Run._holds(value, answer[name])) throw const _CopyNotHeld();
       }
       changeKey = answer['changeKey'] as String?;
+      if (merge.patch[_extended] case final List written
+          when written.isNotEmpty) {
+        changeKey = await _readBack(key, written);
+      }
       if (pair.googleName case final googleName?) {
         final was = syncedFromGraph(before);
         final now = syncedFromGraph(answer);
@@ -4691,6 +4721,36 @@ class _CopiesStep {
       changeKey = now.found[key]?['changeKey'] as String?;
       if (changeKey == null) throw const _CopyNotHeld();
     }
+    return changeKey;
+  }
+
+  /// The property a write carries the details only Outlook keeps in.
+  static const _extended = 'singleValueExtendedProperties';
+
+  /// The synced copy [key] read again with the details only Outlook
+  /// keeps, which Graph's answer to a write never shows: each of
+  /// [written] must hold there, by the rule that compared it (a date by
+  /// its day, anything else as written), before any copy goes. Its
+  /// `changeKey` as read.
+  Future<String> _readBack(String key, List<Object?> written) async {
+    final now = await run.graph((a) => a.get(key, withOutlookOnly: true));
+    if (now == null || !run._inContacts(now)) throw const _CopyNotHeld();
+    final held = outlookOnlyValuesOf(now);
+    for (final w in written) {
+      final detail = w is Map ? outlookOnlyDetailOf(w['id']) : null;
+      if (detail == null) throw const _CopyNotHeld();
+      final value = (w as Map)['value'];
+      final holds = switch ((detail.kind, value, held[detail])) {
+        (OutlookOnlyKind.date, final String sent, final String there) =>
+          birthdayFromGraph(sent) != null &&
+              birthdayFromGraph(sent) == birthdayFromGraph(there),
+        (OutlookOnlyKind.date, _, _) => false,
+        _ => _Run._holds(value, held[detail]),
+      };
+      if (!holds) throw const _CopyNotHeld();
+    }
+    final changeKey = now['changeKey'];
+    if (changeKey is! String) throw const _CopyNotHeld();
     return changeKey;
   }
 

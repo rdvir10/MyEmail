@@ -4302,6 +4302,29 @@ void main() {
       return (orgs.first as Map)['title'] as String?;
     }
 
+    /// [id]'s value in Hadco of the extended property [property], its id
+    /// matched whatever the case of its letters, as Exchange matches it.
+    String? extended(String id, String property) {
+      final props = h.graph.contact(id)?['singleValueExtendedProperties'];
+      for (final p in props is List ? props : const []) {
+        if (p is Map &&
+            '${p['id']}'.toLowerCase() == property.toLowerCase()) {
+          return p['value'] as String?;
+        }
+      }
+      return null;
+    }
+
+    /// Give [id] in Hadco details only Outlook keeps, [values] by their
+    /// ids, as Ron would in Outlook.
+    void outlookOnly(String id, Map<String, String> values) =>
+        h.graph.editFromOutlook(id, {
+          'singleValueExtendedProperties': [
+            for (final MapEntry(:key, :value) in values.entries)
+              {'id': key, 'value': value},
+          ],
+        });
+
     test('the tablet pattern: copies the same are deleted, a detail only '
         'another copy has is added first, copies that differ are listed, '
         'and Gmail loses nothing', () async {
@@ -5058,6 +5081,52 @@ void main() {
       expect(h.graph.count, 2);
     });
 
+    test('a read of the details only Outlook keeps refused: the merge stops '
+        'short with nothing deleted, never read without them', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      h.requests.clear();
+      // Graph turns away any read that asks for the business fax.
+      h.answer = (r) =>
+          (r.url.queryParameters[r'$expand'] ?? '').toLowerCase().contains(
+            '0x3a24',
+          )
+          ? http.Response(
+              '{"error":{"code":"BadRequest","message":"x"}}',
+              400,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.answer = null;
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isTrue);
+      expect(status.copies.shortStops, 1);
+      expect(h.graph.count, 2);
+      expect(
+        h.requests.where((r) => r.body.contains('"method":"DELETE"')),
+        isEmpty,
+      );
+      // The folder was asked for whole once, with them, and not again
+      // without.
+      expect(
+        [
+          for (final r in h.requests)
+            if (r.method == 'GET' &&
+                r.url.path.contains('/contactFolders/') &&
+                r.url.path.endsWith('/contacts') &&
+                !r.url.queryParameters.containsKey(r'$select'))
+              r.url.queryParameters.containsKey(r'$expand'),
+        ],
+        [true],
+      );
+    });
+
     test("a photo Graph did not keep fails its person: the copy with it "
         'stays', () async {
       final dan = copiesOf('Dan', 'Lee');
@@ -5105,6 +5174,152 @@ void main() {
       final status = await h.status();
       expect(status.copies.last!.failed, 0);
       expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(a.others.single), isNull);
+    });
+
+    test('a detail only Outlook keeps, a business fax on the other copy '
+        'alone, is written to the synced copy and read back there before '
+        'that copy is deleted', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      h.requests.clear();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.last!.added, 1);
+      expect(status.copies.last!.failed, 0);
+      expect(extended(a.synced, 'String 0x3A24'), '+1 212 555 0199');
+      expect(h.graph.contact(a.others.single), isNull);
+      // Written, read back with it, and only then the copy deleted.
+      int at(bool Function(http.Request r) test) => h.requests.indexWhere(test);
+      final written = at(
+        (r) =>
+            r.method == 'PATCH' &&
+            r.url.pathSegments.last == a.synced &&
+            r.body.contains('+1 212 555 0199'),
+      );
+      final readBack = at(
+        (r) =>
+            r.method == 'GET' &&
+            r.url.pathSegments.last == a.synced &&
+            (r.url.queryParameters[r'$expand'] ?? '').toLowerCase().contains(
+              '0x3a24',
+            ),
+      );
+      final deleted = at((r) => r.body.contains('"method":"DELETE"'));
+      expect(written, isNonNegative);
+      expect(readBack, greaterThan(written));
+      expect(deleted, greaterThan(readBack));
+      // Not a detail the sync copies: Gmail is not given it.
+      expect(jsonEncode(h.google.person(ann.google)), isNot(contains('0199')));
+    });
+
+    test('a detail only Outlook keeps that the synced copy does not show '
+        'when read back fails the person: the copy with it stays', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      // Graph answers the synced copy's reads by id without the fax.
+      h.reshape = (r, response) {
+        if (r.method != 'GET' ||
+            r.url.pathSegments.last != a.synced ||
+            !(r.url.queryParameters[r'$expand'] ?? '').toLowerCase().contains(
+              '0x3a24',
+            )) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>
+          ..remove('singleValueExtendedProperties');
+        return http.Response(
+          jsonEncode(json),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.copies.last!.people, 0);
+      expect(status.copies.last!.failed, 1);
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(extended(a.others.single, 'String 0x3A24'), '+1 212 555 0199');
+      // Still to merge, for another try.
+      expect(status.copies.people, 1);
+    });
+
+    test('an anniversary only the other copy has holds when read back as '
+        "the same day in a form of Exchange's own", () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      // Joined by a mobile too: taken as a birthday would be.
+      for (final id in [a.synced, ...a.others]) {
+        h.graph.editFromOutlook(id, {'mobilePhone': '+1 202 555 0150'});
+      }
+      outlookOnly(a.others.single, {
+        'SystemTime 0x3A41': '2001-05-05T11:59:00Z',
+      });
+      await h.later();
+      h.reshape = (r, response) {
+        if (r.method != 'GET' || r.url.pathSegments.last != a.synced) {
+          return null;
+        }
+        return http.Response(
+          response.body.replaceAll(
+            '2001-05-05T11:59:00Z',
+            '2001-05-05T11:59:00.0000000Z',
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.copies.last!.failed, 0);
+      expect(status.copies.last!.people, 1);
+      expect(extended(a.synced, 'SystemTime 0x3A41'), '2001-05-05T11:59:00Z');
+      expect(h.graph.contact(a.others.single), isNull);
+    });
+
+    test('copies holding different business faxes are listed, nothing '
+        'deleted; Keep these on the other copy brings its fax', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      expect(listed.key, a.synced);
+      expect(
+        [
+          for (final x in listed.copies)
+            for (final d in x.details) (d.label, d.value),
+        ],
+        [
+          ('Business fax', '+1 212 555 0100'),
+          ('Business fax', '+1 212 555 0199'),
+        ],
+      );
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(extended(a.synced, 'String 0x3A24'), '+1 212 555 0100');
+
+      await h.sync.answerCopies(listed.key, a.others.single, listed.version);
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(extended(a.synced, 'String 0x3A24'), '+1 212 555 0199');
       expect(h.graph.contact(a.others.single), isNull);
     });
 
@@ -5613,7 +5828,7 @@ void main() {
       expect(h.graph.contact(e.synced)!['officeLocation'], isNull);
       final left = ((jsonDecode((await h.pair()).held!) as Map)['copies']
           as Map)['left'] as Map;
-      expect(left[e.synced], {'fingerprint': '', 'rules': 2});
+      expect(left[e.synced], {'fingerprint': '', 'rules': 3});
       expect(status.copies.people, 0);
       // A real difference appears: the next pass lifts the leave and
       // lists Eve for Ron, nothing written or deleted.
@@ -5722,6 +5937,100 @@ void main() {
       await h.later();
       expect(h.graph.contact(c.others.single), isNull);
       expect(h.graph.photoOf(c.synced)!.bytes, [1]);
+    });
+
+    test("an answer on 3.22.1's listing counts only while what differs is "
+        'what Ron saw: a fax that differs too lists the person again, '
+        'nothing deleted; a fax only the other copy has comes with it',
+        () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      final dan = copiesOf('Dan', 'Lee', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      final d = await hadcoOf(dan);
+      for (final x in [c, d]) {
+        h.graph.editFromOutlook(x.others.single, {'jobTitle': 'Manager'});
+      }
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, hasLength(2));
+      // As 3.22.1 kept them: listed under its rules, by the job titles
+      // alone, and answered with the other copy's.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        for (final l in (held['copies']! as Map)['differing']! as List) {
+          final listing = l as Map;
+          listing['rules'] = 2;
+          listing['answer'] = ((listing['copies']! as List)[1] as Map)['key'];
+        }
+        return p.copyWith(held: jsonEncode(held));
+      });
+      // Faxes 3.22.1 never read: Cat's copies hold different business
+      // faxes; only Dan's other copy has a home fax.
+      outlookOnly(c.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(c.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      outlookOnly(d.others.single, {'String 0x3A25': '+1 212 555 0177'});
+      final status = await h.later();
+      // Cat: listed again as she now is, the fax shown; nothing written or
+      // deleted.
+      final again = status.copies.differing.single;
+      expect(again.key, c.synced);
+      expect(again.answer, isNull);
+      expect(
+        {
+          for (final x in again.copies)
+            for (final detail in x.details) detail.label,
+        },
+        {'Job title', 'Business fax'},
+      );
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
+      expect(extended(c.synced, 'String 0x3A24'), '+1 212 555 0100');
+      // Dan: carried out, the home fax added and read back with his
+      // answer, then his other copy deleted.
+      expect(h.graph.contact(d.synced)!['jobTitle'], 'Manager');
+      expect(extended(d.synced, 'String 0x3A25'), '+1 212 555 0177');
+      expect(h.graph.contact(d.others.single), isNull);
+    });
+
+    test("a person Ron left under 3.22.1's rules stays left, stamped anew, "
+        'though a fax now differs too', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      await h.sync.answerCopies(listed.key, null, listed.version);
+      await h.sync.syncNow();
+      // As 3.22.1 kept the leave: the differences it was left on, under
+      // its rules.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final left = (held['copies']! as Map)['left']! as Map;
+        (left[c.synced]! as Map)['rules'] = 2;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      outlookOnly(c.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(c.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      // Not asked again: left, and its copies as they were.
+      expect(status.copies.differing, isEmpty);
+      expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      final left = ((jsonDecode((await h.pair()).held!) as Map)['copies']
+          as Map)['left'] as Map;
+      expect((left[c.synced] as Map)['rules'], 3);
     });
 
     test('a person no longer listed, or a copy not its own, is refused',

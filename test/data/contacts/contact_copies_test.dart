@@ -869,6 +869,242 @@ void main() {
     });
   });
 
+  group('details only Outlook keeps', () {
+    // Read as Graph gives them, with a read that asks for them: single-value
+    // extended properties, by their MAPI property tags.
+    Map<String, Object?> kept(Map<String, Object?> values) => {
+      'singleValueExtendedProperties': [
+        for (final MapEntry(:key, :value) in values.entries)
+          {'id': key, 'value': value},
+      ],
+    };
+
+    const numbers = {
+      'String 0x3A24': 'Business fax',
+      'String 0x3A25': 'Home fax',
+      'String 0x3A23': 'Other fax',
+      'String 0x3A21': 'Pager',
+      'String 0x3A1E': 'Car phone',
+      'String 0x3A1F': 'Other phone',
+      'String 0x3A1A': 'Primary phone',
+      'String 0x3A57': 'Company main phone',
+      'String 0x3A2E': "Assistant's phone",
+      'String 0x3A02': 'Callback',
+      'String 0x3A1D': 'Radio phone',
+      'String 0x3A2C': 'Telex',
+      'String 0x3A4B': 'TTY/TDD phone',
+      'String 0x3A2D': 'ISDN',
+    };
+    for (final MapEntry(key: id, value: label) in numbers.entries) {
+      test('$label: the same by its number, taken, or a difference', () {
+        final same = merge(copy('A', kept({id: '(212) 555-0199'})), [
+          copy('B', kept({id: '+1 212 555 0199'})),
+          copy('C'),
+        ]);
+        expect(same.outcome, CopiesOutcome.same);
+        expect(same.patch, isEmpty);
+        // Only another copy has it: written to the synced copy as Graph
+        // takes it, an extended property by its id.
+        final taken = merge(copy('A'), [
+          copy('B', kept({id: '+1 212 555 0199'})),
+        ]);
+        expect(taken.outcome, CopiesOutcome.adds);
+        expect(taken.patch, {
+          'singleValueExtendedProperties': [
+            {'id': id, 'value': '+1 212 555 0199'},
+          ],
+        });
+        expect(taken.adds, [
+          CopiesDetail(label: label, value: '+1 212 555 0199'),
+        ]);
+        final differs = merge(copy('A', kept({id: '+1 212 555 0100'})), [
+          copy('B', kept({id: '+1 212 555 0199'})),
+        ]);
+        expect(differs.outcome, CopiesOutcome.differs);
+        expect(differs.patch, isEmpty);
+        expect(differs.differences, [
+          CopiesDifference(
+            label: label,
+            kept: '+1 212 555 0100',
+            others: const {'B': '+1 212 555 0199'},
+          ),
+        ]);
+      });
+    }
+
+    test('texts by their words: personal web page, hobbies, location', () {
+      for (final (id, label) in [
+        ('String 0x3A50', 'Personal web page'),
+        ('String 0x3A43', 'Hobbies'),
+        ('String 0x3A0D', 'Location'),
+      ]) {
+        final same = merge(copy('A', kept({id: 'Golf  and Chess'})), [
+          copy('B', kept({id: ' golf and chess '})),
+        ]);
+        expect(same.outcome, CopiesOutcome.same, reason: label);
+        final taken = merge(copy('A'), [
+          copy('B', kept({id: 'Golf'})),
+        ]);
+        expect(taken.patch, {
+          'singleValueExtendedProperties': [
+            {'id': id, 'value': 'Golf'},
+          ],
+        }, reason: label);
+        expect(taken.adds, [CopiesDetail(label: label, value: 'Golf')]);
+        final differs = merge(copy('A', kept({id: 'Golf'})), [
+          copy('B', kept({id: 'Chess'})),
+        ]);
+        expect(differs.differences, [
+          CopiesDifference(label: label, kept: 'Golf', others: const {
+            'B': 'Chess',
+          }),
+        ], reason: label);
+      }
+    });
+
+    test('the anniversary, by its day', () {
+      const id = 'SystemTime 0x3A41';
+      final same = merge(copy('A', kept({id: '2001-05-05T00:00:00Z'})), [
+        copy('B', kept({id: '2001-05-05T11:59:00Z'})),
+      ]);
+      expect(same.outcome, CopiesOutcome.same);
+      final taken = merge(copy('A'), [
+        copy('B', kept({id: '2001-05-05T11:59:00Z'})),
+      ]);
+      expect(taken.patch, {
+        'singleValueExtendedProperties': [
+          {'id': id, 'value': '2001-05-05T11:59:00Z'},
+        ],
+      });
+      expect(taken.adds, [
+        const CopiesDetail(label: 'Anniversary', value: '2001-05-05'),
+      ]);
+      final differs = merge(copy('A', kept({id: '2001-05-05T11:59:00Z'})), [
+        copy('B', kept({id: '2002-05-05T11:59:00Z'})),
+      ]);
+      expect(differs.differences, [
+        const CopiesDifference(
+          label: 'Anniversary',
+          kept: '2001-05-05',
+          others: {'B': '2002-05-05'},
+        ),
+      ]);
+    });
+
+    test('an id as Exchange writes it back, small letters and no leading '
+        'zeros, is the same detail', () {
+      final same = merge(copy('A', kept({'String 0x3A24': '212 555 0199'})), [
+        copy('B', kept({'string 0x3a24': '(212) 555-0199'})),
+      ]);
+      expect(same.outcome, CopiesOutcome.same);
+      final taken = merge(copy('A'), [
+        copy('B', kept({'String 0x3a02': '212 555 0199'})),
+      ]);
+      expect(taken.patch, {
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A02', 'value': '212 555 0199'},
+        ],
+      });
+    });
+
+    test('several at once go in one list; any other extended property is '
+        'still Other details', () {
+      final merged = merge(copy('A'), [
+        copy(
+          'B',
+          kept({
+            'String 0x3A24': '212 555 0101',
+            'String {x} Name Colour': 'Red',
+            'SystemTime 0x3A41': '2001-05-05T11:59:00Z',
+          }),
+        ),
+      ]);
+      expect(merged.outcome, CopiesOutcome.differs);
+      expect(merged.differences, [
+        const CopiesDifference(
+          label: 'Other details',
+          others: {
+            'B': 'singleValueExtendedProperties: String {x} Name Colour, Red',
+          },
+        ),
+      ]);
+      // Without it, the two are added in one list.
+      final added = merge(copy('A'), [
+        copy(
+          'B',
+          kept({
+            'String 0x3A24': '212 555 0101',
+            'SystemTime 0x3A41': '2001-05-05T11:59:00Z',
+          }),
+        ),
+      ]);
+      expect(added.outcome, CopiesOutcome.adds);
+      expect(added.patch, {
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '212 555 0101'},
+          {'id': 'SystemTime 0x3A41', 'value': '2001-05-05T11:59:00Z'},
+        ],
+      });
+    });
+
+    test("Ron's answer: another copy's takes its value of what differs, the "
+        "synced copy's keeps its own", () {
+      final a = copy(
+        'A',
+        kept({'String 0x3A24': '212 555 0100', 'String 0x3A43': 'Golf'}),
+      );
+      final b = copy(
+        'B',
+        kept({'String 0x3A24': '212 555 0199', 'String 0x3A43': 'golf'}),
+      );
+      expect(merge(a, [b]).differences, [
+        const CopiesDifference(
+          label: 'Business fax',
+          kept: '212 555 0100',
+          others: {'B': '212 555 0199'},
+        ),
+      ]);
+      expect(merge(a, [b], keep: 'B').patch, {
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '212 555 0199'},
+        ],
+      });
+      final mine = merge(a, [b], keep: 'A');
+      expect(mine.outcome, CopiesOutcome.same);
+      expect(mine.patch, isEmpty);
+    });
+
+    test('from a copy joined only by an email: a fax is taken, but an '
+        'anniversary is a difference, as a birthday is', () {
+      final joined = {
+        'mobilePhone': null,
+        'emailAddresses': [email('ann@x.example')],
+      };
+      final merged = merge(copy('A', joined), [
+        copy('B', {
+          ...joined,
+          ...kept({
+            'String 0x3A24': '212 555 0101',
+            'SystemTime 0x3A41': '2001-05-05T11:59:00Z',
+          }),
+        }),
+      ]);
+      expect(merged.outcome, CopiesOutcome.differs);
+      expect(merged.differences, [
+        const CopiesDifference(
+          label: 'Anniversary',
+          others: {'B': '2001-05-05'},
+        ),
+      ]);
+      expect(merge(copy('A', joined), [
+        copy('B', {
+          ...joined,
+          ...kept({'String 0x3A24': '212 555 0101'}),
+        }),
+      ]).outcome, CopiesOutcome.adds);
+    });
+  });
+
   group('the email slots of a whole read', () {
     // A whole read repeats the first three emails, Outlook's names and
     // all, as primary, secondary and tertiaryEmailAddress.
