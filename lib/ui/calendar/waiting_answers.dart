@@ -57,7 +57,9 @@ typedef Waiting = ({CalendarEvent event, int more});
 /// cancelled and not over yet, on your own calendar, where the answer is
 /// yours: the account's main one (on a calendar shared to it, even one it
 /// may change, the answer is its owner's, and a meeting on both would come
-/// twice). A series counts once, as its next meeting waiting.
+/// twice). Not one shown as free, an office closed or a colleague's day
+/// off sent as a meeting: for information, as I am away holds it back, not
+/// an answer owed. A series counts once, as its next meeting waiting.
 List<Waiting> waitingForAnswer(
   Iterable<CalendarEvent> events,
   DateTime now,
@@ -69,6 +71,7 @@ List<Waiting> waitingForAnswer(
         e.organizer == null ||
         isOwnEvent(e) ||
         e.cancelled ||
+        e.showAs == EventShowAs.free ||
         e.readOnly ||
         e.calendarId != CalendarEvent.mainCalendar ||
         !e.end.isAfter(now) ||

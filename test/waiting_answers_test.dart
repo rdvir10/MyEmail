@@ -53,14 +53,18 @@ void main() {
     int hour = 10,
     MailAddress? organizer = dana,
     String calendarId = CalendarEvent.mainCalendar,
+    EventShowAs showAs = EventShowAs.busy,
+    bool allDay = false,
   }) =>
       CalendarEvent(
         id: id,
         accountId: accountId,
         calendarId: calendarId,
         title: title,
-        start: day(fromToday, hour),
-        end: day(fromToday, hour + 1),
+        start: allDay ? day(fromToday, 0) : day(fromToday, hour),
+        end: allDay ? day(fromToday + 1, 0) : day(fromToday, hour + 1),
+        allDay: allDay,
+        showAs: showAs,
         organizer: own ? null : organizer,
         isOrganizer: own,
         response: own ? EventResponse.organizer : response,
@@ -105,6 +109,21 @@ void main() {
       ], now);
       expect(ids(found), ['a:soon', 'b:soon', 'a:later']);
       expect([for (final w in found) w.more], [0, 0, 0]);
+    });
+
+    // An office closed, a colleague's day off, sent as a meeting shown as
+    // free: for information, as I am away has it, not an answer owed.
+    test('one shown as free does not wait for an answer', () {
+      final now = DateTime.now();
+      final found = waitingForAnswer([
+        meeting('a', 'closed', 'Office closed', 4,
+            allDay: true, showAs: EventShowAs.free),
+        meeting('a', 'talk', 'Lunch and learn', 2, showAs: EventShowAs.free),
+        meeting('a', 'away', 'Dana away', 3,
+            allDay: true, showAs: EventShowAs.outOfOffice),
+        meeting('a', 'budget', 'Budget', 1),
+      ], now);
+      expect(ids(found), ['a:budget', 'a:away']);
     });
 
     test('a series counts once, as its next meeting waiting, with how many '
