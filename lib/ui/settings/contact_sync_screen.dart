@@ -1891,6 +1891,16 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
   final Map<int, ({ContactSyncChoice choice, String version})> _gaveHere =
       {};
 
+  /// Where the box for all stands this visit, settled by the first status:
+  /// above the items if two or more pairs differed then; one that comes
+  /// later goes under them, so that its coming pushes nothing down.
+  bool? _boxOnTop;
+
+  /// The box has been shown this visit: it stays until the screen is left,
+  /// its buttons off with fewer than two pairs left, so that its going
+  /// moves nothing up either.
+  bool _boxShown = false;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
   void _readAgain() {
@@ -1943,6 +1953,24 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
       for (final l in looks)
         if (l.kind == ContactReviewKind.differing && l.answer == null) l,
     ];
+    if (status != null) _boxOnTop ??= differing.length > 1;
+    if (differing.length > 1) _boxShown = true;
+    final box = _boxShown
+        ? _AllDiffering(
+            looks: differing,
+            graphName: graphName,
+            onAnswer: (c, named) => _act(
+              context,
+              () async {
+                await _sync.answerAllDiffering(c, named);
+                _given(named, c);
+              },
+              // Refused, none of them still as shown: said, and read
+              // again, to be answered as they are now.
+              onFailure: _readAgain,
+            ),
+          )
+        : null;
     return Scaffold(
       appBar: AppBar(title: const Text('Needs a look'), centerTitle: false),
       body: _Body(
@@ -1953,21 +1981,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
             top: 16,
           ),
           if (shown.isEmpty) const _Para('Nothing needs a look.'),
-          if (differing.length > 1)
-            _AllDiffering(
-              looks: differing,
-              graphName: graphName,
-              onAnswer: (c, named) => _act(
-                context,
-                () async {
-                  await _sync.answerAllDiffering(c, named);
-                  _given(named, c);
-                },
-                // Refused, none of them still as shown: said, and read
-                // again, to be answered as they are now.
-                onFailure: _readAgain,
-              ),
-            ),
+          if (box != null && (_boxOnTop ?? false)) box,
           for (final (:look, :listed) in shown) ...[
             const Divider(height: 1),
             _LookTile(
@@ -1988,6 +2002,7 @@ class _LooksScreenState extends ConsumerState<_LooksScreen> {
               ),
             ),
           ],
+          if (box != null && !(_boxOnTop ?? false)) box,
         ],
       ),
     );
@@ -2056,6 +2071,9 @@ class _AllDiffering extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // With fewer than two left the box stays, the same size, its buttons
+    // off: the screen keeps it in its place until it is left.
+    final open = looks.length > 1;
     return Container(
       key: const ValueKey('contact-sync-all'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -2068,12 +2086,18 @@ class _AllDiffering extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'All ${looks.length} pairs whose details differ',
+            open
+                ? 'All ${looks.length} pairs whose details differ'
+                : 'Pairs whose details differ',
             style: theme.textTheme.titleSmall,
           ),
           const SizedBox(height: 4),
           Text(
-            'One answer for every one of them at once.',
+            open
+                ? 'One answer for every one of them at once.'
+                : looks.isEmpty
+                    ? 'Nothing left to answer for all.'
+                    : 'Only one is left: answer it with its own buttons.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
@@ -2089,7 +2113,7 @@ class _AllDiffering extends StatelessWidget {
               ])
                 FilledButton.tonal(
                   key: ValueKey('contact-sync-all:${c.name}'),
-                  onPressed: () => _answer(context, c),
+                  onPressed: open ? () => _answer(context, c) : null,
                   child: Text(label),
                 ),
             ],

@@ -2481,6 +2481,97 @@ void main() {
       expect(sync.allDiffering.single.looks.keys, {4, 5, 6, 7});
     });
 
+    group('Needs a look: the box for all keeps its place', () {
+      ContactSyncLook differs(int id, {ContactSyncChoice? answer}) =>
+          ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            graphValues: {ContactField.jobTitle: 'Head buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+            answer: answer,
+          );
+      double top(WidgetTester tester, Finder f) => tester.getTopLeft(f).dy;
+      Finder look(int id) => button('contact-sync-look:$id');
+      final box = button('contact-sync-all');
+
+      testWidgets('with fewer than two left, it stays, its buttons off',
+          (tester) async {
+        sync = FakeContactSync(status: synced(looks: [
+          for (var id = 1; id <= 3; id++) differs(id),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        await tester.tap(find.text('Needs a look (3)'));
+        await tester.pumpAndSettle();
+        final first = top(tester, look(1));
+        expect(top(tester, box), lessThan(first));
+
+        // Answered one by one down to one: the box stays where it was.
+        sync.set(synced(looks: [
+          differs(1, answer: ContactSyncChoice.useGraph),
+          differs(2, answer: ContactSyncChoice.useGraph),
+          differs(3),
+        ]));
+        await tester.pumpAndSettle();
+        expect(box, findsOneWidget);
+        expect(
+          find.text('Only one is left: answer it with its own buttons.'),
+          findsOneWidget,
+        );
+        for (final c in ['useGoogle', 'useGraph', 'leaveAsTheyAre']) {
+          expect(enabled(tester, 'contact-sync-all:$c'), isFalse, reason: c);
+        }
+        expect(top(tester, look(1)), first, reason: 'nothing moved');
+
+        // None left, the first two carried out: still in its place.
+        sync.set(synced(looks: [
+          differs(3, answer: ContactSyncChoice.useGraph),
+        ]));
+        await tester.pumpAndSettle();
+        expect(find.text('Nothing left to answer for all.'), findsOneWidget);
+        expect(top(tester, look(1)), first, reason: 'nothing moved');
+      });
+
+      testWidgets('one that comes while the screen is open goes under the '
+          'items', (tester) async {
+        const dana = ContactSyncLook(
+          id: 9,
+          kind: ContactReviewKind.newContact,
+          reason: ContactReviewReason.sameName,
+          side: ContactSide.google,
+          title: 'Dana Levi',
+          candidates: [ContactSyncCandidate(id: 'h-1', title: 'Dana Levi')],
+          choices: [
+            ContactSyncChoice.samePerson,
+            ContactSyncChoice.copyAnyway,
+            ContactSyncChoice.leaveOut,
+          ],
+        );
+        sync = FakeContactSync(status: synced(looks: [dana, differs(1)]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+        await tester.tap(find.text('Needs a look (2)'));
+        await tester.pumpAndSettle();
+        expect(box, findsNothing);
+        final first = top(tester, look(9));
+
+        // Same person on Dana: the run pairs her, and her details differ
+        // too, so now two pairs do.
+        sync.set(synced(looks: [differs(1), differs(2)]));
+        await tester.pumpAndSettle();
+        expect(find.text('All 2 pairs whose details differ'), findsOneWidget);
+        expect(top(tester, look(9)), first, reason: 'nothing moved');
+        expect(top(tester, box), greaterThan(top(tester, look(2))));
+      });
+    });
+
     testWidgets("one side's details for every differing pair is asked again, "
         'naming the count and the side replaced', (tester) async {
       ContactSyncLook differs(int id) => ContactSyncLook(
