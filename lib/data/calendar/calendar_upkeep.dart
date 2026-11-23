@@ -68,8 +68,9 @@ class CalendarUpkeep {
   /// as each quarter of an hour does.
   Future<void> run({Set<String>? reading}) async {
     final now = _clock();
+    final every = await engine.loadAccounts();
     final accounts = [
-      for (final a in await engine.loadAccounts())
+      for (final a in every)
         if (AccountCalendar.canRead(a)) a,
     ];
     if (reading != null && !accounts.any((a) => reading.contains(a.id))) {
@@ -167,7 +168,9 @@ class CalendarUpkeep {
         shown,
         now,
         showDeclined: prefs.showDeclined,
-        own: {for (final a in accounts) a.emailAddress.trim().toLowerCase()},
+        // Ron by every account's address, as the views know him
+        // (ownAddressesProvider), not only those with a calendar.
+        own: {for (final a in every) a.emailAddress.trim().toLowerCase()},
       ),
       {for (final a in accounts) a.id: a},
       calendars,

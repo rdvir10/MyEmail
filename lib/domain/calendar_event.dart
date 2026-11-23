@@ -388,8 +388,11 @@ List<CalendarEvent> eventsOn(DateTime day, Iterable<CalendarEvent> events) =>
 /// off, each called "Vacation", stay two. A copy Ron can change is never
 /// hidden: where the copies include one, the ones he only reads go, and
 /// otherwise the one kept is the first by account, calendar and id, the
-/// same whatever order the copies come in. Only what asks nothing of Ron
-/// folds: one busy or out of office, waiting for his answer, declined or
+/// same whatever order the copies come in. Two on one calendar are two
+/// events, never copies (a team's calendar, which Google names as every
+/// event's organiser, with two people's days off), and where a calendar
+/// holds two, nothing of that name and days folds. Only what asks nothing
+/// of Ron folds: one busy or out of office, waiting for his answer, declined or
 /// cancelled, or with no name, is listed as often as it is on.
 List<CalendarEvent> foldSameWholeDays(
   Iterable<CalendarEvent> events, {
@@ -398,15 +401,20 @@ List<CalendarEvent> foldSameWholeDays(
   final list = events.toList();
   final mine = {for (final a in own) a.trim().toLowerCase()};
   final keys = [for (final e in list) _wholeDayKey(e, mine)];
-  // The copy of each that is listed where none can be changed, and which
-  // have a copy that can.
+  // The copy of each that is listed where none can be changed, which have
+  // a copy that can, and which have two on one calendar.
   final kept = <String, CalendarEvent>{};
   final changeable = <String>{};
+  final onCalendar = <String>{};
+  final twoOnOne = <String>{};
   for (var i = 0; i < list.length; i++) {
     final key = keys[i];
     if (key == null) continue;
     final e = list[i];
     if (!e.readOnly) changeable.add(key);
+    if (!onCalendar.add('$key\u0000${e.accountId}\u0000${e.calendarId}')) {
+      twoOnOne.add(key);
+    }
     final was = kept[key];
     if (was == null || _copyOrder(e).compareTo(_copyOrder(was)) < 0) {
       kept[key] = e;
@@ -414,7 +422,9 @@ List<CalendarEvent> foldSameWholeDays(
   }
   bool listed(int i) {
     final key = keys[i];
-    if (key == null || !list[i].readOnly) return true;
+    if (key == null || !list[i].readOnly || twoOnOne.contains(key)) {
+      return true;
+    }
     return !changeable.contains(key) && identical(kept[key], list[i]);
   }
 

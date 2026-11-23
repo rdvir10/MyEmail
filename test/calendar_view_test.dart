@@ -169,6 +169,24 @@ void main() {
                 organizer: 'Dana@hadco.example'),
           ]),
           ['d', 'o']);
+      // Two on one calendar are two events, never copies of each other: a
+      // team's calendar, where Google names the calendar as every event's
+      // organiser, with Dana's day off and Moshe's.
+      expect(
+          ids([
+            whole('d', 'Vacation',
+                accountId: 'gmail',
+                calendarId: 'team',
+                organizer: 'team@group.calendar.google.com'),
+            whole('o', 'Vacation',
+                accountId: 'gmail',
+                calendarId: 'team',
+                organizer: 'team@group.calendar.google.com'),
+            whole('h', 'Vacation',
+                accountId: 'internet:x',
+                organizer: 'team@group.calendar.google.com'),
+          ]),
+          ['d', 'o', 'h']);
       // Read-only copies alone: the one kept is the same whichever comes
       // first, by account, calendar and id, so a reload or another view
       // keeps the same colour and opens the same copy.

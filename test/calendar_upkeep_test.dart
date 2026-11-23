@@ -310,6 +310,47 @@ void main() {
     expect(byTitle['Stand-up']!.containsKey('f'), isFalse);
   });
 
+  // The views know Ron by every account's address; the widget knew him only
+  // by those with a calendar, so a copy organised from his old IMAP address
+  // folded in the views and showed twice on the widget.
+  test("the widget knows Ron by every account's address, as the views do",
+      () async {
+    now = DateTime(2026, 10, 26, 9);
+    await engine.addAccount(
+      displayName: 'Old',
+      emailAddress: 'ron@old.example',
+      provider: MailProvider.gmail,
+      secret: 'app-password',
+    );
+    engine.calendarLists[hadco.id] = [
+      CalendarInfo.main(hadco.id),
+      for (final id in ['birthdays', 'family'])
+        CalendarInfo(accountId: hadco.id, id: id, name: id, canEdit: false),
+    ];
+    engine.events[hadco.id] = [
+      for (final (id, organiser) in [
+        ('birthdays', 'ron@old.example'),
+        ('family', null),
+      ])
+        CalendarEvent(
+          id: id,
+          accountId: hadco.id,
+          calendarId: id,
+          title: "Dana's birthday",
+          start: DateTime(2026, 10, 26),
+          end: DateTime(2026, 10, 27),
+          allDay: true,
+          showAs: EventShowAs.free,
+          readOnly: true,
+          organizer: organiser == null ? null : MailAddress(email: organiser),
+        ),
+    ];
+    await run();
+    final rows =
+        jsonDecode(surface.values[CalendarUpkeep.widgetKey]! as String) as List;
+    expect([for (final r in rows) r['t']], ["Dana's birthday"]);
+  });
+
   test('a calendar that cannot be read keeps what the device kept', () async {
     engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
     await run();
