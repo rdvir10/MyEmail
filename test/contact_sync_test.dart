@@ -1151,6 +1151,57 @@ void main() {
       expect(await h.paired(), hasLength(3));
     });
 
+    test("a refusal's item goes once what was refused goes through without "
+        'a Retry: Ron changes the contact', () async {
+      final ann = h.google.seed(person('Ann', 'Lee', email: 'ann@example.com'));
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com'),
+      );
+      final cy = h.google.seed(person('Cy', 'Day', email: 'cy@example.com'));
+      final cyH = h.graph.seed(outlook('Cy', 'Day', email: 'cy@example.com'));
+      final bad = h.google.seed(
+        person('Bad', 'Apple', email: 'bad@example.com'),
+      );
+      // Outlook takes no note over 40 characters, nor Bad Apple.
+      h.graph.refuse = (c) =>
+          '${c['personalNotes'] ?? ''}'.length > 40 || c['surname'] == 'Apple';
+      await h.firstSync();
+      Map<String, Object?> note(String text) => {
+        'biographies': [
+          {'value': text, 'contentType': 'TEXT_PLAIN'},
+        ],
+      };
+      const long = 'Met at the fair, and again at the trade show in May';
+      h.google.editFromGmail(ann, note(long));
+      h.google.editFromGmail(cy, note(long));
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(
+        [for (final l in status.needsALook) l.kind],
+        List.filled(3, ContactReviewKind.refused),
+      );
+
+      // Ron shortens Ann's note, which then goes to Outlook; gives Cy the
+      // same short note on both sides, which leaves nothing to write; and
+      // edits Bad Apple, whom Outlook now takes. All three go through at
+      // the next sync, with no Retry.
+      h.graph.refuse = (c) => '${c['personalNotes'] ?? ''}'.length > 40;
+      h.google.editFromGmail(ann, note('Met at the fair'));
+      h.google.editFromGmail(cy, note('Met at the fair'));
+      h.graph.editFromOutlook(cyH, {'personalNotes': 'Met at the fair'});
+      h.google.editFromGmail(bad, {
+        'organizations': [
+          {'name': 'Orchard Ltd'},
+        ],
+      });
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.contact(annH)!['personalNotes'], 'Met at the fair');
+      expect(h.graph.idWithEmail('bad@example.com'), isNotNull);
+      expect(await h.paired(), hasLength(3));
+      expect(status.needsALook, isEmpty);
+    });
+
     test('a batch refused whole is sent one at a time', () async {
       for (var i = 0; i < ContactSync.googleBatchFloor; i++) {
         h.graph.seed(outlook('O$i', 'Out', email: 'o$i@example.com'));
@@ -2117,10 +2168,8 @@ void main() {
       final notes = h.google.person(g)!['biographies']! as List;
       expect((notes.single as Map)['value'], 'Prefers email after 5');
       expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
-      expect(
-        status.needsALook.where((l) => l.kind == ContactReviewKind.clash),
-        isEmpty,
-      );
+      // The clash answered, and the refusal over: its item goes too.
+      expect(status.needsALook, isEmpty);
       expect(
         (await h.links()).single.state,
         ContactLinkState.paired,

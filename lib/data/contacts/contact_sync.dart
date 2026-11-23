@@ -2239,6 +2239,12 @@ class _Run {
         }
       }
     }
+    // And those of refusals over: a row held as refused paired again with
+    // nothing to write. One with writes drops its own as they are saved.
+    for (final p in noWrite) {
+      if (p.removeRow || p.state != ContactLinkState.paired) continue;
+      dropReviews.addAll(_refusedFor(p));
+    }
 
     await store.transaction(() async {
       final remove = <int>{
@@ -2332,6 +2338,27 @@ class _Run {
       return pair.copyWith(held: h.encode());
     });
   }
+
+  /// The refusals' items (Could not copy …, with Retry) as the run read
+  /// them.
+  late final _refusals = [
+    for (final r in reviews)
+      if (r.kind == ContactReviewKind.refused.name && r.reviewId != null) r,
+  ];
+
+  /// The ids of the refusals' items about [p]'s contacts, [p] a row saved
+  /// paired: the refusal is over, whatever ended it (a Retry, an answer
+  /// carried out on the pair, a change on either side), and its item goes
+  /// with it, in the same transaction. Every id such an item names is
+  /// [p]'s: a pair's names both, a new contact's the one refused.
+  List<int> _refusedFor(ContactLinkPlan p) => [
+    for (final r in _refusals)
+      if ((r.googleName != null || r.graphId != null) &&
+          (r.googleName == null ||
+              (plan.reKeys[r.googleName] ?? r.googleName) == p.googleName) &&
+          (r.graphId == null || r.graphId == p.graphId))
+        r.reviewId!,
+  ];
 
   /// [item] saved, replacing one of the same kind about the same contacts.
   Future<void> _saveReview(ContactReviewItem item) async {
@@ -2624,6 +2651,7 @@ class _Run {
     );
     await store.transaction(() async {
       await store.completeCreates({op.opId: link});
+      await store.dropReviews(_refusedFor(p));
       await _carriedOut(p);
     });
     copiedFrom.add((create.side.other, create.sourceId));
@@ -2773,6 +2801,7 @@ class _Run {
             ? link
             : link.copyWith(googleName: googleName),
       );
+      if (link.isPaired) await store.dropReviews(_refusedFor(p));
       await _carriedOut(planned);
     });
     if (googleWritten) tally.changedGoogle++;
