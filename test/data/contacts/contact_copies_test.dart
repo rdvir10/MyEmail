@@ -727,20 +727,40 @@ void main() {
       expect(mine.adds, isEmpty);
     });
 
-    test('an answer does not change which photo is kept', () {
+    test("Keep these on another copy brings that copy's photo, when it has "
+        "one, in place of the synced copy's", () {
       final kept = copy('A', {'jobTitle': 'Buyer'}, 'p1');
       final other = copy('B', {'jobTitle': 'Manager'}, 'p2');
-      final unanswered = merge(kept, [other]);
+      final bare = copy('C', {'jobTitle': 'Clerk'});
+      final unanswered = merge(kept, [other, bare]);
       expect([for (final d in unanswered.differences) d.label], [
         'Job title',
       ]);
-      for (final keep in ['A', 'B']) {
-        expect(merge(kept, [other], keep: keep).photoFrom, isNull);
-      }
+      expect(unanswered.photoFrom, isNull);
+      expect(merge(kept, [other, bare], keep: 'A').photoFrom, isNull);
+      final theirs = merge(kept, [other, bare], keep: 'B');
+      expect(theirs.photoFrom, 'B');
+      expect(theirs.outcome, CopiesOutcome.adds);
+      expect(
+        theirs.adds.where((d) => d.label == 'Photo'),
+        [const CopiesDetail(label: 'Photo', value: 'a photo')],
+      );
+      // A copy with none leaves the synced copy's.
+      expect(merge(kept, [other, bare], keep: 'C').photoFrom, isNull);
+      // With nothing else differing, too.
+      final alike = merge(copy('A', const {}, 'p1'), [
+        copy('B', const {}, 'p2'),
+      ], keep: 'B');
+      expect(alike.outcome, CopiesOutcome.adds);
+      expect(alike.photoFrom, 'B');
+      expect(alike.fingerprint, '');
+      // The synced copy with none: the chosen copy's, not the first.
       final none = copy('A', {'jobTitle': 'Buyer'});
-      for (final keep in [null, 'A', 'B']) {
-        expect(merge(none, [other], keep: keep).photoFrom, 'B');
-      }
+      expect(merge(none, [other, copy('D', const {}, 'p3')]).photoFrom, 'B');
+      expect(
+        merge(none, [other, copy('D', const {}, 'p3')], keep: 'D').photoFrom,
+        'D',
+      );
     });
   });
 
@@ -1208,8 +1228,8 @@ void main() {
       final merged = merge(kept, [other, third], keep: 'B');
       expect(merged.outcome, CopiesOutcome.adds);
       expect(merged.differences, isEmpty);
-      // The synced copy's photo stays, whichever copy's details win.
-      expect(merged.photoFrom, isNull);
+      // Its photo comes with it, in place of the synced copy's.
+      expect(merged.photoFrom, 'B');
       expect(merged.patch, {
         'emailAddresses': [email('ann@x.example'), email('ann@y.example')],
         'department': 'Purchasing',
@@ -1228,6 +1248,7 @@ void main() {
           label: 'Other details',
           value: 'weddingAnniversary: 2001-05-05',
         ),
+        const CopiesDetail(label: 'Photo', value: 'a photo'),
       ]);
       expect(merged.fingerprint, merge(kept, [other, third]).fingerprint);
     });

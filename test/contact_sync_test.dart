@@ -4471,8 +4471,9 @@ void main() {
         {...c.others},
       );
       expect(status.graphCount, 16 - 6);
-      // Cat, listed with no answer, is a merge's to read again.
-      expect(status.copies.people, 1);
+      // Cat, listed under the rules of now, is shown for Ron, and not
+      // counted: a merge would only list her again.
+      expect(status.copies.people, 0);
       // The log has counts only.
       final all = logged.join('\n');
       expect(all, contains('copies: 5 people, 6 deleted, 3 added'));
@@ -5261,8 +5262,8 @@ void main() {
       );
     });
 
-    test('people 3.22.0 listed for their photos are counted to merge and '
-        'merged; an answer on what was listed then no longer counts',
+    test("people 3.22.0 listed for their photos are hidden, counted to merge "
+        "and merged; Keep these on another copy brings that copy's photo",
         () async {
       final eve = copiesOf('Eve', 'Moss');
       final fay = copiesOf('Fay', 'Gold');
@@ -5311,15 +5312,20 @@ void main() {
         return p.copyWith(held: jsonEncode(held));
       });
 
+      // Eve, listed by 3.22.0 for her photos alone and not answered, is
+      // not shown (her differences are no more); Fay, answered, is.
+      expect(
+        [for (final p in (await h.status()).copies.differing) p.title],
+        ['Fay Gold'],
+      );
       // The run for Fay's answer reads her copies again, under today's
-      // rules: the same, merged, the answer on old differences no matter.
+      // rules: nothing differing, so her Keep these on the other copy
+      // brings that copy's photo, and she is merged.
       var status = await h.later();
       expect(h.graph.contact(f.others.single), isNull);
-      expect(h.graph.photoOf(f.synced)!.bytes, [1]);
-      expect([for (final p in status.copies.differing) p.title], [
-        'Eve Moss',
-      ]);
-      // Eve, listed with no answer, is counted for the merge to offer.
+      expect(h.graph.photoOf(f.synced)!.bytes, [2]);
+      expect(status.copies.differing, isEmpty);
+      // Eve is counted for the merge to offer.
       expect(status.copies.people, 1);
       expect(status.copies.extras, 1);
 
@@ -5330,6 +5336,251 @@ void main() {
       expect(status.copies.people, 0);
       expect(h.graph.contact(e.others.single), isNull);
       expect(h.graph.photoOf(e.synced)!.bytes, [1]);
+    });
+
+    test('a person whose copies really differ, listed and not answered, '
+        'is shown and not offered to merge again', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      expect((await h.later()).copies.people, 1);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.differing.single.title, 'Cat Fox');
+      expect(status.copies.people, 0);
+      expect(status.copies.extras, 0);
+      // Nothing to merge: nothing asked.
+      await h.sync.mergeCopies();
+      expect((await h.status()).copies.asked, isFalse);
+    });
+
+    test('a person Ron left under 3.22.0 stays left, whatever a merge '
+        'would say now', () async {
+      final eve = copiesOf('Eve', 'Moss');
+      copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final e = await hadcoOf(eve);
+      h.graph.setPhotoFromOutlook(e.synced, [1]);
+      h.graph.setPhotoFromOutlook(e.others.single, [2]);
+      await h.later();
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final copies =
+            (held['copies'] as Map<String, Object?>?) ?? <String, Object?>{};
+        copies['left'] = {e.synced: '0' * 64};
+        held['copies'] = copies;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(e.others.single), isNotNull);
+      expect(status.copies.differing, isEmpty);
+    });
+
+    test('Leave them always stands: answered under 3.22.0 or since, the '
+        'person is left until one of its copies changes', () async {
+      final eve = copiesOf('Eve', 'Moss');
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final e = await hadcoOf(eve);
+      final c = await hadcoOf(cat);
+      h.graph.setPhotoFromOutlook(e.synced, [1]);
+      h.graph.setPhotoFromOutlook(e.others.single, [2]);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      // Eve: listed by 3.22.0 for her photos, Ron's Leave them given
+      // before the update and not yet carried out.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final copies =
+            (held['copies'] as Map<String, Object?>?) ?? <String, Object?>{};
+        copies['differing'] = [
+          {
+            'key': e.synced,
+            'title': 'Eve Moss',
+            'fingerprint': '0' * 64,
+            'answer': 'leave',
+            'copies': [
+              {
+                'key': e.synced,
+                'synced': true,
+                'details': [
+                  {'label': 'Photo', 'value': 'a photo'},
+                ],
+              },
+              {
+                'key': e.others.single,
+                'details': [
+                  {'label': 'Photo', 'value': 'another photo'},
+                ],
+              },
+            ],
+          },
+        ];
+        held['copies'] = copies;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      // The next run carries the leave out: never merged.
+      var status = await h.later();
+      expect(h.graph.contact(e.others.single), isNotNull);
+      expect(status.copies.differing, isEmpty);
+      // Cat: listed under the rules of now, Ron leaves her too.
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      expect(listed.title, 'Cat Fox');
+      await h.sync.answerCopies(listed.key, null, listed.version);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      // Merging again passes both over.
+      copiesOf('Ann', 'Cole');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(h.graph.contact(e.others.single), isNotNull);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(status.copies.differing, isEmpty);
+      // Cat's copy changes: read again as any other, and listed again;
+      // Eve's do not.
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Director'});
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      status = await h.status();
+      expect([for (final p in status.copies.differing) p.title], [
+        'Cat Fox',
+      ]);
+      expect(h.graph.contact(e.others.single), isNotNull);
+    });
+
+    test("Keep these on another copy brings that copy's photo, read, given "
+        'and read back', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.setPhotoFromOutlook(c.synced, [1]);
+      h.graph.setPhotoFromOutlook(c.others.single, [2]);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // Not a photo among what differs.
+      expect(
+        [
+          for (final x in listed.copies)
+            for (final d in x.details) d.label,
+        ],
+        ['Job title', 'Job title'],
+      );
+      h.requests.clear();
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, isEmpty);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Manager');
+      expect(h.graph.photoOf(c.synced)!.bytes, [2]);
+      expect(h.graph.contact(c.others.single), isNull);
+      expect(
+        [
+          for (final r in h.requests)
+            if (r.method == 'GET' && r.url.path.endsWith(r'/$value'))
+              r.url.pathSegments[r.url.pathSegments.length - 3],
+        ],
+        [c.others.single],
+      );
+    });
+
+    test('an answer on a 3.22.0 listing whose copies still differ is '
+        'dropped, the person listed again as it is', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      final dan = copiesOf('Dan', 'Lee', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      final d = await hadcoOf(dan);
+      for (final x in [c, d]) {
+        h.graph.editFromOutlook(x.others.single, {'jobTitle': 'Manager'});
+      }
+      await h.later();
+      // Listed by 3.22.0 (a fingerprint of its own): Cat answered with
+      // the synced copy's, Dan with the other copy's.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final copies =
+            (held['copies'] as Map<String, Object?>?) ?? <String, Object?>{};
+        copies['differing'] = [
+          for (final (x, title, answer) in [
+            (c, 'Cat Fox', c.synced),
+            (d, 'Dan Lee', d.others.single),
+          ])
+            {
+              'key': x.synced,
+              'title': title,
+              'fingerprint': '0' * 64,
+              'answer': answer,
+              'copies': [
+                {'key': x.synced, 'synced': true, 'details': <Object?>[]},
+                {'key': x.others.single, 'details': <Object?>[]},
+              ],
+            },
+        ];
+        held['copies'] = copies;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      final status = await h.later();
+      // Neither answer counts on differences Ron did not see: both listed
+      // again under the rules of now, nothing written or deleted.
+      expect(
+        {for (final p in status.copies.differing) p.title: p.answer},
+        {'Cat Fox': null, 'Dan Lee': null},
+      );
+      for (final x in [c, d]) {
+        expect(h.graph.contact(x.synced)!['jobTitle'], 'Buyer');
+        expect(h.graph.contact(x.others.single), isNotNull);
+      }
+    });
+
+    test('photo checks: the synced copies first, then only the copies of '
+        'one without a photo; a copy not checked never passes one with a '
+        'photo over', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      h.graph.setPhotoFromOutlook(a.synced, [1]);
+      h.graph.setPhotoFromOutlook(a.others.single, [2]);
+      h.graph.setPhotoFromOutlook(b.others.single, [3]);
+      await h.later();
+      h.requests.clear();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final checks = [
+        for (final r in h.requests)
+          if (r.url.path.endsWith(r'$batch') && r.body.contains('/photo'))
+            {
+              for (final part in (jsonDecode(r.body) as Map)['requests']
+                  as List)
+                Uri.parse('${(part as Map)['url']}').pathSegments[2],
+            },
+      ];
+      expect(checks.first, {a.synced, b.synced});
+      expect(checks[1], {b.others.single});
+      final status = await h.status();
+      expect(status.copies.last!.people, 2);
+      expect(status.copies.last!.passedOver, 0);
+      expect(h.graph.photoOf(a.synced)!.bytes, [1]);
+      expect(h.graph.photoOf(b.synced)!.bytes, [3]);
     });
 
     test('a person no longer listed, or a copy not its own, is refused',
