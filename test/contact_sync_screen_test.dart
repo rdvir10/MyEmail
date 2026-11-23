@@ -5763,6 +5763,62 @@ void main() {
       expect(find.text('Contact sync could not finish'), findsNothing);
       expect(sync.noticesSeen, [first, second]);
     });
+
+    testWidgets("a stop's Open, said over a screen of contact sync's own, "
+        'goes back to the Contact sync screen under it', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      sync = FakeContactSync(
+        status: synced(duplicates: duplicates, copies: copies),
+      );
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      final halt = ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      );
+      sync.set(synced(
+        halt: halt,
+        notice: ContactSyncNotice(at: at, halt: halt),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.text('Duplicates to merge', skipOffstage: false),
+          findsNothing);
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsOneWidget, reason: 'the one open, not a second');
+      expect(ContactSyncScreen.isOpen, isTrue);
+      expect(find.text('The last sync stopped at '
+          '${formatClock(at, use24h: false)}.'), findsOneWidget);
+    });
   });
 
   group('the one-line message', () {

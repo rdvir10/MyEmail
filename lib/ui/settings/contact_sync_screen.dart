@@ -39,6 +39,22 @@ class ContactSyncScreen extends ConsumerStatefulWidget {
   static bool get isOpen => _open.any((s) => s._inFront);
   static final Set<_ContactSyncScreenState> _open = {};
 
+  /// Back to the Contact sync screen already open, the nearest if there
+  /// were ever two, closing whatever is over it (Duplicates to merge, Needs
+  /// a look, a sign-in, a question): true when there was one, so that the
+  /// one-line message's Open never piles a second one on top; false when
+  /// none is open, for the caller to open one.
+  static bool showOpen() {
+    final open = _open.lastWhereOrNull(
+      (s) => s.mounted && (s._route?.isActive ?? false),
+    );
+    final route = open?._route;
+    final navigator = route?.navigator;
+    if (route == null || navigator == null) return false;
+    navigator.popUntil((r) => identical(r, route));
+    return true;
+  }
+
   @override
   ConsumerState<ContactSyncScreen> createState() => _ContactSyncScreenState();
 }

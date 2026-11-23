@@ -332,6 +332,9 @@ class _AppShellState extends ConsumerState<AppShell>
         label: 'Open',
         onPressed: () {
           if (!mounted) return;
+          // Said over a screen of its own (Duplicates to merge, say): back
+          // to the Contact sync screen under it, never a second one.
+          if (ContactSyncScreen.showOpen()) return;
           unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
             builder: (_) => const ContactSyncScreen(),
           )));
