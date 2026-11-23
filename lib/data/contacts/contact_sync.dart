@@ -565,7 +565,10 @@ class ContactSync implements ContactSyncService {
           'at them again.',
         );
       }
-      listed['answer'] = keep ?? ContactSyncCopiesPerson.leave;
+      // A new answer starts its tries afresh.
+      listed
+        ..['answer'] = keep ?? ContactSyncCopiesPerson.leave
+        ..remove('tries');
       return p.copyWith(held: held.encode());
     });
     _changed();
@@ -589,7 +592,9 @@ class ContactSync implements ContactSyncService {
           continue;
         }
         // The person is named by its synced copy.
-        listed['answer'] = key;
+        listed
+          ..['answer'] = key
+          ..remove('tries');
         any = true;
       }
       if (!any) {
@@ -3937,10 +3942,22 @@ class _Copies {
 
   /// The people whose copies differ, listed for Ron: `key`, `title`, the
   /// `fingerprint` of the differences shown, the `rules` they were listed
-  /// under ([rules]), Ron's `answer` (a copy's key, or `leave`), and
-  /// `copies`, each with its `key`, whether `synced`, and its differing
-  /// values (`details`: `label`, `value`).
+  /// under ([rules]), Ron's `answer` (a copy's key, or `leave`), with it
+  /// the `tries` of passes in a row that could not carry it out
+  /// ([triesOf]), and `copies`, each with its `key`, whether `synced`, and
+  /// its differing values (`details`: `label`, `value`).
   final List<Map<String, Object?>> differing = [];
+
+  /// Passes in a row that may meet an answer they cannot carry out before
+  /// it stops making a run due ([dueNow]): each run that goes still tries
+  /// it, but MyEmail no longer starts one for it each time it is opened.
+  static const quietAfter = 3;
+
+  /// The passes in a row that met [listing]'s answer and could not carry
+  /// it out: its person passed over (a copy changed or not in Contacts,
+  /// Hadco not read), failed, or not reached. None before Ron's answer.
+  static int triesOf(Map<String, Object?> listing) =>
+      listing['tries'] is int ? listing['tries']! as int : 0;
 
   /// People Ron chose to leave as they are, by key: the `fingerprint` of
   /// the differences as they were (empty where none was left) and the
@@ -3985,10 +4002,15 @@ class _Copies {
       differing.firstWhereOrNull((d) => d['key'] == key);
 
   /// A merge asked, or an answer waiting for a run: a run is due at once,
-  /// unless the last pass stopped short (then the usual hour applies).
+  /// unless the last pass stopped short (then the usual hour applies). An
+  /// answer the last [quietAfter] passes could not carry out waits for a
+  /// run that goes anyway, rather than start one at every opening.
   bool get dueNow =>
       shortStops == 0 &&
-      (asked != null || differing.any((d) => d['answer'] != null));
+      (asked != null ||
+          differing.any(
+            (d) => d['answer'] != null && triesOf(d) < quietAfter,
+          ));
 
   /// The people listed under the rules of now that Ron has not answered.
   int get unanswered =>
@@ -4474,6 +4496,11 @@ class _CopiesStep {
             if (read[id] case final c?) id: syncedFromGraph(c),
       });
       if (copies.isEmpty) {
+        // No copy is the merge's any more (one now shares only the name, is
+        // paired, or another person took it): a person listed goes from the
+        // list, any answer with it, which nothing could carry out.
+        _unlisted.add(key);
+        _listed.remove(key);
         _personDone();
         continue;
       }
@@ -4941,6 +4968,23 @@ class _CopiesStep {
           c.left.remove(key);
         }
         c.left.addAll(left);
+        if (ended || short) {
+          // An answer the pass found and leaves waiting (its person passed
+          // over, failed or not reached, or the pass stopped short): one
+          // pass more that could not carry it out. One given while the run
+          // went is not this pass's to count.
+          for (final d in c.differing) {
+            final key = d['key']! as String;
+            final given = d['answer'];
+            if (given == null ||
+                unlisted.contains(key) ||
+                listed.containsKey(key) ||
+                given != seen.listed(key)?['answer']) {
+              continue;
+            }
+            d['tries'] = _Copies.triesOf(d) + 1;
+          }
+        }
         if (short) {
           // A pass that stopped short, Hadco not read: the ask stays, but
           // after three in a row it is given up, and the last result says

@@ -4717,6 +4717,36 @@ void main() {
       expect(status.copies.people, 0);
     });
 
+    test('a person whose copies no longer share an email or mobile goes from '
+        'the list, answer and all: nothing is merged, and no sync is left '
+        'due', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // Ron gives the other copy another email in Outlook: it now shares
+      // only the name with the synced copy. Then he answers from the list.
+      h.graph.editFromOutlook(c.others.single, {
+        'emailAddresses': [
+          {'address': 'cat.fox@other.example', 'name': 'Cat Fox'},
+        ],
+      });
+      await h.later();
+      expect((await h.status()).copies.differing.single.key, listed.key);
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.differing, isEmpty);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
+      h.pass(const Duration(minutes: 10));
+      expect(await h.sync.startIfDue(), isFalse);
+    });
+
     test('a copy whose photo cannot be checked passes its person over this '
         'time; nothing of theirs is deleted', () async {
       final ann = copiesOf('Ann', 'Cole');
@@ -5528,6 +5558,49 @@ void main() {
       expect(status.copies.asked, isTrue);
       expect(status.copies.shortStops, 1);
       expect(status.copies.last?.stoppedShort ?? false, isFalse);
+    });
+
+    test('an answer no sync can carry out stops starting one each time '
+        'MyEmail opens after three tries; every sync still tries it',
+        () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // Cat's copies cannot be read just now.
+      h.answer = (r) =>
+          r.method == 'GET' &&
+              [c.synced, ...c.others].contains(r.url.pathSegments.last)
+          ? http.Response(
+              '{"error":{"code":"x","message":"x"}}',
+              503,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      await h.sync.answerCopies(listed.key, c.others.single, listed.version);
+      await h.sync.syncNow();
+      // Two more openings within the hour start a sync for it; then none.
+      for (final due in [true, true, false]) {
+        h.pass(const Duration(minutes: 10));
+        expect(await h.sync.startIfDue(), due);
+        await h.sync.syncNow();
+      }
+      expect(
+        (await h.status()).copies.differing.single.answer,
+        c.others.single,
+      );
+      // The usual hour's sync still tries it, and carries it out.
+      h.answer = null;
+      h.pass(const Duration(hours: 2));
+      expect(await h.sync.startIfDue(), isTrue);
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, isEmpty);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Manager');
+      expect(h.graph.contact(c.others.single), isNull);
     });
 
     test("the tablet's photos (3.22.1): copies with a photo each merge as "
