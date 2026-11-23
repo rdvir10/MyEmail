@@ -893,6 +893,100 @@ void main() {
       expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
       await hisEditStands(ann, annH);
     });
+
+    test('answers whose run stops before their writes stay on the pair, '
+        'and the next run carries each out once', () async {
+      // Use Hadco's on a pair that differs, Same person on a new contact,
+      // Delete it here too on a contact kept at its delete.
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      final jo = h.google.seed(
+        person('Jo', 'Smith', email: 'jo@home.example'),
+      );
+      final joH = h.graph.seed(
+        outlook('Jo', 'Smith', email: 'jo@work.example'),
+      );
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      // Ron deletes P0 in Gmail, and edits its Hadco contact just as the
+      // sync reads it ahead of the delete: kept.
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+        }
+      };
+      var status = await h.later();
+      expect(status.halt, isNull);
+      ContactSyncLook lookOf(ContactReviewKind kind) =>
+          status.needsALook.singleWhere((l) => l.kind == kind);
+      final answers = {
+        lookOf(ContactReviewKind.differing).id: ContactSyncChoice.useGraph,
+        lookOf(ContactReviewKind.newContact).id: ContactSyncChoice.samePerson,
+        lookOf(ContactReviewKind.kept).id: ContactSyncChoice.deleteHereToo,
+      };
+      // Each answered with no run carrying it out yet.
+      for (final MapEntry(key: id, value: choice) in answers.entries) {
+        await h.sync.answerLook(id, choice);
+        await h.sync.stop();
+      }
+
+      // The run that plans them stops at its first write, before any of
+      // theirs lands.
+      h.before = (r) async {
+        if (!Harness.readsOnly(r) && !r.url.path.contains('contactFolders')) {
+          throw http.ClientException('lost');
+        }
+      };
+      h.pass(const Duration(minutes: 1));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.failed);
+      expect(companyOf(h.google.person(ann)), 'Acme');
+      expect(await h.paired(), hasLength(2));
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      expect(status.needsALook, isEmpty);
+      final held = jsonDecode((await h.pair()).held ?? '{}') as Map;
+      final kept = held['pending'] as List? ?? const [];
+      expect(
+        [for (final a in kept) (a as Map)['kind']],
+        unorderedEquals(['useGraph', 'samePerson', 'deleteHereToo']),
+      );
+      expect(kept.every((a) => (a as Map).containsKey('writing')), isTrue);
+
+      // The next run carries out all three.
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Corp');
+      expect(
+        (await h.paired()).where((l) => l.googleName == jo && l.graphId == joH),
+        hasLength(1),
+      );
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect((await h.pair()).held ?? '', isNot(contains('pending')));
+      expect(status.needsALook, isEmpty);
+
+      // Once: Ron's next edit of Ann's company stands.
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Inc'},
+        ],
+      });
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Inc');
+      expect(companyOf(h.graph.contact(annH)), 'Acme Inc');
+    });
   });
 
   group('refusals and failures', () {
@@ -2030,6 +2124,32 @@ void main() {
       expect(status.needsALook.single.kind, ContactReviewKind.kept);
     });
 
+    test('a contact deleted in Outlook just before its delete is deleted on '
+        'both sides already: not kept, and nothing more sent', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'GET' &&
+            r.url.path.endsWith('/me/contacts/${pairs[0].graph}') &&
+            !r.url.queryParameters.containsKey(r'$select')) {
+          h.before = null;
+          h.graph.deleteFromOutlook(pairs[0].graph);
+        }
+      };
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      // Ron's delete, not the sync's: nothing to bring back from here.
+      expect(status.recentlyDeleted, isEmpty);
+      expect(h.requests.where((r) => r.method == 'DELETE'), isEmpty);
+      expect(
+        h.graph.contact(pairs[0].graph)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+      expect(await h.links(), hasLength(1));
+    });
+
     /// What 3.22.1 could leave when Microsoft's answer to the sync's delete
     /// of a Hadco contact was lost and the contact lay in Deleted Items:
     /// the next run kept it as moved out (a kept row, and its item under
@@ -2043,6 +2163,8 @@ void main() {
       final o = pairs[0].graph;
       final pairId = (await h.pair()).pairId;
       final row = (await h.links()).firstWhere((l) => l.graphId == o);
+      // A detail only Outlook keeps, in the bin's full copy.
+      h.graph.editFromOutlook(o, {'profession': 'Pilot'});
       final raw = jsonEncode(h.graph.contact(o));
       h.google.deleteFromGmail(g);
       h.graph.deleteFromOutlook(o);
@@ -2116,20 +2238,44 @@ void main() {
       );
     });
 
-    test("Restore never pairs Gmail with a contact that is not in Contacts: "
-        "3.22.1's kept contact lying in Deleted Items", () async {
+    test("Restore of 3.22.1's kept contact lying in Deleted Items makes it "
+        "again in Contacts from Recently deleted's full copy, never pairs "
+        'with the one in Deleted Items, and the kept item then clears',
+        () async {
       final (gmail: _, :hadco, :binId) = await keptBy3221();
       await h.later();
       await h.sync.restore(binId);
       await h.sync.syncNow();
-      final status = await h.status();
+      var status = await h.status();
       expect(status.halt, isNull);
-      // Gmail's contact is made again; nothing pairs it with the contact
-      // in Deleted Items.
-      expect(h.google.nameWithEmail('p0@example.com'), isNotNull);
+      // Both sides made again, and paired with each other.
+      final g = h.google.nameWithEmail('p0@example.com');
+      final o = h.graph.idWithEmail('p0@example.com');
+      expect(g, isNotNull);
+      expect(o, isNotNull);
+      expect(o, isNot(hadco));
+      expect(h.graph.contact(o!)!['profession'], 'Pilot');
       expect(
-        (await h.paired()).where((l) => l.graphId == hadco),
-        isEmpty,
+        (await h.paired()).where((l) => l.googleName == g && l.graphId == o),
+        hasLength(1),
+      );
+      expect((await h.paired()).where((l) => l.graphId == hadco), isEmpty);
+      expect(status.recentlyDeleted, isEmpty);
+
+      // The kept item names the contact in Deleted Items, which no row
+      // holds now: Delete it in Hadco too takes it away, and nothing else.
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(h.graph.contact(o), isNotNull);
+      expect(h.google.person(g!), isNotNull);
+      expect(
+        (await h.paired()).where((l) => l.googleName == g && l.graphId == o),
+        hasLength(1),
       );
     });
 
