@@ -2420,6 +2420,55 @@ void main() {
         );
         expect(find.textContaining('all answered'), findsNothing);
       });
+
+      testWidgets('a question kept done and a new one of the same kind each '
+          'have a key of their own', (tester) async {
+        ContactSyncQuestion deletions(
+          List<String> names, {
+          ContactSyncChoice? answer,
+        }) =>
+            ContactSyncQuestion(
+              kind: ContactSyncQuestionKind.deletions,
+              answer: answer,
+              items: [
+                for (final name in names)
+                  ContactSyncQuestionItem(
+                    title: '$name Ash',
+                    side: ContactSide.google,
+                    key: 'k-$name',
+                  ),
+              ],
+            );
+        sync = FakeContactSync(status: synced(questions: [
+          deletions(['Eve', 'Fay'], answer: ContactSyncChoice.deleteThem),
+        ]));
+        engine = _Engine(sync, const [gmail, hadco]);
+        await pumpScreen(tester);
+
+        // Those carried out, and two more deletions held by a later sync.
+        sync.set(synced(questions: [deletions(['Gil', 'Hal'])]));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final done = button('contact-sync-question:deletions');
+        final held = button('contact-sync-question:deletions:2');
+        expect(done, findsOneWidget);
+        expect(held, findsOneWidget);
+        expect(
+          find.descendant(
+            of: done,
+            matching: find.text(
+              'You chose Delete them: done. They are no longer held.',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: held, matching: find.text('Delete them')),
+          findsOneWidget,
+        );
+        expect(tester.getTopLeft(held).dy,
+            greaterThan(tester.getTopLeft(done).dy));
+      });
     });
 
     testWidgets('Needs a look: each item with its answers', (tester) async {

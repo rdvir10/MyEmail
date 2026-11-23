@@ -539,6 +539,25 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         graph != null &&
         s.googleAccountId == google.id &&
         s.graphAccountId == graph.id;
+    // Each card a key of its own, kept for the visit: the first of a kind
+    // by the kind alone, any other (one kept done, and one asked since)
+    // numbered in the order shown.
+    final ofKind = <ContactSyncQuestionKind, int>{};
+    final cards = [
+      if (s != null && ours)
+        for (final card in _cards(s))
+          (
+            card: card,
+            key: switch (ofKind.update(
+              card.question.kind,
+              (n) => n + 1,
+              ifAbsent: () => 1,
+            )) {
+              1 => 'contact-sync-question:${card.question.kind.name}',
+              final n => 'contact-sync-question:${card.question.kind.name}:$n',
+            },
+          ),
+    ];
     return [
       if (googles.length > 1)
         ListTile(
@@ -581,27 +600,27 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
       // (a stop, the sync going, how the last one went) changes as each
       // answer's sync starts and ends, and above them it would move them
       // under Ron's finger as he goes down them.
-      if (s != null && ours)
-        for (final card in _cards(s))
-          _QuestionCard(
-            question: card.question,
-            listed: card.listed,
-            shown: card.shown,
-            graphName: graphName,
-            onAnswer: (choice, {items}) => _act(
-              context,
-              () => _sync.answerQuestion(
-                card.question.kind,
-                choice,
-                items: items,
-              ),
-              // Refused, perhaps because the question changed since it was
-              // drawn: said, and read again, to be answered as it is now.
-              onFailure: () {
-                if (mounted) ref.invalidate(contactSyncStatusProvider);
-              },
+      for (final (:card, :key) in cards)
+        _QuestionCard(
+          key: ValueKey(key),
+          question: card.question,
+          listed: card.listed,
+          shown: card.shown,
+          graphName: graphName,
+          onAnswer: (choice, {items}) => _act(
+            context,
+            () => _sync.answerQuestion(
+              card.question.kind,
+              choice,
+              items: items,
             ),
+            // Refused, perhaps because the question changed since it was
+            // drawn: said, and read again, to be answered as it is now.
+            onFailure: () {
+              if (mounted) ref.invalidate(contactSyncStatusProvider);
+            },
           ),
+        ),
       if (s == null)
         switch (statusValue) {
           AsyncError(:final error) => Padding(
@@ -1390,7 +1409,10 @@ typedef _ShownItem = ({
 /// would lose or have deleted, and the two answers, for all of them at
 /// once or for one contact alone.
 class _QuestionCard extends StatelessWidget {
+  /// [key]: the card's own among the screen's ([_ContactSyncScreenState
+  /// ._onFor]).
   const _QuestionCard({
+    required super.key,
     required this.question,
     required this.graphName,
     required this.onAnswer,
@@ -1558,7 +1580,6 @@ class _QuestionCard extends StatelessWidget {
               if (i.answerProblem case final p?) '${_title(i.title)}: $p',
           ];
     return Card(
-      key: ValueKey('contact-sync-question:${q.kind.name}'),
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       color: theme.colorScheme.surfaceContainerHighest,
       elevation: 0,
