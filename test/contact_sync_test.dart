@@ -2106,6 +2106,34 @@ void main() {
       h.answer = null;
     });
 
+    test("a later page of Hadco's answered without the details only Outlook "
+        'keeps: no file is made without them', () async {
+      for (var i = 0; i < 3; i++) {
+        h.graph.seed({
+          ...outlook('P$i', 'Fam$i', email: 'p$i@example.com'),
+          'singleValueExtendedProperties': [
+            {'id': 'String 0x3A24', 'value': '+1 212 555 01${10 + i}'},
+          ],
+        });
+      }
+      await h.choose();
+      h.graph
+        ..maxPageSize = 2
+        ..expandOnFirstPageOnly = true;
+      for (final only in [ContactSide.graph, null]) {
+        await expectLater(
+          h.sync.backup(only: only),
+          throwsA(isA<ContactSyncRefused>()),
+        );
+      }
+      // Kept on every page, the file holds every fax.
+      h.graph.expandOnFirstPageOnly = false;
+      final csv = (await h.sync.backup(only: ContactSide.graph)).single;
+      for (var i = 0; i < 3; i++) {
+        expect(csv.contents, contains('"+1 212 555 01${10 + i}"'));
+      }
+    });
+
     test('needs the accounts chosen first', () async {
       expect(h.sync.backup, throwsA(isA<ContactSyncRefused>()));
       expect(h.sync.preview, throwsA(isA<ContactSyncRefused>()));
@@ -5293,6 +5321,27 @@ void main() {
       );
     });
 
+    test('a copy Graph answers without the details only Outlook keeps is '
+        'never read as holding none: the merge stops short, nothing deleted',
+        () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      // Graph answers 200 with the other copy, but not its fax.
+      h.graph.expandDropped.add(a.others.single);
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.copies.asked, isTrue);
+      expect(status.copies.shortStops, 1);
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(extended(a.others.single, 'String 0x3A24'), '+1 212 555 0199');
+      expect(extended(a.synced, 'String 0x3A24'), isNull);
+    });
+
     test("a photo Graph did not keep fails its person: the copy with it "
         'stays', () async {
       final dan = copiesOf('Dan', 'Lee');
@@ -5391,7 +5440,8 @@ void main() {
       final a = await hadcoOf(ann);
       outlookOnly(a.others.single, {'String 0x3A24': '+1 212 555 0199'});
       await h.later();
-      // Graph answers the synced copy's reads by id without the fax.
+      // Graph answers the synced copy's reads by id without the fax, all
+      // else as asked.
       h.reshape = (r, response) {
         if (r.method != 'GET' ||
             r.url.pathSegments.last != a.synced ||
@@ -5400,8 +5450,11 @@ void main() {
             )) {
           return null;
         }
-        final json = jsonDecode(response.body) as Map<String, Object?>
-          ..remove('singleValueExtendedProperties');
+        final json = jsonDecode(response.body) as Map<String, Object?>;
+        json['singleValueExtendedProperties'] = [
+          for (final p in json['singleValueExtendedProperties']! as List)
+            if (!'${(p as Map)['id']}'.toLowerCase().contains('0x3a24')) p,
+        ];
         return http.Response(
           jsonEncode(json),
           200,

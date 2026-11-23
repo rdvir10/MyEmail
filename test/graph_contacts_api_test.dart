@@ -234,17 +234,24 @@ void main() {
       );
       expect(listed, hasLength(2));
       final expand = graph.requests.first.url.queryParameters[r'$expand']!;
-      final each = [for (final d in outlookOnlyDetails) "id eq '${d.id}'"];
+      final each = [
+        for (final d in outlookOnlyDetails) "id eq '${d.id}'",
+        "id eq '${GraphContactsApi.outlookOnlyCanary}'",
+      ];
       expect(
         expand,
         "singleValueExtendedProperties(\$filter=${each.join(' or ')})",
       );
       expect(expand, contains("id eq 'String 0x3A24'"));
       expect(expand, contains("id eq 'SystemTime 0x3A41'"));
+      // The message class asked for beside them is taken out again: only
+      // the details come back, and a contact holding none has no list.
+      expect(expand, contains("id eq 'String 0x001A'"));
       expect(listed.first['singleValueExtendedProperties'], [
         {'id': 'String 0x3a24', 'value': '212 555 0101'},
         {'id': 'SystemTime 0x3a41', 'value': '2001-05-05T11:59:00Z'},
       ]);
+      expect(listed.last.containsKey('singleValueExtendedProperties'), isFalse);
       expect(listed.first.containsKey('fileAs'), isTrue);
       expect(outlookOnlyValuesOf(listed.first), {
         outlookOnlyDetails.firstWhere((d) => d.label == 'Business fax'):
@@ -253,6 +260,55 @@ void main() {
             '2001-05-05T11:59:00Z',
       });
       expect(outlookOnlyValuesOf(listed.last), isEmpty);
+    });
+
+    test('a contact Graph answers without the details only Outlook keeps is '
+        'never read as holding none: the read throws', () async {
+      final ann = graph.seed({
+        ...contact('Ann', 'Lee', 'ann@example.com'),
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '212 555 0101'},
+        ],
+      });
+      final bob = graph.seed(contact('Bob', 'Day', 'bob@example.com'));
+      graph.expandDropped.add(bob);
+      final client = api();
+
+      await expectLater(
+        client.listAll(folderId: main, whole: true, withOutlookOnly: true),
+        throwsA(isA<OutlookOnlyRefused>()),
+      );
+      await expectLater(
+        client.get(bob, whole: true, withOutlookOnly: true),
+        throwsA(isA<OutlookOnlyRefused>()),
+      );
+      final one = (await client.get(ann, withOutlookOnly: true))!;
+      expect(one['singleValueExtendedProperties'], [
+        {'id': 'String 0x3a24', 'value': '212 555 0101'},
+      ]);
+      // A read that does not ask for them is as it was.
+      expect(await client.listAll(folderId: main, whole: true), hasLength(2));
+    });
+
+    test('a later page Graph answers without them throws too', () async {
+      for (final (i, name) in ['Ann', 'Bob', 'Cat'].indexed) {
+        graph.seed(contact(name, 'Lee', 'p$i@example.com'));
+      }
+      graph
+        ..maxPageSize = 2
+        ..expandOnFirstPageOnly = true;
+
+      await expectLater(
+        api().listAll(folderId: main, whole: true, withOutlookOnly: true),
+        throwsA(isA<OutlookOnlyRefused>()),
+      );
+      expect(graph.requests, hasLength(2));
+      // Kept on every page, the listing reads whole.
+      graph.expandOnFirstPageOnly = false;
+      expect(
+        await api().listAll(folderId: main, whole: true, withOutlookOnly: true),
+        hasLength(3),
+      );
     });
 
     test('a refusal of the details only Outlook keeps throws; nothing is '

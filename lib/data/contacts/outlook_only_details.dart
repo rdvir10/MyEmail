@@ -93,21 +93,24 @@ const outlookOnlyDetails = [
 ];
 
 /// The detail only Outlook keeps that [id] names; null for any other id.
+OutlookOnlyDetail? outlookOnlyDetailOf(Object? id) =>
+    _byKey[extendedPropertyKey(id)];
+
+final _byKey = {
+  for (final d in outlookOnlyDetails) extendedPropertyKey(d.id)!: d,
+};
+
+/// The key an extended property's id in the tag form is matched by.
 /// Exchange answers with an id in a form of its own (the tag in small
 /// letters, no leading zeros: "String 0x3a24"), so an id is matched by
-/// its type and its number, never by its text.
-OutlookOnlyDetail? outlookOnlyDetailOf(Object? id) {
+/// its type and its number, never by its text: the type in small letters
+/// and the tag as Exchange writes it. Null for an id in no such form.
+String? extendedPropertyKey(Object? id) {
   if (id is! String) return null;
   final m = _tagged.firstMatch(id);
   if (m == null) return null;
-  final type = m[1]!.toLowerCase();
-  final tag = int.parse(m[2]!, radix: 16);
-  for (final d in outlookOnlyDetails) {
-    if (d.tag == tag && d.id.split(' ').first.toLowerCase() == type) {
-      return d;
-    }
-  }
-  return null;
+  final tag = int.parse(m[2]!, radix: 16).toRadixString(16);
+  return '${m[1]!.toLowerCase()} 0x$tag';
 }
 
 /// An id in the tag form: a type, then the tag in hex.

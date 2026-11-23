@@ -9,7 +9,8 @@ import '../auth/microsoft_oauth.dart'
 import '../contacts/contact_mapping.dart'
     show graphContactSelect, graphDevicePropertyId, graphLinkPropertyId;
 import '../contacts/contact_wire_errors.dart';
-import '../contacts/outlook_only_details.dart' show outlookOnlyDetails;
+import '../contacts/outlook_only_details.dart'
+    show extendedPropertyKey, outlookOnlyDetails;
 import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 
 /// A thin client over the Microsoft Graph contacts of the signed-in
@@ -122,8 +123,10 @@ class GraphContactsApi {
   /// every property, as the backup files take them; otherwise the sync's
   /// ([graphContactSelect]). With [withOutlookOnly], the details only
   /// Outlook keeps too ([outlookOnlyDetails]), each contact's among its
-  /// `singleValueExtendedProperties`: a refusal of them throws, as any
-  /// refusal does, and is never answered by a listing without them.
+  /// `singleValueExtendedProperties`, on every page: a refusal of them,
+  /// or an answer without them for any contact ([outlookOnlyCanary]),
+  /// throws [OutlookOnlyRefused], and is never taken for a listing of
+  /// contacts that hold none of them.
   Future<List<Map<String, Object?>>> listAll({
     String? folderId,
     bool whole = false,
@@ -145,7 +148,7 @@ class GraphContactsApi {
     );
     debugPrint('[myemail] contacts: Microsoft listed ${items.length} '
         'contacts, $pages pages, ${watch.elapsedMilliseconds} ms');
-    return items;
+    return withOutlookOnly ? _givenOutlookOnly(items) : items;
   }
 
   /// Every page of the list [first] asks for, following Graph's links to
@@ -282,7 +285,8 @@ class GraphContactsApi {
     );
     final response = await _exchange(() => http.Request('GET', uri));
     if (response.statusCode == 404) return null;
-    return _json(response, 'get');
+    final contact = _json(response, 'get');
+    return withOutlookOnly ? _givenOutlookOnly([contact]).single : contact;
   }
 
   /// The contacts [ids] read as [get] reads them (the sync's properties),
@@ -820,8 +824,54 @@ class GraphContactsApi {
       "singleValueExtendedProperties(\$filter="
       "${[for (final p in properties) "id eq '$p'"].join(' or ')})";
 
-  /// The ids of the details only Outlook keeps.
-  static final _outlookOnlyIds = [for (final d in outlookOnlyDetails) d.id];
+  /// MAPI's message class (PidTagMessageClass), which every Outlook item
+  /// carries ("IPM.Contact" on a contact). Asked for beside the details
+  /// only Outlook keeps, it shows that Graph gave them: a contact answered
+  /// without it was read without them (an `$expand` Graph dropped, for that
+  /// contact or from a later page, with no error), never one that holds
+  /// none of them.
+  static const outlookOnlyCanary = 'String 0x001A';
+
+  /// The ids a read with the details only Outlook keeps asks for: theirs,
+  /// and the message class beside them ([outlookOnlyCanary]).
+  static final _outlookOnlyIds = [
+    for (final d in outlookOnlyDetails) d.id,
+    outlookOnlyCanary,
+  ];
+
+  static final _canaryKey = extendedPropertyKey(outlookOnlyCanary)!;
+
+  /// [contacts], read with the details only Outlook keeps, each with the
+  /// message class asked for beside them taken out again, so that what
+  /// reads them sees only the details. One without it was answered without
+  /// them: [OutlookOnlyRefused], whatever the others hold.
+  static List<Map<String, Object?>> _givenOutlookOnly(
+    List<Map<String, Object?>> contacts,
+  ) {
+    var without = 0;
+    final given = <Map<String, Object?>>[];
+    for (final c in contacts) {
+      final props = c['singleValueExtendedProperties'];
+      final rest = [
+        for (final p in props is List ? props : const [])
+          if (p is! Map || extendedPropertyKey(p['id']) != _canaryKey) p,
+      ];
+      if (props is! List || rest.length == props.length) {
+        without++;
+        continue;
+      }
+      final contact = {...c}..remove('singleValueExtendedProperties');
+      if (rest.isNotEmpty) contact['singleValueExtendedProperties'] = rest;
+      given.add(contact);
+    }
+    if (without > 0) {
+      debugPrint('[myemail] contacts: Microsoft gave $without of '
+          '${contacts.length} contacts without the details only Outlook '
+          'keeps');
+      throw const OutlookOnlyRefused(status: 200);
+    }
+    return given;
+  }
 
   /// Property ids come back as Exchange writes them, which need not be the
   /// case they were sent in: the GUID's letters among them.
@@ -1123,6 +1173,20 @@ class GraphBatchDelete {
 
   /// Any other answer, or none: perhaps still there.
   final Set<String> failed;
+}
+
+/// Graph did not give the details only Outlook keeps to a read that asked
+/// for them ([GraphContactsApi.listAll] and [GraphContactsApi.get] with
+/// `withOutlookOnly`): it answered some contact without them, with no
+/// error ([status] 200; see [GraphContactsApi.outlookOnlyCanary]). Never
+/// to be taken for a read of contacts that hold none of them: what reads
+/// with them stops, nothing deleted or saved.
+class OutlookOnlyRefused extends ContactRefused {
+  const OutlookOnlyRefused({required super.status, super.reason})
+    : super(
+        'Microsoft did not give the details only Outlook keeps (fax '
+        'numbers, the anniversary), so nothing was saved or merged.',
+      );
 }
 
 /// A whole `$batch` failed after some of it may have been answered: the
