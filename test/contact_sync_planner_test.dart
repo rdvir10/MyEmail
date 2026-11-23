@@ -4573,6 +4573,102 @@ void main() {
       expect(away.writes, isFalse);
     });
 
+    test("Use Hadco's on a pair a brake holds waits for the brake's answer",
+        () {
+      // Bob's job titles were left differing, and a later run's change
+      // brake holds the pair for another change (Gmail's company) before
+      // Ron answers the item.
+      final bob = person(
+        given: 'Bob',
+        family: 'Roe',
+        emails: ['bob@x.example'],
+        more: {ContactField.company: 'Acme'},
+      );
+      final gBase = bob.withValue(ContactField.jobTitle, 'Clerk');
+      final hBase = bob.withValue(ContactField.jobTitle, 'Manager');
+      final gNow = gBase.withValue(ContactField.company, 'Acme Ltd');
+      ContactLinkInput held(ContactHeldReason reason) => link(
+        1,
+        'people/c1',
+        'H1',
+        googleBase: gBase,
+        graphBase: hBase,
+        state: ContactLinkState.held,
+        reason: reason,
+      );
+      const useHadcos = ContactAnswer(
+        ContactAnswerKind.useGraph,
+        googleName: 'people/c1',
+        graphId: 'H1',
+        fields: {ContactField.jobTitle},
+      );
+      final useOther = ContactAnswer(
+        ContactAnswerKind.useValue,
+        googleName: 'people/c1',
+        graphId: 'H1',
+        value: SyncedContact({ContactField.jobTitle: 'Clerk'}).toJson(),
+      );
+      ContactSyncPlan answered(
+        ContactLinkInput row,
+        List<ContactAnswer> answers,
+      ) => run(
+        google: [g('people/c1', gNow)],
+        graph: [h('H1', hBase)],
+        links: [row],
+        answers: answers,
+      );
+
+      // Held by the change brake, or held as refused, it is still a pair:
+      // each answer waits, and nothing is written.
+      for (final reason in [
+        ContactHeldReason.changeBrake,
+        ContactHeldReason.refused,
+      ]) {
+        final plan = answered(held(reason), [useHadcos, useOther]);
+        expect(
+          plan.answers,
+          [ContactAnswerOutcome.waiting, ContactAnswerOutcome.waiting],
+          reason: '$reason',
+        );
+        expect(plan.links.where((l) => l.writes), isEmpty);
+      }
+      // Ron answers Apply them: the held change is made, and Use Hadco's
+      // waits on, its pair planned already this run.
+      final apply = answered(held(ContactHeldReason.changeBrake), [
+        useHadcos,
+        const ContactAnswer(ContactAnswerKind.applyHeld),
+      ]);
+      expect(apply.answers, [
+        ContactAnswerOutcome.waiting,
+        ContactAnswerOutcome.applied,
+      ]);
+      final made = byLink(apply, 1)!;
+      expect(made.graphWrite!.fields, {ContactField.company});
+      expect(made.googleWrite, isNull);
+      // The next run, the pair as Apply them left it: Hadco's title is
+      // written to Gmail.
+      final hNow = hBase.withValue(ContactField.company, 'Acme Ltd');
+      final after = run(
+        google: [g('people/c1', gNow)],
+        graph: [h('H1', hNow)],
+        links: [link(1, 'people/c1', 'H1', googleBase: gNow, graphBase: hNow)],
+        answers: [useHadcos],
+      );
+      expect(after.answers, [ContactAnswerOutcome.applied]);
+      final pair = byLink(after, 1)!;
+      expect(pair.googleWrite!.target.text(ContactField.jobTitle), 'Manager');
+      expect(pair.graphWrite, isNull);
+      // Held as moved out of Contacts, no run reads it while it is away:
+      // dropped, as before.
+      final moved = run(
+        google: [g('people/c1', gNow)],
+        graphMovedOut: {'H1'},
+        links: [held(ContactHeldReason.movedOut)],
+        answers: [useHadcos],
+      );
+      expect(moved.answers, [ContactAnswerOutcome.dropped]);
+    });
+
     test('Copy it anyway waits while its contact is away', () {
       final waiting = [
         link(

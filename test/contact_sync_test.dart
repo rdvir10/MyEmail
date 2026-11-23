@@ -1027,6 +1027,42 @@ void main() {
       expect(mobileOf(h.graph.contact(pairs[0].graph)), isNull);
     });
 
+    test("Use Hadco's on a pair the change brake holds waits for Apply them, "
+        'then is carried out', () async {
+      final pairs = seedPairs(h, 11, mobiles: true);
+      h.google.editFromGmail(pairs[0].google, {
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      h.graph.editFromOutlook(pairs[0].graph, {'companyName': 'Hadco'});
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      for (final p in pairs) {
+        h.google.editFromGmail(p.google, {'phoneNumbers': null});
+      }
+      var status = await h.later();
+      expect(status.questions.single.items, hasLength(11));
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.needsALook.single.answer, ContactSyncChoice.useGraph);
+      expect(companyOf(h.google.person(pairs[0].google)), 'Acme');
+
+      await h.sync.answerQuestion(
+        ContactSyncQuestionKind.changes,
+        ContactSyncChoice.applyThem,
+      );
+      await h.sync.syncNow();
+      status = await h.later();
+      expect(status.questions, isEmpty);
+      expect(status.needsALook, isEmpty);
+      expect(companyOf(h.google.person(pairs[0].google)), 'Hadco');
+      expect(companyOf(h.graph.contact(pairs[0].graph)), 'Hadco');
+    });
+
     test('a listing with far fewer contacts stops the run before any '
         "write; That's right, carry on accepts it", () async {
       final pairs = seedPairs(h, 12);

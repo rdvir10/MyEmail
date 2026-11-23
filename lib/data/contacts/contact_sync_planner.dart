@@ -274,8 +274,9 @@ enum ContactAnswerOutcome {
   applied,
 
   /// A contact it acts on was not read this run (see [contactsToRead]),
-  /// or the copy it asked for was cut short and is not found yet: it
-  /// stays queued.
+  /// or is not ready for it: the copy it asked for was cut short and is
+  /// not found yet, or its pair is held by the change brake or as
+  /// refused. It stays queued.
   waiting,
 
   /// Its contact has gone, or it no longer applies: the item is dropped.
@@ -2842,8 +2843,25 @@ class _Planner {
           ContactAnswerKind.useGraph ||
           ContactAnswerKind.useValue:
         final row = g != null ? googleRow[g] : graphRow[h];
-        if (row == null || row.done || row.state != ContactLinkState.paired) {
-          return dropped;
+        if (row == null || row.done) return dropped;
+        if (row.state != ContactLinkState.paired) {
+          // Held by the change brake, or held as refused, it is a pair
+          // still, both its contacts read every run (contactsToRead): the
+          // answer waits, and is carried out once the brake is answered
+          // or the pair goes through again. Any other held row is no pair
+          // now (moved out of Contacts, which no run reads while it is
+          // away, or down to one contact): dropped.
+          final heldPair =
+              row.googleName != null &&
+              row.graphId != null &&
+              (row.reason == ContactHeldReason.changeBrake ||
+                  row.reason == ContactHeldReason.refused);
+          if (!heldPair) return dropped;
+          return unread([
+                (ContactSide.google, row.googleName),
+                (ContactSide.graph, row.graphId),
+              ]) ??
+              waiting;
         }
         if (unread([
               (ContactSide.google, row.googleName),
