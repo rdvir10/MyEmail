@@ -2098,6 +2098,68 @@ void main() {
       expect(review.goneSide, ContactSide.google);
     });
 
+    test('kept as changed since, it is kept as read: Delete it here too '
+        'then deletes it the first time', () {
+      final edited = ann.withValue(ContactField.jobTitle, 'New');
+      final plan = run(
+        google: [gDeleted('people/c1')],
+        graph: [h('H1', edited, key: 'key-2')],
+        links: [link(1, 'people/c1', 'H1', base: ann, key: 'key-1')],
+      );
+      final kept = byLink(plan, 1)!;
+      expect(kept.reason, ContactHeldReason.kept);
+      expect(kept.graphChangeKey, 'key-2', reason: 'the version listed');
+      expect(kept.graphBase, edited, reason: 'the details read');
+      // Ron answers Delete it in Hadco too. The next run's feed has moved
+      // past the edit, so it does not bring H1 again.
+      final row = ContactLinkInput(
+        linkId: 1,
+        graphId: 'H1',
+        graphChangeKey: kept.graphChangeKey,
+        graphBase: kept.graphBase?.toJson(),
+        state: ContactLinkState.held,
+        reason: ContactHeldReason.kept,
+        partnerId: kept.partnerId,
+        partnerBase: kept.partnerBase?.toJson(),
+      );
+      final answered = run(
+        links: [row],
+        answers: [
+          const ContactAnswer(ContactAnswerKind.deleteHereToo, graphId: 'H1'),
+        ],
+      );
+      final delete = byLink(answered, 1)!.delete!;
+      expect(delete.contactId, 'H1');
+      expect(delete.expectedVersion, 'key-2');
+      expect(delete.partnerId, 'people/c1');
+      expect(delete.partnerBase, ann);
+
+      // The other way round: deleted in Hadco, changed in Gmail.
+      final gmail = byLink(
+        run(
+          google: [g('people/c1', edited, etag: 'etag-2')],
+          graphGone: {'H1'},
+          links: [link(1, 'people/c1', 'H1', base: ann, etag: 'etag-1')],
+        ),
+        1,
+      )!;
+      expect(gmail.reason, ContactHeldReason.kept);
+      expect(gmail.googleEtag, 'etag-2');
+      expect(gmail.googleBase, edited);
+      // Kept unread (the first sync deletes nothing): the row's own.
+      final unread = byLink(
+        run(
+          firstSync: true,
+          google: [gDeleted('people/c1')],
+          links: [link(1, 'people/c1', 'H1', base: ann, key: 'key-1')],
+        ),
+        1,
+      )!;
+      expect(unread.reason, ContactHeldReason.kept);
+      expect(unread.graphChangeKey, 'key-1');
+      expect(unread.graphBase, ann);
+    });
+
     test('the read just before deleting can still keep it', () {
       final pair = byLink(
         run(

@@ -1619,6 +1619,26 @@ void main() {
       expect(row.googleName, isNull);
     });
 
+    test('changed in Outlook and deleted in Gmail before a run: kept, and '
+        'Delete it in Hadco too deletes it the first time', () async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.graph.editFromOutlook(pairs[0].graph, {'jobTitle': 'Chief'});
+      h.google.deleteFromGmail(pairs[0].google);
+      var status = await h.later();
+      expect(h.graph.contact(pairs[0].graph), isNotNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      expect(look.reason, ContactReviewReason.changedSince);
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(h.graph.contact(pairs[0].graph), isNull);
+      expect(status.needsALook, isEmpty);
+      expect(status.recentlyDeleted.single.side, ContactSide.graph);
+    });
+
     test('kept at its delete, the contact is kept as it is now: Delete it '
         'here too then deletes it, and keeps it again after a change',
         () async {

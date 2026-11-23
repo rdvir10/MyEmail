@@ -3652,7 +3652,12 @@ class _Planner {
   }
 
   /// A surviving copy held as kept, its gone partner's id cleared (and
-  /// kept as the row's partner, for a delete after all).
+  /// kept as the row's partner, for a delete after all). Kept as this run
+  /// read it, its version and details (the row's where it was not read),
+  /// as the runner keeps one at its delete: a later Delete it here too
+  /// with nothing changed since goes through, and one with a change since
+  /// keeps it again. Kept with the row's old version, a contact kept for
+  /// having changed would read as changed at every delete.
   void _keep(
     _Row row,
     ContactSide side,
@@ -3661,21 +3666,22 @@ class _Planner {
   ) {
     final details = _detailsOf(side, id);
     _setStatus(side, id, _Status.held);
+    final onGoogle = side == ContactSide.google;
     _add(
       ContactLinkPlan(
         linkId: row.id,
-        googleName: side == ContactSide.google ? id : null,
-        graphId: side == ContactSide.graph ? id : null,
+        googleName: onGoogle ? id : null,
+        graphId: onGoogle ? null : id,
         state: ContactLinkState.held,
         reason: ContactHeldReason.kept,
-        googleEtag: side == ContactSide.google ? row.input.googleEtag : null,
-        graphChangeKey: side == ContactSide.graph
-            ? row.input.graphChangeKey
+        googleEtag: onGoogle
+            ? googleListed[id]?.etag ?? row.input.googleEtag
             : null,
-        googleBase: side == ContactSide.google
-            ? row.input.googleDetails
-            : null,
-        graphBase: side == ContactSide.graph ? row.input.graphDetails : null,
+        graphChangeKey: onGoogle
+            ? null
+            : graphListed[id]?.changeKey ?? row.input.graphChangeKey,
+        googleBase: onGoogle ? details : null,
+        graphBase: onGoogle ? null : details,
         title: details.title,
         partnerId: row.input.partnerOf(side),
         partnerBase: row.input.partnerDetailsOf(side),
