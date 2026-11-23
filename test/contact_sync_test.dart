@@ -5362,6 +5362,37 @@ void main() {
       expect(extended(a.synced, 'String 0x3A24'), isNull);
     });
 
+    test("the merge reads every page of Hadco's with the details only "
+        'Outlook keeps: a later page without them stops the pass; kept, a '
+        'fax there is seen', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      // Bob's copies, on the listing's second page, hold different faxes.
+      outlookOnly(b.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(b.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      h.graph
+        ..maxPageSize = 2
+        ..expandOnFirstPageOnly = true;
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      var status = await h.status();
+      expect(status.copies.shortStops, 1);
+      expect(h.graph.count, 4);
+      // Kept on every page: Bob listed for his faxes, Ann merged.
+      h.graph.expandOnFirstPageOnly = false;
+      h.pass(const Duration(hours: 2));
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.copies.asked, isFalse);
+      expect(status.copies.differing.single.key, b.synced);
+      expect(h.graph.contact(b.others.single), isNotNull);
+      expect(h.graph.contact(a.others.single), isNull);
+    });
+
     test("a photo Graph did not keep fails its person: the copy with it "
         'stays', () async {
       final dan = copiesOf('Dan', 'Lee');
@@ -6252,6 +6283,65 @@ void main() {
       });
       await h.later();
       expect(h.graph.contact(c.others.single), isNull);
+      expect(h.graph.photoOf(c.synced)!.bytes, [1]);
+    });
+
+    test('an answer on a 3.22.0 listing, where a fax now differs, is dropped '
+        'and the person listed again: nothing written or deleted', () async {
+      final cat = copiesOf('Cat', 'Fox');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.setPhotoFromOutlook(c.synced, [1]);
+      h.graph.setPhotoFromOutlook(c.others.single, [2]);
+      outlookOnly(c.synced, {'String 0x3A24': '+1 212 555 0100'});
+      outlookOnly(c.others.single, {'String 0x3A24': '+1 212 555 0199'});
+      await h.later();
+      // As 3.22.0 left her: listed for her photos, which never read a fax,
+      // and answered with the other copy's.
+      final pairId = (await h.pair()).pairId;
+      await h.store.updatePair(pairId, (p) {
+        final held = jsonDecode(p.held!) as Map<String, Object?>;
+        final copies =
+            (held['copies'] as Map<String, Object?>?) ?? <String, Object?>{};
+        copies['differing'] = [
+          {
+            'key': c.synced,
+            'title': 'Cat Fox',
+            'fingerprint': '0' * 64,
+            'answer': c.others.single,
+            'copies': [
+              {
+                'key': c.synced,
+                'synced': true,
+                'details': [
+                  {'label': 'Photo', 'value': 'a photo'},
+                ],
+              },
+              {
+                'key': c.others.single,
+                'details': [
+                  {'label': 'Photo', 'value': 'another photo'},
+                ],
+              },
+            ],
+          },
+        ];
+        held['copies'] = copies;
+        return p.copyWith(held: jsonEncode(held));
+      });
+      final status = await h.later();
+      final again = status.copies.differing.single;
+      expect(again.key, c.synced);
+      expect(again.answer, isNull);
+      expect(
+        {
+          for (final x in again.copies)
+            for (final d in x.details) d.label,
+        },
+        {'Business fax'},
+      );
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(extended(c.synced, 'String 0x3A24'), '+1 212 555 0100');
       expect(h.graph.photoOf(c.synced)!.bytes, [1]);
     });
 
