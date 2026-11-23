@@ -9,6 +9,7 @@ import '../auth/microsoft_oauth.dart'
 import '../contacts/contact_mapping.dart'
     show graphContactSelect, graphDevicePropertyId, graphLinkPropertyId;
 import '../contacts/contact_wire_errors.dart';
+import '../contacts/outlook_only_details.dart' show outlookOnlyDetails;
 import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 
 /// A thin client over the Microsoft Graph contacts of the signed-in
@@ -20,7 +21,9 @@ import '../mail_engine.dart' show AuthenticationFailed, ConnectionFailed;
 /// Contacts read by id, and deleted, may also go twenty to a `$batch`
 /// ([getBatch], [deleteBatch]), and so may the check for photos
 /// ([photos]); a photo's bytes are read and written alone ([photoBytes],
-/// [putPhoto]).
+/// [putPhoto]). The merge of copies and the backup file read the details
+/// only Outlook keeps too (a fax, the anniversary), which Graph gives only
+/// to a read that names them (`withOutlookOnly`).
 ///
 /// It takes and gives Graph's JSON as it is; what a contact holds, and how
 /// it maps to Google's, is the mapping's. What it does know is the wire:
@@ -117,10 +120,14 @@ class GraphContactsApi {
   /// Every contact in [folderId], or in the main Contacts folder when it
   /// is not known yet (`/me/contacts`), every page of them. With [whole],
   /// every property, as the backup files take them; otherwise the sync's
-  /// ([graphContactSelect]).
+  /// ([graphContactSelect]). With [withOutlookOnly], the details only
+  /// Outlook keeps too ([outlookOnlyDetails]), each contact's among its
+  /// `singleValueExtendedProperties`: a refusal of them throws, as any
+  /// refusal does, and is never answered by a listing without them.
   Future<List<Map<String, Object?>>> listAll({
     String? folderId,
     bool whole = false,
+    bool withOutlookOnly = false,
   }) async {
     final watch = Stopwatch()..start();
     final at = folderId == null
@@ -131,6 +138,7 @@ class GraphContactsApi {
         queryParameters: {
           r'$top': '$pageSize',
           if (!whole) r'$select': graphContactSelect,
+          if (withOutlookOnly) r'$expand': _expandOf(_outlookOnlyIds),
         },
       ),
       'list',
@@ -254,16 +262,22 @@ class GraphContactsApi {
   /// The contact [id] wherever it is in the mailbox, or null when it is not
   /// there. With [whole], every property (the read before a delete, which
   /// goes into Recently deleted); otherwise the sync's. With [withTag], its
-  /// hidden tag too ([tagOf]).
+  /// hidden tag too ([tagOf]); with [withOutlookOnly], the details only
+  /// Outlook keeps ([listAll]).
   Future<Map<String, Object?>?> get(
     String id, {
     bool whole = false,
     bool withTag = false,
+    bool withOutlookOnly = false,
   }) async {
+    final expand = [
+      if (withTag) graphLinkPropertyId,
+      if (withOutlookOnly) ..._outlookOnlyIds,
+    ];
     final uri = Uri.parse('$base/me/contacts/${_id(id)}').replace(
       queryParameters: {
         if (!whole) r'$select': graphContactSelect,
-        if (withTag) r'$expand': _expandOf(graphLinkPropertyId),
+        if (expand.isNotEmpty) r'$expand': _expandOf(expand),
       },
     );
     final response = await _exchange(() => http.Request('GET', uri));
@@ -507,7 +521,7 @@ class GraphContactsApi {
           r'$filter': "emailAddresses/any(a:a/address eq '$quoted')",
           r'$top': '$pageSize',
           r'$select': graphContactSelect,
-          r'$expand': _expandOf(graphLinkPropertyId),
+          r'$expand': _expandOf([graphLinkPropertyId]),
         },
       ),
       'find',
@@ -727,7 +741,7 @@ class GraphContactsApi {
       Uri.parse('$base/me/contactFolders/${_id(folderId)}').replace(
         queryParameters: {
           r'$select': 'id',
-          r'$expand': _expandOf(graphDevicePropertyId),
+          r'$expand': _expandOf([graphDevicePropertyId]),
         },
       ),
       'claim',
@@ -801,8 +815,17 @@ class GraphContactsApi {
   /// in a URL. They go through here every time.
   static String _id(String id) => Uri.encodeComponent(id);
 
-  static String _expandOf(String property) =>
-      "singleValueExtendedProperties(\$filter=id eq '$property')";
+  /// The `$expand` that brings the single-value extended properties
+  /// [properties], one filter naming them all. Microsoft's reference shows
+  /// one id to a filter; several joined with `or` are in use and Graph is
+  /// not known to limit them, but should it refuse them, the read throws
+  /// as any refusal does.
+  static String _expandOf(Iterable<String> properties) =>
+      "singleValueExtendedProperties(\$filter="
+      "${[for (final p in properties) "id eq '$p'"].join(' or ')})";
+
+  /// The ids of the details only Outlook keeps.
+  static final _outlookOnlyIds = [for (final d in outlookOnlyDetails) d.id];
 
   /// Property ids come back as Exchange writes them, which need not be the
   /// case they were sent in: the GUID's letters among them.

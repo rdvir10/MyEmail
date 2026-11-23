@@ -709,7 +709,7 @@ void main() {
         'Other City', 'Other State', 'Other Postal Code',
         'Other Country/Region', 'Personal Web Page', 'Spouse', 'Schools',
         'Hobby', 'Location', 'Web Page', 'Birthday', 'Anniversary', 'Notes',
-        'Initials', 'Profession', 'Children', 'Categories',
+        'Initials', 'Profession', 'Children', 'Categories', 'ISDN',
         'E-mail Display Name', 'E-mail 2 Display Name',
         'E-mail 3 Display Name', 'Display Name', 'File As',
       ]);
@@ -806,6 +806,61 @@ void main() {
       expect(row['Categories'], 'Family;VIP');
       expect(row['Display Name'], 'Dana Levi');
       expect(row['File As'], 'Levi, Dana');
+    });
+
+    test('the details only Outlook keeps, read with the contact as Exchange '
+        'names them, fill their columns; the anniversary as a date', () {
+      final row = only(ContactBackup.outlookCsv([
+        {
+          'givenName': 'Dana',
+          'singleValueExtendedProperties': [
+            {'id': 'String 0x3a24', 'value': '03-555-0301'},
+            {'id': 'String 0x3a25', 'value': '03-555-0302'},
+            {'id': 'String 0x3a23', 'value': '03-555-0303'},
+            {'id': 'String 0x3a21', 'value': '03-555-0304'},
+            {'id': 'String 0x3a1e', 'value': '03-555-0305'},
+            {'id': 'String 0x3a1f', 'value': '03-555-0306'},
+            {'id': 'String 0x3a1a', 'value': '03-555-0307'},
+            {'id': 'String 0x3a57', 'value': '03-555-0308'},
+            {'id': 'String 0x3a2e', 'value': '03-555-0309'},
+            {'id': 'String 0x3a02', 'value': '03-555-0310'},
+            {'id': 'String 0x3a1d', 'value': '03-555-0311'},
+            {'id': 'String 0x3a2c', 'value': '03-555-0312'},
+            {'id': 'String 0x3a4b', 'value': '03-555-0313'},
+            {'id': 'String 0x3a2d', 'value': '03-555-0314'},
+            {'id': 'String 0x3a50', 'value': 'https://dana.example'},
+            {'id': 'String 0x3a43', 'value': 'Chess'},
+            {'id': 'String 0x3a0d', 'value': 'Building 4'},
+            // Midnight in Israel's summer, as Exchange keeps it in UTC.
+            {'id': 'SystemTime 0x3a41', 'value': '2005-06-14T21:00:00Z'},
+            {
+              'id': 'String {00062004-0000-0000-C000-000000000046} Id 0x804F',
+              'value': 'no column of its own',
+            },
+          ],
+        },
+      ]));
+
+      expect(row['Business Fax'], '03-555-0301');
+      expect(row['Home Fax'], '03-555-0302');
+      expect(row['Other Fax'], '03-555-0303');
+      expect(row['Pager'], '03-555-0304');
+      expect(row['Car Phone'], '03-555-0305');
+      expect(row['Other Phone'], '03-555-0306');
+      expect(row['Primary Phone'], '03-555-0307');
+      expect(row['Company Main Phone'], '03-555-0308');
+      expect(row["Assistant's Phone"], '03-555-0309');
+      expect(row['Callback'], '03-555-0310');
+      expect(row['Radio Phone'], '03-555-0311');
+      expect(row['Telex'], '03-555-0312');
+      expect(row['TTY/TDD Phone'], '03-555-0313');
+      expect(row['ISDN'], '03-555-0314');
+      expect(row['Personal Web Page'], 'https://dana.example');
+      expect(row['Hobby'], 'Chess');
+      expect(row['Location'], 'Building 4');
+      expect(row['Anniversary'], '2005-06-15');
+      expect(row['Schools'], '');
+      expect(row.values, isNot(contains('no column of its own')));
     });
 
     test('a contact with only a display name has it as its name', () {
