@@ -1453,6 +1453,11 @@ class _Run {
       [...tagged],
       (id, c) => _placeWhole(id, c, withTag: true),
       withTag: true,
+      // Answered without its tag even alone: read, as a read without the
+      // tag sees it, and not kept as having none, so that a later read
+      // asks again. Left out instead, a copy the sync made could be made
+      // again once its create is given up.
+      tagUnknown: (id, c) => _placeWhole(id, c, withTag: false),
     );
 
     // Gmail: a listing lags behind writes by minutes, so a contact the
@@ -1657,16 +1662,19 @@ class _Run {
   /// ([GraphContactsApi.getBatch]) and with their tags where [withTag]:
   /// candidates are read at every run, and a GET apiece made a hundred or
   /// more requests one after another. A part left with no answer
-  /// (throttled past the wait, or failed on its own), and every part of a
-  /// batch refused as a whole, is read alone, as all were before: what
-  /// that read finds is placed, and its failure is the run's, as any
-  /// read's is.
+  /// (throttled past the wait, or failed on its own, or answered without
+  /// the tag asked for), and every part of a batch refused as a whole, is
+  /// read alone, as all were before: what that read finds is placed, and
+  /// its failure is the run's, as any read's is. One Graph answers alone
+  /// without its tag too ([TagNotGiven]) goes to [tagUnknown], as read.
   Future<void> _readGraphs(
     List<String> ids,
     Future<void> Function(String id, Map<String, Object?>? c) place, {
     bool withTag = false,
+    Future<void> Function(String id, Map<String, Object?> c)? tagUnknown,
   }) async {
     const most = GraphContactsApi.batchLimit;
+    var unknown = 0;
     for (var start = 0; start < ids.length; start += most) {
       final asking = ids.sublist(start, min(start + most, ids.length));
       _checkStop();
@@ -1683,9 +1691,22 @@ class _Run {
           await place(id, null);
         } else {
           _checkStop();
-          await place(id, await graph((a) => a.get(id, withTag: withTag)));
+          final Map<String, Object?>? c;
+          try {
+            c = await graph((a) => a.get(id, withTag: withTag));
+          } on TagNotGiven catch (e) {
+            if (tagUnknown == null) rethrow;
+            unknown++;
+            await tagUnknown(id, e.contact);
+            continue;
+          }
+          await place(id, c);
         }
       }
+    }
+    if (unknown > 0) {
+      debugPrint('[myemail] contacts: Microsoft gave $unknown contacts '
+          'without their tags');
     }
   }
 
@@ -3159,6 +3180,9 @@ class _Run {
     } on ContactGone {
       return;
     } on ContactRefused {
+      debugPrint('[myemail] contacts: a hidden tag was not moved');
+    } on TagNotGiven {
+      // Whether it has one to move is not known: left as it is.
       debugPrint('[myemail] contacts: a hidden tag was not moved');
     }
   }

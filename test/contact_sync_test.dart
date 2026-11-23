@@ -792,6 +792,98 @@ void main() {
       expect(h.google.count, 1);
     });
 
+    group('a tag read Graph answers without the tag', () {
+      /// Solo Name, a name and a landline, copied to Outlook by the first
+      /// sync, whose create's answer is lost: the copy's id.
+      Future<String> copyCutShort() async {
+        h.google.seed({
+          'names': [
+            {'givenName': 'Solo', 'familyName': 'Name'},
+          ],
+          'phoneNumbers': [
+            {'value': '+1 202 555 0101', 'type': 'home'},
+          ],
+        });
+        String? copy;
+        h.reshape = (r, response) {
+          if (r.method == 'POST' && r.url.path.endsWith('/me/contacts')) {
+            copy = (jsonDecode(response.body) as Map)['id'] as String;
+            throw http.ClientException('connection lost');
+          }
+          return null;
+        };
+        await h.firstSync();
+        h.reshape = null;
+        expect(h.graph.count, 1);
+        return copy!;
+      }
+
+      test('in a batch: the copy is read again alone, found by its tag, and '
+          'not made twice', () async {
+        final copy = await copyCutShort();
+        // Dropped in the batch; given to the copy read alone.
+        h.graph.expandDropped.add(copy);
+        h.before = (r) async {
+          if (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$copy')) {
+            h.graph.expandDropped.clear();
+          }
+        };
+        var status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt, isNull);
+        expect(status.needsALook, isEmpty);
+        expect(await h.paired(), hasLength(1));
+        h.before = null;
+        status = await h.later();
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+      });
+
+      test('alone too, for good: the run goes on with the copy as read, and '
+          'nothing is made twice, past the hour either', () async {
+        final copy = await copyCutShort();
+        h.graph.expandDropped.add(copy);
+        var status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt, isNull);
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+        // Its create given up, the two are asked about as two of one name.
+        status = await h.later();
+        expect(status.halt, isNull);
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+        expect(
+          status.needsALook.map((l) => l.reason),
+          everyElement(ContactReviewReason.sameName),
+        );
+      });
+
+      test('alone too, in a run that then stops: never kept as having none, '
+          'so read with its tag once Graph gives it', () async {
+        final copy = await copyCutShort();
+        h.graph.expandDropped.add(copy);
+        // MyEmail is put away as the copy is read alone: the run stops
+        // once its reads are done, before anything is planned.
+        h.before = (r) async {
+          if (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$copy')) {
+            unawaited(h.sync.stop());
+          }
+        };
+        var status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+
+        // The copy, listed again as it was, is read with its tag.
+        h.graph.expandDropped.clear();
+        h.before = null;
+        status = await h.later(after: const Duration(minutes: 2));
+        expect(status.halt, isNull);
+        expect(status.needsALook, isEmpty);
+        expect(await h.paired(), hasLength(1));
+        status = await h.later();
+        expect(h.graph.count, 1);
+        expect(h.google.count, 1);
+      });
+    });
+
     test('a delete cut short between the bin and the server is finished '
         'the next run, and kept once', () async {
       final pairs = seedPairs(h, 2);
@@ -1622,6 +1714,23 @@ void main() {
       h.requests.clear();
       await h.later();
       expect(h.contactWritesOf(), isEmpty);
+    });
+
+    test('...and leaves it as it is where Graph answers the read before the '
+        'move without it: nothing written, the run goes on', () async {
+      final made = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com'),
+      );
+      await h.firstSync();
+      final copy = h.graph.idWithEmail('ann@example.com')!;
+      final annNow = h.google.rekeyFromGmail(made);
+      h.graph.expandDropped.add(copy);
+      h.requests.clear();
+      final status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.tagOf(copy), made);
+      expect(h.contactWritesOf(), isEmpty);
+      expect((await h.paired()).single.googleName, annNow);
     });
 
     test("an Outlook edit made as the tag moves still reads as one: the "
