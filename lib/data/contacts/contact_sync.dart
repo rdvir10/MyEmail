@@ -4499,9 +4499,16 @@ class _CopiesStep {
       if (copies.isEmpty) {
         // No copy is the merge's any more (one now shares only the name, is
         // paired, or another person took it): a person listed goes from the
-        // list, any answer with it, which nothing could carry out.
-        _unlisted.add(key);
-        _listed.remove(key);
+        // list, and a Keep these with it, which nothing could carry out. A
+        // Leave them stands, kept as a leave on the differences Ron saw:
+        // should the copies be joined again, they stay as he left them.
+        final listing = seen.listed(key);
+        if (listing?['answer'] == ContactSyncCopiesPerson.leave) {
+          _leaveAsListed(key, listing!);
+        } else {
+          _unlisted.add(key);
+          _listed.remove(key);
+        }
         _personDone();
         continue;
       }
@@ -4874,6 +4881,22 @@ class _CopiesStep {
     _unlisted.add(key);
     _listed.remove(key);
     _left[key] = {'fingerprint': fingerprint, 'rules': _Copies.rules};
+    _unleft.remove(key);
+  }
+
+  /// [key] left as Ron chose on [listing], when its differences cannot be
+  /// read now (no copy is the merge's): left on those he saw, under the
+  /// rules they were listed by, so a leave from older rules is stamped
+  /// anew by the first pass that meets the copies, as any is.
+  void _leaveAsListed(String key, Map<String, Object?> listing) {
+    _unlisted.add(key);
+    _listed.remove(key);
+    _left[key] = {
+      'fingerprint': listing['fingerprint'] is String
+          ? listing['fingerprint']! as String
+          : '',
+      if (listing['rules'] case final int rules) 'rules': rules,
+    };
     _unleft.remove(key);
   }
 

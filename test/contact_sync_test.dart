@@ -4747,6 +4747,44 @@ void main() {
       expect(await h.sync.startIfDue(), isFalse);
     });
 
+    test("Leave them stands when no copy is the merge's any more: kept as a "
+        'leave on the differences Ron saw, the person stays left when the '
+        'copies are joined again', () async {
+      final cat = copiesOf('Cat', 'Fox', jobTitle: 'Buyer');
+      await h.firstSync();
+      final c = await hadcoOf(cat);
+      h.graph.editFromOutlook(c.others.single, {'jobTitle': 'Manager'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final listed = (await h.status()).copies.differing.single;
+      // The other copy shares only the name for a while; Ron leaves them.
+      final email = h.graph.contact(c.others.single)!['emailAddresses'];
+      h.graph.editFromOutlook(c.others.single, {
+        'emailAddresses': [
+          {'address': 'cat.fox@other.example', 'name': 'Cat Fox'},
+        ],
+      });
+      await h.later();
+      await h.sync.answerCopies(listed.key, null, listed.version);
+      await h.sync.syncNow();
+      expect((await h.status()).copies.differing, isEmpty);
+      h.pass(const Duration(minutes: 10));
+      expect(await h.sync.startIfDue(), isFalse);
+      // The email back: a merge asked for another person passes Cat over,
+      // as she was left, neither listed nor merged.
+      h.graph.editFromOutlook(c.others.single, {'emailAddresses': email});
+      copiesOf('Dan', 'Lee');
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.differing, isEmpty);
+      expect(h.graph.contact(c.others.single), isNotNull);
+      expect(h.graph.contact(c.synced)!['jobTitle'], 'Buyer');
+    });
+
     test('a copy whose photo cannot be checked passes its person over this '
         'time; nothing of theirs is deleted', () async {
       final ann = copiesOf('Ann', 'Cole');
