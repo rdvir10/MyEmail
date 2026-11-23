@@ -86,6 +86,13 @@ class FakeGraphContacts {
   /// with a 400 whose message quotes it, as Graph's do.
   bool Function(Map<String, Object?> contact)? refuse;
 
+  /// A PATCH that does not send `displayName` makes it again from the name
+  /// parts whatever it changes, not only a part: Microsoft's Update contact
+  /// page says to send the display name with every update, or Outlook may
+  /// put a value of its own in its place. Whether Exchange does so for a
+  /// write that changes no part is not known.
+  bool remakeDisplayName = false;
+
   /// The folder will not take the device claim.
   bool claimRefused = false;
 
@@ -560,7 +567,7 @@ class FakeGraphContacts {
     final json = _decode(body);
     _known(json);
     _refused(json);
-    _apply(c, json, _extendedIn(json));
+    _apply(c, json, _extendedIn(json), remakeName: remakeDisplayName);
     // Graph's answer never shows the extended properties written.
     return _ok(_json(c, null));
   }
@@ -672,8 +679,9 @@ class FakeGraphContacts {
   void _apply(
     _Contact c,
     Map<String, Object?> changes,
-    Map<String, String> extended,
-  ) {
+    Map<String, String> extended, {
+    bool remakeName = false,
+  }) {
     final writable = _writable(changes);
     final changed = _store(c.fields, writable);
     const parts = {
@@ -684,7 +692,7 @@ class FakeGraphContacts {
       'generation',
     };
     if (!writable.containsKey('displayName') &&
-        changed.intersection(parts).isNotEmpty) {
+        (remakeName || changed.intersection(parts).isNotEmpty)) {
       // Graph makes the display name again from the parts, unless it is
       // sent: why every PATCH of the sync resends it.
       c.fields['displayName'] = _composed(c.fields);

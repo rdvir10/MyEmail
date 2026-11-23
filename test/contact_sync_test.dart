@@ -6237,6 +6237,64 @@ void main() {
       expect(status.copies.people, 2);
     });
 
+    test("every merge write sends the synced copy's display name, so Outlook "
+        'never puts one of its own in its place', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      // A display name Ron set by hand, and an added detail to write.
+      h.graph.editFromOutlook(a.synced, {'displayName': 'Cole, Ann (Hadco)'});
+      h.graph.editFromOutlook(a.others.single, {'jobTitle': 'Buyer'});
+      await h.later();
+      // Graph making one of its own on a write that leaves it out.
+      h.graph.remakeDisplayName = true;
+      h.requests.clear();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(status.copies.last!.failed, 0);
+      final now = h.graph.contact(a.synced)!;
+      expect(now['jobTitle'], 'Buyer');
+      expect(now['displayName'], 'Cole, Ann (Hadco)');
+      final write = h.requests.firstWhere(
+        (r) => r.method == 'PATCH' && r.url.pathSegments.last == a.synced,
+      );
+      expect(
+        (jsonDecode(write.body) as Map)['displayName'],
+        'Cole, Ann (Hadco)',
+      );
+    });
+
+    test('a merge write answered with another display name fails the '
+        'person: nothing of theirs is deleted', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      h.graph.editFromOutlook(a.others.single, {'jobTitle': 'Buyer'});
+      await h.later();
+      h.reshape = (r, response) {
+        if (r.method != 'PATCH' || r.url.pathSegments.last != a.synced) {
+          return null;
+        }
+        final json = jsonDecode(response.body) as Map<String, Object?>;
+        json['displayName'] = 'Cole';
+        return http.Response(
+          jsonEncode(json),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.reshape = null;
+      final status = await h.status();
+      expect(status.copies.last!.people, 0);
+      expect(status.copies.last!.failed, 1);
+      expect(h.graph.contact(a.others.single), isNotNull);
+      expect(status.copies.people, 1);
+    });
+
     test("the drop in Hadco's count does not trip the empty-answers guard "
         'at the next listing of Hadco whole', () async {
       for (var i = 0; i < 4; i++) {

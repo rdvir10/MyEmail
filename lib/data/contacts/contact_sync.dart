@@ -4663,12 +4663,12 @@ class _CopiesStep {
   }
 
   /// Write what [merge] adds to the synced copy [key] ([before] as read),
-  /// check the answer holds each value, the details only Outlook keeps
-  /// read back for it, and give it a photo where the merge says, read back
-  /// before any copy goes. The details it replaced go to Gmail at the next
-  /// run as an answer (Use Hadco's), kept on the pair at once: the merge's
-  /// own, never held by the change brake. The synced copy's `changeKey` as
-  /// the write left it.
+  /// with its display name, check the answer holds each value, the details
+  /// only Outlook keeps read back for it, and give it a photo where the
+  /// merge says, read back before any copy goes. The details it replaced
+  /// go to Gmail at the next run as an answer (Use Hadco's), kept on the
+  /// pair at once: the merge's own, never held by the change brake. The
+  /// synced copy's `changeKey` as the write left it.
   Future<String?> _write(
     String key,
     cp.CopiesMerge merge,
@@ -4678,8 +4678,18 @@ class _CopiesStep {
   ) async {
     var changeKey = before['changeKey'] as String?;
     if (merge.patch.isNotEmpty) {
-      final answer = await run.graph((a) => a.update(key, merge.patch));
-      for (final MapEntry(key: name, value: value) in merge.patch.entries) {
+      // The display name every time, as the sync's own writes send it
+      // (graphContactPatch): Microsoft's Update contact page warns that
+      // Outlook may otherwise put one of its own in its place, which for a
+      // contact with no name parts would go on to Gmail. One that comes
+      // back otherwise fails the person, nothing of theirs deleted.
+      final shown = before['displayName'];
+      final body = {
+        ...merge.patch,
+        if (shown is String && shown.trim().isNotEmpty) 'displayName': shown,
+      };
+      final answer = await run.graph((a) => a.update(key, body));
+      for (final MapEntry(key: name, value: value) in body.entries) {
         if (name == _extended) continue;
         if (!_Run._holds(value, answer[name])) throw const _CopyNotHeld();
       }
