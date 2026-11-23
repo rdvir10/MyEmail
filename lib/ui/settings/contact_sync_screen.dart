@@ -3134,11 +3134,12 @@ String _copiesChoice(ContactSyncCopiesPerson p, String answer) {
 }
 
 /// Where the merge's deleted copies can be had back. Graph's ordinary
-/// delete is used (never `permanentDelete`), but whether Exchange puts a
-/// contact deleted that way in Deleted Items or straight among the
-/// mailbox's recoverable items (kept 14 days unless the organisation
-/// says otherwise) has not been checked, and Microsoft's pages do not
-/// say: this is true either way.
+/// delete is used (never `permanentDelete`), as for the sync's own
+/// deletes (Recently deleted says the same of those), but whether
+/// Exchange puts a contact deleted that way in Deleted Items or straight
+/// among the mailbox's recoverable items (kept 14 days unless the
+/// organisation says otherwise) has not been checked, and Microsoft's
+/// pages do not say: this is true either way.
 const _deletedCopiesKept = 'Outlook keeps deleted contacts for a while: in '
     'Deleted Items, or under Recover items deleted from this folder at the '
     'top of Deleted Items.';
@@ -3250,13 +3251,18 @@ class _DeletedScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('Recently deleted'), centerTitle: false),
       body: _Body(
         children: [
+          // The sync's deletes in Outlook are Graph's ordinary delete, as
+          // the merge's are: where they land is said true either way
+          // ([_deletedCopiesKept]), and shorter, above the list.
           const _Para(
             'Every contact the sync deleted in the last 30 days. Restore '
             'makes it again where it was deleted, with every detail that '
             'can be written, and on the other side too unless it is back '
             'there already; the two are then paired. Photos, and '
-            "Outlook's fax, pager and anniversary, come back only through "
-            "Google's Trash or Outlook's Recover deleted items.",
+            "Outlook's fax, pager and anniversary, come back only from "
+            "Google's Trash or, for a while, from Outlook: in Deleted Items, "
+            'or under Recover items deleted from this folder at the top of '
+            'it.',
             top: 16,
           ),
           if (deleted.isEmpty)

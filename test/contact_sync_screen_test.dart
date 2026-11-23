@@ -4985,8 +4985,19 @@ void main() {
       await tester.tap(find.text('Recently deleted (3)'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining("Outlook's fax, pager and anniversary"),
-          findsOneWidget);
+      // Where Graph's delete puts a contact is not yet known: true either
+      // way, as the merge's texts are.
+      expect(
+        find.text('Every contact the sync deleted in the last 30 days. '
+            'Restore makes it again where it was deleted, with every detail '
+            'that can be written, and on the other side too unless it is '
+            'back there already; the two are then paired. Photos, and '
+            "Outlook's fax, pager and anniversary, come back only from "
+            "Google's Trash or, for a while, from Outlook: in Deleted Items, "
+            'or under Recover items deleted from this folder at the top of '
+            'it.'),
+        findsOneWidget,
+      );
       expect(
         find.text('Deleted from Hadco at ${formatClock(at1042, use24h: false)}'),
         findsOneWidget,
