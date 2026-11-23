@@ -692,19 +692,41 @@ class ContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerAllDiffering(ContactSyncChoice choice) async {
+  Future<void> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  ) async {
     final pair = await _attachedPair();
     if (pair == null) return;
-    var run = false;
-    for (final r in await store.reviews(pair.pairId)) {
-      // Only those not answered yet: an answer given item by item stands.
-      if (r.kind != ContactReviewKind.differing.name ||
-          r.reviewId == null ||
-          r.isAnswered) {
-        continue;
+    // One read, and every answer saved together or none: hundreds of them
+    // at once.
+    final run = await store.transaction(() async {
+      var any = false;
+      var run = false;
+      for (final r in await store.reviews(pair.pairId)) {
+        // Only one shown, as it was shown, with no answer yet: one listed
+        // since the screen was drawn (a run's new pairs) is never answered
+        // by it, nor one planned again with other details, and an answer
+        // given item by item stands.
+        final id = r.reviewId;
+        if (id == null ||
+            r.kind != ContactReviewKind.differing.name ||
+            r.isAnswered ||
+            looks[id] == null ||
+            looks[id] != _Look.of(r)?.version) {
+          continue;
+        }
+        any = true;
+        if (await _queueReview(r, choice)) run = true;
       }
-      if (await _queueLook(r.reviewId!, choice)) run = true;
-    }
+      if (!any) {
+        throw const ContactSyncRefused(
+          'Those contacts have changed since they were shown. Look at them '
+          'again.',
+        );
+      }
+      return run;
+    });
     _changed();
     if (run) unawaited(_go(again: true));
   }
@@ -722,6 +744,16 @@ class ContactSync implements ContactSyncService {
       pair.pairId,
     )).firstWhereOrNull((r) => r.reviewId == lookId);
     if (review == null) return false;
+    return _queueReview(review, choice, candidateId: candidateId);
+  }
+
+  /// Queue [choice] on [review], as just read: as [_queueLook].
+  Future<bool> _queueReview(
+    ContactReview review,
+    ContactSyncChoice choice, {
+    String? candidateId,
+  }) async {
+    final lookId = review.reviewId!;
     final look = _Look.of(review);
     if (look == null || !look.choices.contains(choice)) {
       throw ArgumentError.value(choice, 'choice', 'not offered here');

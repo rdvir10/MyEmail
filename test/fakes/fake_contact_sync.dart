@@ -69,7 +69,15 @@ class FakeContactSync implements ContactSyncService {
   final List<Set<String>?> questionItems = [];
   final List<({int id, ContactSyncChoice choice, String? candidateId})>
       lookAnswers = [];
-  final List<ContactSyncChoice> allDiffering = [];
+
+  /// Each [answerAllDiffering] call: the answer, and the items shown, id
+  /// to version.
+  final List<({ContactSyncChoice choice, Map<int, String> looks})>
+      allDiffering = [];
+
+  /// What [answerAllDiffering] throws, as the runner refuses an answer
+  /// when none of the items shown is still as it was shown.
+  Object? allDifferingFailure;
   final List<int> restored = [];
 
   /// Each [answerCopies] call: the person, the copy kept (null: leave
@@ -202,9 +210,13 @@ class FakeContactSync implements ContactSyncService {
   }
 
   @override
-  Future<void> answerAllDiffering(ContactSyncChoice choice) async {
+  Future<void> answerAllDiffering(
+    ContactSyncChoice choice,
+    Map<int, String> looks,
+  ) async {
     calls.add('answerAllDiffering');
-    allDiffering.add(choice);
+    if (allDifferingFailure case final failure?) throw failure;
+    allDiffering.add((choice: choice, looks: looks));
   }
 
   @override

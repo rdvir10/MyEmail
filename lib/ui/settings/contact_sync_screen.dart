@@ -1713,9 +1713,10 @@ class _LooksScreen extends ConsumerWidget {
         contactSyncAccountName(_byId(accounts, status?.graphAccountId));
     final sync = ref.read(mailEngineProvider).contactSync;
     final looks = status?.needsALook ?? const <ContactSyncLook>[];
-    final differing = looks
-        .where((l) => l.kind == ContactReviewKind.differing && l.answer == null)
-        .length;
+    final differing = [
+      for (final l in looks)
+        if (l.kind == ContactReviewKind.differing && l.answer == null) l,
+    ];
     return Scaffold(
       appBar: AppBar(title: const Text('Needs a look'), centerTitle: false),
       body: _Body(
@@ -1726,11 +1727,21 @@ class _LooksScreen extends ConsumerWidget {
             top: 16,
           ),
           if (looks.isEmpty) const _Para('Nothing needs a look.'),
-          if (differing > 1)
+          if (differing.length > 1)
             _AllDiffering(
-              count: differing,
+              looks: differing,
               graphName: graphName,
-              onAnswer: (c) => _act(context, () => sync.answerAllDiffering(c)),
+              onAnswer: (c, shown) => _act(
+                context,
+                () => sync.answerAllDiffering(c, shown),
+                // Refused, none of them still as shown: said, and read
+                // again, to be answered as they are now.
+                onFailure: () {
+                  if (context.mounted) {
+                    ref.invalidate(contactSyncStatusProvider);
+                  }
+                },
+              ),
             ),
           for (final look in looks) ...[
             const Divider(height: 1),
@@ -1749,24 +1760,35 @@ class _LooksScreen extends ConsumerWidget {
   }
 }
 
-/// One answer for every new pair whose details differ, set apart from
-/// each contact's own buttons, and asked again before one side's details
-/// replace the other's on all of them: the brakes do not hold Ron's own
-/// answers back, so this is the only question there is.
+/// One answer for every new pair shown whose details differ, set apart
+/// from each contact's own buttons, and asked again before one side's
+/// details replace the other's on all of them: the brakes do not hold
+/// Ron's own answers back, so this is the only question there is.
 class _AllDiffering extends StatelessWidget {
   const _AllDiffering({
-    required this.count,
+    required this.looks,
     required this.graphName,
     required this.onAnswer,
   });
 
-  final int count;
+  /// The pairs it answers: those shown whose details differ, with no
+  /// answer yet.
+  final List<ContactSyncLook> looks;
   final String graphName;
-  final ValueChanged<ContactSyncChoice> onAnswer;
+
+  /// The answer, for [looks] as they were when it was tapped: each one's
+  /// id to its version.
+  final void Function(ContactSyncChoice choice, Map<int, String> looks)
+      onAnswer;
 
   Future<void> _answer(BuildContext context, ContactSyncChoice c) async {
+    // Those the count came from, taken as the button is tapped: the
+    // question names their number, and the answer covers them alone,
+    // never a pair listed while the question is open.
+    final shown = {for (final l in looks) l.id: l.version};
+    final count = shown.length;
     if (c == ContactSyncChoice.leaveAsTheyAre) {
-      onAnswer(c);
+      onAnswer(c, shown);
       return;
     }
     final (kept, replaced) = c == ContactSyncChoice.useGoogle
@@ -1794,7 +1816,7 @@ class _AllDiffering extends StatelessWidget {
         ],
       ),
     );
-    if (sure == true) onAnswer(c);
+    if (sure == true) onAnswer(c, shown);
   }
 
   @override
@@ -1812,7 +1834,7 @@ class _AllDiffering extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'All $count pairs whose details differ',
+            'All ${looks.length} pairs whose details differ',
             style: theme.textTheme.titleSmall,
           ),
           const SizedBox(height: 4),

@@ -263,6 +263,21 @@ String? companyOf(Map<String, Object?>? contact) {
   return null;
 }
 
+/// The Memory store, whose [failAt]th answer to a Needs a look item fails,
+/// as a write the database could not make.
+class _AnswersFailing extends MemoryContactSyncStore {
+  _AnswersFailing({super.clock});
+
+  int? failAt;
+  int _answers = 0;
+
+  @override
+  Future<ContactReview?> answerReview(int reviewId, String answer) {
+    if (++_answers == failAt) throw StateError('not saved');
+    return super.answerReview(reviewId, answer);
+  }
+}
+
 void main() {
   late Harness h;
 
@@ -2668,13 +2683,134 @@ void main() {
       final looks = (await h.status()).needsALook;
       expect(looks, hasLength(2));
       final annLook = looks.firstWhere((l) => l.title == 'Ann Lee');
+      // Both shown, and Ann answered before the screen showed it.
+      final shown = {for (final l in looks) l.id: l.version};
       await h.sync.answerLook(annLook.id, ContactSyncChoice.useGraph);
-      await h.sync.answerAllDiffering(ContactSyncChoice.useGoogle);
+      await h.sync.answerAllDiffering(ContactSyncChoice.useGoogle, shown);
       await h.sync.syncNow();
       expect(companyOf(h.google.person(a)), 'HA');
       expect(companyOf(h.graph.contact(aH)), 'HA');
       expect(companyOf(h.graph.contact(bH)), 'GB');
       expect(companyOf(h.google.person(b)), 'GB');
+    });
+
+    test("Use Hadco's for all answers only the pairs shown: one listed "
+        'since waits for an answer of its own', () async {
+      final a = h.google.seed(
+        person('Ann', 'Lee', email: 'a@example.com', company: 'GA'),
+      );
+      final aH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'a@example.com', company: 'HA'),
+      );
+      final b = h.google.seed(
+        person('Bob', 'Ray', email: 'b@example.com', company: 'GB'),
+      );
+      h.graph.seed(
+        outlook('Bob', 'Ray', email: 'b@example.com', company: 'HB'),
+      );
+      await h.firstSync();
+      final shown = {
+        for (final l in (await h.status()).needsALook) l.id: l.version,
+      };
+      expect(shown, hasLength(2));
+      // A pair a later run makes, whose details differ too, listed while
+      // the question for all was open.
+      final c = h.google.seed(
+        person('Cy', 'Fox', email: 'c@example.com', company: 'GC'),
+      );
+      h.graph.seed(outlook('Cy', 'Fox', email: 'c@example.com', company: 'HC'));
+      expect((await h.later()).needsALook, hasLength(3));
+
+      await h.sync.answerAllDiffering(ContactSyncChoice.useGraph, shown);
+      await h.sync.syncNow();
+      expect(companyOf(h.google.person(a)), 'HA');
+      expect(companyOf(h.google.person(b)), 'HB');
+      expect(companyOf(h.graph.contact(aH)), 'HA');
+      expect(companyOf(h.google.person(c)), 'GC', reason: 'never shown');
+      final left = (await h.status()).needsALook.single;
+      expect(left.title, 'Cy Fox');
+      expect(left.answer, isNull);
+    });
+
+    test('Leave all as they are takes away only the pairs shown', () async {
+      h.google.seed(person('Ann', 'Lee', email: 'a@example.com', company: 'A'));
+      h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com', company: 'B'));
+      h.google.seed(person('Bob', 'Ray', email: 'b@example.com', company: 'C'));
+      h.graph.seed(outlook('Bob', 'Ray', email: 'b@example.com', company: 'D'));
+      await h.firstSync();
+      final shown = {
+        for (final l in (await h.status()).needsALook) l.id: l.version,
+      };
+      h.google.seed(person('Cy', 'Fox', email: 'c@example.com', company: 'E'));
+      h.graph.seed(outlook('Cy', 'Fox', email: 'c@example.com', company: 'F'));
+      await h.later();
+      h.requests.clear();
+
+      await h.sync.answerAllDiffering(ContactSyncChoice.leaveAsTheyAre, shown);
+      expect((await h.status()).needsALook.single.title, 'Cy Fox');
+      expect(h.requests, isEmpty, reason: 'nothing to write');
+    });
+
+    test('a pair planned again since it was shown is not answered by the '
+        'answer for all, and with none left as shown it is refused',
+        () async {
+      final a = h.google.seed(
+        person('Ann', 'Lee', email: 'a@example.com', company: 'GA'),
+      );
+      h.graph.seed(
+        outlook('Ann', 'Lee', email: 'a@example.com', company: 'HA'),
+      );
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      // The same item, planned again with another detail that differs, as
+      // a pair made again is.
+      final pairId = (await h.pair()).pairId;
+      final review = (await h.store.reviews(pairId)).single;
+      final data = jsonDecode(review.data) as Map<String, Object?>;
+      data['fields'] = [...data['fields']! as List, 'jobTitle'];
+      await h.store.saveReview(review.copyWith(data: jsonEncode(data)));
+      expect((await h.status()).needsALook.single.id, look.id);
+
+      await expectLater(
+        h.sync.answerAllDiffering(
+          ContactSyncChoice.useGraph,
+          {look.id: look.version},
+        ),
+        throwsA(isA<ContactSyncRefused>()),
+      );
+      expect((await h.store.reviews(pairId)).single.isAnswered, isFalse);
+      await h.sync.syncNow();
+      expect(companyOf(h.google.person(a)), 'GA');
+    });
+
+    test('the answers for all are saved together: one that cannot be saved '
+        'leaves every pair unanswered', () async {
+      late _AnswersFailing store;
+      h = Harness(store: (clock) => store = _AnswersFailing(clock: clock));
+      for (final (i, name) in ['Ann', 'Bob', 'Cy'].indexed) {
+        h.google.seed(
+          person(name, 'Lee', email: '$i@example.com', company: 'G$i'),
+        );
+        h.graph.seed(
+          outlook(name, 'Lee', email: '$i@example.com', company: 'H$i'),
+        );
+      }
+      await h.firstSync();
+      final shown = {
+        for (final l in (await h.status()).needsALook) l.id: l.version,
+      };
+      expect(shown, hasLength(3));
+      store.failAt = 2;
+
+      await expectLater(
+        h.sync.answerAllDiffering(ContactSyncChoice.useGraph, shown),
+        throwsA(isA<StateError>()),
+      );
+      final pairId = (await h.pair()).pairId;
+      expect(
+        [for (final r in await h.store.reviews(pairId)) r.isAnswered],
+        [false, false, false],
+      );
     });
 
     test('noticeSeen fires changed', () async {

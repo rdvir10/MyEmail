@@ -2233,7 +2233,8 @@ void main() {
         (id: 5, choice: ContactSyncChoice.deleteHereToo, candidateId: null),
         (id: 6, choice: ContactSyncChoice.retry, candidateId: null),
       ]);
-      expect(sync.allDiffering, [ContactSyncChoice.leaveAsTheyAre]);
+      expect(sync.allDiffering.single.choice, ContactSyncChoice.leaveAsTheyAre);
+      expect(sync.allDiffering.single.looks.keys, {2, 3});
     });
 
     testWidgets("one side's details for every differing pair is asked again, "
@@ -2275,16 +2276,119 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text("Replace Hadco's"));
       await tester.pumpAndSettle();
-      expect(sync.allDiffering, [ContactSyncChoice.useGoogle]);
+      expect(
+        [for (final a in sync.allDiffering) a.choice],
+        [ContactSyncChoice.useGoogle],
+      );
 
       // Leaving them as they are replaces nothing, and is not asked again.
       await tester.tap(find.text('Leave all as they are'));
       await tester.pumpAndSettle();
       expect(button('contact-sync-all-sure'), findsNothing);
-      expect(sync.allDiffering, [
+      expect([for (final a in sync.allDiffering) a.choice], [
         ContactSyncChoice.useGoogle,
         ContactSyncChoice.leaveAsTheyAre,
       ]);
+    });
+
+    testWidgets('an answer for all names the pairs it counted: one listed '
+        'while its question is open is not among them', (tester) async {
+      ContactSyncLook differs(int id) => ContactSyncLook(
+            id: id,
+            kind: ContactReviewKind.differing,
+            title: 'Person $id',
+            fields: const [ContactField.jobTitle],
+            googleValues: {ContactField.jobTitle: 'Buyer $id'},
+            choices: const [
+              ContactSyncChoice.useGoogle,
+              ContactSyncChoice.useGraph,
+              ContactSyncChoice.leaveAsTheyAre,
+            ],
+          );
+      sync = FakeContactSync(status: synced(looks: [
+        for (var id = 1; id <= 3; id++) differs(id),
+      ]));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester);
+      await tester.tap(find.text('Needs a look (3)'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text("Use Hadco's for all"));
+      await tester.pumpAndSettle();
+      // A run lists another pair while the question is open.
+      sync.set(synced(looks: [
+        for (var id = 1; id <= 4; id++) differs(id),
+      ]));
+      await tester.pumpAndSettle();
+      expect(find.text("Use Hadco's details for all 3?"), findsOneWidget);
+      await tester.tap(find.text("Replace Gmail's"));
+      await tester.pumpAndSettle();
+      expect(sync.allDiffering.single.choice, ContactSyncChoice.useGraph);
+      expect(sync.allDiffering.single.looks, {
+        for (var id = 1; id <= 3; id++) id: differs(id).version,
+      });
+
+      // Refused, the pairs having changed since: said, and read again.
+      sync.allDifferingFailure = const ContactSyncRefused(
+        'Those contacts have changed since they were shown. Look at them '
+        'again.',
+      );
+      final reads = sync.statusReads;
+      await tester.tap(find.text('Leave all as they are'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Those contacts have changed since they were shown. Look '
+            'at them again.'),
+        findsOneWidget,
+      );
+      expect(sync.statusReads, greaterThan(reads),
+          reason: 'read again, to be answered as it is now');
+    });
+
+    test("an item's version is what it shows", () {
+      const look = ContactSyncLook(
+        id: 1,
+        kind: ContactReviewKind.differing,
+        title: 'Ann Cole',
+        fields: [ContactField.jobTitle],
+        googleValues: {ContactField.jobTitle: 'Buyer'},
+        graphValues: {ContactField.jobTitle: 'Head buyer'},
+      );
+      expect(look.version, hasLength(16));
+      expect(look.version, isNot(contains('Buyer')));
+      expect(
+        const ContactSyncLook(
+          id: 2,
+          kind: ContactReviewKind.differing,
+          title: 'Ann Cole',
+          fields: [ContactField.jobTitle],
+          googleValues: {ContactField.jobTitle: 'Buyer'},
+          graphValues: {ContactField.jobTitle: 'Head buyer'},
+          answer: ContactSyncChoice.useGraph,
+        ).version,
+        look.version,
+        reason: 'not its id or its answer',
+      );
+      for (final other in const [
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.differing,
+          title: 'Ann Cole',
+          fields: [ContactField.jobTitle, ContactField.company],
+          googleValues: {ContactField.jobTitle: 'Buyer'},
+          graphValues: {ContactField.jobTitle: 'Head buyer'},
+        ),
+        ContactSyncLook(
+          id: 1,
+          kind: ContactReviewKind.differing,
+          title: 'Ann Cole',
+          fields: [ContactField.jobTitle],
+          googleValues: {ContactField.jobTitle: 'Buyer'},
+          graphValues: {ContactField.jobTitle: 'Chief buyer'},
+        ),
+      ]) {
+        expect(other.version, isNot(look.version));
+      }
     });
 
     testWidgets('a new contact whose names disagree says so, however it was '
