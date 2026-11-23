@@ -31,10 +31,13 @@ import '../shell/put_away.dart' show isInFront;
 class ContactSyncScreen extends ConsumerStatefulWidget {
   const ContactSyncScreen({super.key});
 
-  /// Whether the screen is open: the shell's one-line message about a stop
-  /// says nothing this screen is not already showing.
-  static bool get isOpen => _open > 0;
-  static int _open = 0;
+  /// Whether the screen is open and in front, its own route the current
+  /// one: the shell's one-line message about a stop says nothing this
+  /// screen is not already showing. Under a screen pushed over it
+  /// (Duplicates to merge, Needs a look, Recently deleted, a sign-in),
+  /// which shows no stop, it is not, and the message is said there.
+  static bool get isOpen => _open.any((s) => s._inFront);
+  static final Set<_ContactSyncScreenState> _open = {};
 
   @override
   ConsumerState<ContactSyncScreen> createState() => _ContactSyncScreenState();
@@ -70,15 +73,26 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
 
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
 
+  /// The screen's own route, for [ContactSyncScreen.isOpen].
+  ModalRoute<Object?>? _route;
+
+  bool get _inFront => mounted && (_route?.isCurrent ?? true);
+
   @override
   void initState() {
     super.initState();
-    ContactSyncScreen._open++;
+    ContactSyncScreen._open.add(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
   }
 
   @override
   void dispose() {
-    ContactSyncScreen._open--;
+    ContactSyncScreen._open.remove(this);
     super.dispose();
   }
 
@@ -974,7 +988,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     // Start's preview and backup from the last hour.
     final firstGated =
         !s.firstStarted && !_stepsFor(google, graph).readyAt(now);
-    final name = _sideOrNot(side, graphName);
+    final line = _stopLine(s, halt, graphName, now, use24h);
+    if (line == null) return const [];
     switch (halt.kind) {
       case ContactSyncHaltKind.notAllowed:
         final account = switch (side) {
@@ -983,7 +998,7 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
           null => null,
         };
         return [
-          _Para('Contact sync has stopped: not allowed yet for $name.'),
+          _Para(line),
           if (halt.error case final e?)
             _Problem(
               doing: 'Syncing contacts',
@@ -993,17 +1008,8 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         ];
       case ContactSyncHaltKind.otherDevice:
         return [
-          const _Para(
-            'Contact sync is on on your other device',
-            strong: true,
-          ),
-          _Para(
-            '${switch (halt.claimedAt) {
-              null => 'It has synced there lately',
-              final at => 'It last synced there ${_when(at, now, use24h)}',
-            }}. Only one device may sync, or the two would work against '
-            'each other: turn it off there, or sync here instead.',
-          ),
+          _Para(line, strong: true),
+          _Para(_otherDeviceLine(halt, now, use24h)),
           _Buttons([
             OutlinedButton(
               key: const ValueKey('contact-sync-here'),
@@ -1039,29 +1045,12 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         )) {
           return const [];
         }
-        return [
-          _Para(
-            'Contact sync has stopped: ${_bookOrNot(side, graphName)} listed '
-            'far fewer contacts than expected.',
-          ),
-        ];
+        return [_Para(line)];
       case ContactSyncHaltKind.quota:
-        final until = halt.until;
-        return [
-          _Para(
-            "Google's daily limit on changes to contacts is spent. Contact "
-            'sync carries on '
-            '${until == null ? 'tomorrow' : 'after ${_clockOrDay(until, now, use24h)}'}.',
-          ),
-        ];
+        return [_Para(line)];
       case ContactSyncHaltKind.failed:
         return [
-          _Para(
-            s.firstStarted
-                ? 'The last sync stopped ${_when(halt.at, now, use24h)}.'
-                : 'The first sync could not begin: it stopped '
-                    '${_when(halt.at, now, use24h)}.',
-          ),
+          _Para(line),
           // Before the first sync, a run goes only through Start, just
           // below, and its preview and backup from the last hour: no Try
           // again beside it.
@@ -2403,6 +2392,16 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
     final fresh = !c.asked && last?.at == _saidWith;
     final said = fresh ? _said : null;
     final problem = fresh ? _problem : null;
+    // Asked for, no sync going, and the last one stopped: nothing starts
+    // another while Ron waits here, and the shell's one-line message may
+    // have come and gone, so the box says why it waits. Not for MyEmail
+    // put away: the next opening carries it on.
+    final stop = c.asked && running == null
+        ? switch (s?.halt) {
+            final h? when h.kind != ContactSyncHaltKind.putAway => h,
+            _ => null,
+          }
+        : null;
     return Container(
       key: const ValueKey('contact-sync-copies'),
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
@@ -2483,6 +2482,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
                 null when running != null =>
                   'Merge asked for: it starts once the sync has made its '
                       'changes.',
+                null when stop != null =>
+                  'Merge asked for: it starts once the sync can carry on.',
                 // The pass before stopped short, and the next waits the
                 // usual hour.
                 null when c.shortStops > 0 =>
@@ -2493,6 +2494,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
               },
               key: const ValueKey('contact-sync-copies-running'),
             ),
+            if (s != null && stop != null) ..._waitsOn(s, stop, graphName),
             // Only while a sync runs: with none, as after a short stop,
             // the next pass may wait the hour.
             if (running != null) ...[
@@ -2554,6 +2556,54 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         ],
       ),
     );
+  }
+
+  /// Why the merge asked for waits: the last sync's [stop], as the Contact
+  /// sync screen says it, and the way on from here, the one that screen
+  /// offers: Sync here for another device's claim, which Sync now would
+  /// only meet again, else Sync now.
+  List<Widget> _waitsOn(
+    ContactSyncStatus s,
+    ContactSyncHalt stop,
+    String graphName,
+  ) {
+    final now = DateTime.now();
+    final use24h = MediaQuery.alwaysUse24HourFormatOf(context);
+    final elsewhere = stop.kind == ContactSyncHaltKind.otherDevice;
+    // The failure itself, under the line, where that screen shows one.
+    final error = switch (stop.kind) {
+      ContactSyncHaltKind.failed => _ContactSyncScreenState._failureOf(stop),
+      ContactSyncHaltKind.notAllowed => stop.error,
+      _ => null,
+    };
+    return [
+      const SizedBox(height: 4),
+      Text(
+        _stopLine(s, stop, graphName, now, use24h) ?? '',
+        key: const ValueKey('contact-sync-copies-stop'),
+      ),
+      if (elsewhere) Text(_otherDeviceLine(stop, now, use24h)),
+      if (error != null) ...[
+        const SizedBox(height: 4),
+        ProblemView(
+          problem: ProblemReport(doing: 'Syncing contacts', error: error),
+        ),
+      ],
+      const SizedBox(height: 8),
+      if (elsewhere)
+        OutlinedButton(
+          key: const ValueKey('contact-sync-copies-here'),
+          onPressed: () => _act(context, _sync.syncHere),
+          child: const Text('Sync here'),
+        )
+      else
+        FilledButton.tonalIcon(
+          key: const ValueKey('contact-sync-copies-sync-now'),
+          onPressed: () => unawaited(_sync.syncNow()),
+          icon: const Icon(Icons.sync),
+          label: const Text('Sync now'),
+        ),
+    ];
   }
 
   /// The heading of the copies that differ, what the answers do, and the
@@ -2976,6 +3026,47 @@ String? contactSyncNoticeText(
     ContactSyncHaltKind.putAway => null,
   };
 }
+
+/// Why the last run stopped, [halt], in the line the Contact sync screen
+/// opens that stop with: also said on Duplicates to merge while a merge
+/// waits on it. Null for MyEmail put away, which is no stop to tell.
+String? _stopLine(
+  ContactSyncStatus s,
+  ContactSyncHalt halt,
+  String graphName,
+  DateTime now,
+  bool use24h,
+) {
+  final side = _haltSide(halt);
+  final until = halt.until;
+  return switch (halt.kind) {
+    ContactSyncHaltKind.notAllowed => 'Contact sync has stopped: not allowed '
+        'yet for ${_sideOrNot(side, graphName)}.',
+    ContactSyncHaltKind.otherDevice =>
+      'Contact sync is on on your other device',
+    ContactSyncHaltKind.emptyAnswer => 'Contact sync has stopped: '
+        '${_bookOrNot(side, graphName)} listed far fewer contacts than '
+        'expected.',
+    ContactSyncHaltKind.quota =>
+      "Google's daily limit on changes to contacts is spent. Contact sync "
+          'carries on '
+          '${until == null ? 'tomorrow' : 'after ${_clockOrDay(until, now, use24h)}'}.',
+    ContactSyncHaltKind.failed => s.firstStarted
+        ? 'The last sync stopped ${_when(halt.at, now, use24h)}.'
+        : 'The first sync could not begin: it stopped '
+            '${_when(halt.at, now, use24h)}.',
+    ContactSyncHaltKind.putAway => null,
+  };
+}
+
+/// Under another device's stop: when it last synced there, and what to
+/// do about it.
+String _otherDeviceLine(ContactSyncHalt halt, DateTime now, bool use24h) =>
+    '${switch (halt.claimedAt) {
+      null => 'It has synced there lately',
+      final at => 'It last synced there ${_when(at, now, use24h)}',
+    }}. Only one device may sync, or the two would work against each '
+    'other: turn it off there, or sync here instead.';
 
 /// The Microsoft account's name in what contact sync says: its name in
 /// MyEmail ("Hadco"), or its address where it has none.

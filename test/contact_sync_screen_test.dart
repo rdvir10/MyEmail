@@ -3731,6 +3731,138 @@ void main() {
       );
     });
 
+    testWidgets('a merge asked for whose sync has stopped says why it waits, '
+        'with the way on', (tester) async {
+      const asked = ContactSyncCopies(people: 1336, extras: 1515, asked: true);
+      ContactSyncStatus stopped(
+        ContactSyncHalt? halt, {
+        ContactSyncProgress? running,
+      }) =>
+          synced(
+            copies: asked,
+            halt: halt,
+            running: running,
+            duplicates: const [
+              ContactSyncDuplicates(title: 'Ann Cole', graphCopies: 3),
+            ],
+          );
+      await openDuplicates(tester, copies: asked);
+      const waits = 'Merge asked for: it starts once the sync can carry on.';
+      final panel = button('contact-sync-copies');
+      final clock = formatClock(at1042, use24h: false);
+
+      // The sync stopped, as Ron waits here for the merge.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at1042,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'The last sync stopped at $clock.',
+        'Hadco could not be reached.',
+        'Sync now',
+      ]);
+      expect(find.text('Merge asked for: the next sync carries it out.'),
+          findsNothing);
+      await tester.tap(button('contact-sync-copies-sync-now'));
+      await tester.pumpAndSettle();
+      expect(sync.count('syncNow'), 1);
+
+      // Each stop in the Contact sync screen's own words.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.notAllowed,
+        at: at1042,
+        side: ContactSide.graph,
+        error: const ContactSyncNeedsSignIn(
+          side: ContactSide.graph,
+          accountId: 'acct-h',
+          message: 'Hadco needs you to sign in again.',
+        ),
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'Contact sync has stopped: not allowed yet for Hadco.',
+        'Hadco needs you to sign in again.',
+        'Sync now',
+      ]);
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.emptyAnswer,
+        at: at1042,
+        side: ContactSide.graph,
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'Contact sync has stopped: Hadco listed far fewer contacts than '
+            'expected.',
+        'Sync now',
+      ]);
+      final renewed = at1042.add(const Duration(hours: 2));
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.quota,
+        at: at1042,
+        side: ContactSide.google,
+        until: renewed,
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        "Google's daily limit on changes to contacts is spent. Contact sync "
+            'carries on after ${formatClock(renewed, use24h: false)}.',
+        'Sync now',
+      ]);
+
+      // Another device's claim, which Sync now would only meet again: Sync
+      // here, as the Contact sync screen offers.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.otherDevice,
+        at: at1042,
+        claimedAt: at1042,
+      )));
+      await tester.pumpAndSettle();
+      inOrder(tester, panel, [
+        waits,
+        'Contact sync is on on your other device',
+        'It last synced there at $clock. Only one device may sync, or the '
+            'two would work against each other: turn it off there, or sync '
+            'here instead.',
+        'Sync here',
+      ]);
+      expect(button('contact-sync-copies-sync-now'), findsNothing);
+      await tester.tap(button('contact-sync-copies-here'));
+      await tester.pumpAndSettle();
+      expect(sync.count('syncHere'), 1);
+
+      // Put away: nothing to say, the next opening carries it on.
+      sync.set(stopped(ContactSyncHalt(
+        kind: ContactSyncHaltKind.putAway,
+        at: at1042,
+      )));
+      await tester.pumpAndSettle();
+      expect(find.text('Merge asked for: the next sync carries it out.'),
+          findsOneWidget);
+      expect(button('contact-sync-copies-stop'), findsNothing);
+      expect(button('contact-sync-copies-sync-now'), findsNothing);
+
+      // A sync going again: how far it has got, not the stop before it.
+      sync.set(stopped(
+        ContactSyncHalt(kind: ContactSyncHaltKind.failed, at: at1042),
+        running: const ContactSyncProgress(step: ContactSyncStep.reading),
+      ));
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.text('Merge asked for: it starts once the sync has made its '
+            'changes.'),
+        findsOneWidget,
+      );
+      expect(button('contact-sync-copies-stop'), findsNothing);
+      expect(button('contact-sync-copies-sync-now'), findsNothing);
+    });
+
     testWidgets("copies that differ: each copy's values, and Keep these or "
         'Leave them', (tester) async {
       await openDuplicates(
@@ -4592,11 +4724,17 @@ void main() {
       addTearDown(putAway.close);
     });
 
-    Future<void> pumpApp(WidgetTester tester, {bool on = true}) async {
+    /// [engine]: one with Gmail and Hadco, for the screens that need the
+    /// pair's accounts; else the sample's own.
+    Future<void> pumpApp(
+      WidgetTester tester, {
+      bool on = true,
+      MailEngine? engine,
+    }) async {
       if (on) await ui.writeString(UiStateKeys.contactSyncDevice, 'on');
       final c = ProviderContainer(overrides: [
         uiStateStoreProvider.overrideWithValue(ui),
-        mailEngineProvider.overrideWithValue(_SampleWith(sync)),
+        mailEngineProvider.overrideWithValue(engine ?? _SampleWith(sync)),
         appPutAwayProvider.overrideWithValue(putAway.stream),
       ]);
       addTearDown(c.dispose);
@@ -4803,6 +4941,70 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('Contact sync has stopped'), findsNothing);
       expect(sync.noticesSeen, [at], reason: 'the screen shows it already');
+    });
+
+    testWidgets('a stop while Duplicates to merge is open over the Contact '
+        'sync screen is said there, which shows no stop', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      sync = FakeContactSync(
+        status: synced(duplicates: duplicates, copies: copies),
+      );
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      // Ron waits on Duplicates to merge for the merge he asked for.
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+
+      final first = DateTime(today.year, today.month, today.day, 9);
+      ContactSyncStatus stopped(DateTime at) {
+        final halt = ContactSyncHalt(
+          kind: ContactSyncHaltKind.failed,
+          at: at,
+          error: const ContactSyncFailed('Hadco could not be reached.'),
+        );
+        return synced(
+          halt: halt,
+          notice: ContactSyncNotice(at: at, halt: halt),
+          duplicates: duplicates,
+          copies: copies,
+        );
+      }
+
+      sync.set(stopped(first));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+      expect(sync.noticesSeen, [first]);
+
+      // Back on the Contact sync screen, which shows the stop: the next one
+      // is not said there.
+      final inner = tester.element(find.text('Duplicates to merge'));
+      ScaffoldMessenger.of(inner).removeCurrentSnackBar();
+      Navigator.of(inner).pop();
+      await tester.pumpAndSettle();
+      final second = first.add(const Duration(hours: 1));
+      sync.set(stopped(second));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsNothing);
+      expect(sync.noticesSeen, [first, second]);
     });
   });
 
