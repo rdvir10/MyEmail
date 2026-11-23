@@ -834,7 +834,7 @@ void main() {
     });
 
     test('a birthday Gmail holds with no date it can read is never written '
-        'over, nor cleared', () {
+        'over, nor cleared, nor sent', () {
       for (final unread in [
         contact({'text': 'Spring 1960'}),
         contact({
@@ -843,6 +843,9 @@ void main() {
       ]) {
         final person = {
           'birthdays': [unread],
+          'nicknames': [
+            contact({'value': 'Annie'}),
+          ],
         };
         expect(syncedFromPerson(person).birthday, isNull);
         for (final target in [
@@ -852,11 +855,21 @@ void main() {
               month: 3,
               day: 5,
             ),
+            ContactField.nickname: 'Ann',
           }),
           SyncedContact.empty,
         ]) {
-          final update = rebuild(person, target, {ContactField.birthday});
-          expect(update.person['birthdays'], [unread]);
+          // Left out of the update: Google asks for a date on every change
+          // of a birthday, and this one has none to send.
+          final alone = rebuild(person, target, {ContactField.birthday});
+          expect(alone.updatePersonFields, isEmpty, reason: 'nothing to send');
+          expect(alone.person.containsKey('birthdays'), isFalse);
+          final withMore = rebuild(person, target, {
+            ContactField.birthday,
+            ContactField.nickname,
+          });
+          expect(withMore.updatePersonFields, ['nicknames']);
+          expect(withMore.person.containsKey('birthdays'), isFalse);
         }
       }
       // A date it can read is written as before, its text dropped.

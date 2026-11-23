@@ -513,6 +513,51 @@ void main() {
       expect(look.losing, '12 Elm Rd, Springfield');
     });
 
+    test('a Gmail birthday kept only as text is never sent back: a change '
+        'with nothing else to write sends nothing', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'birthdays': [
+          {'text': 'Spring 1960'},
+        ],
+      });
+      final o = h.graph.seed(outlook('Ann', 'Lee', email: 'a@example.com'));
+      await h.firstSync();
+      // Google asks for a date on every change of a birthday: this one
+      // refuses an update with a birthday that has none.
+      h.google.refuse = (p) => (p['birthdays'] as List? ?? const []).any(
+        (b) => b is Map && b['date'] == null,
+      );
+      String? text() =>
+          ((h.google.person(g)!['birthdays']! as List).single as Map)['text']
+              as String?;
+
+      h.graph.editFromOutlook(o, {'birthday': '1960-03-05T11:59:00Z'});
+      h.requests.clear();
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty, reason: 'nothing refused');
+      expect(h.requestsTo(':updateContact'), isEmpty);
+      expect(text(), 'Spring 1960');
+
+      // With a job title to write as well, only that is sent.
+      h.graph.editFromOutlook(o, {
+        'birthday': '1960-03-06T11:59:00Z',
+        'jobTitle': 'Buyer',
+      });
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      final sent = h.requestsTo(':updateContact').single;
+      expect(sent.url.queryParameters['updatePersonFields'], 'organizations');
+      expect(text(), 'Spring 1960');
+
+      // And then nothing more.
+      h.requests.clear();
+      await h.later();
+      expect(h.contactWritesOf(), isEmpty);
+    });
+
     test('an expired Outlook delta starts a new one, reconciled with the '
         'rows: nothing doubled, a change still synced', () async {
       final pairs = seedPairs(h, 3);

@@ -427,7 +427,10 @@ class ContactWrite {
   /// [person] than in [seen], the etag as it was: a plan made from a base
   /// an older build read (an address held only as text, read as none)
   /// would write over a value it never saw. Planned again from [person],
-  /// it sees it.
+  /// it sees it. And when [person] holds a detail to be written in a form
+  /// the sync cannot read ([googleUnreadFields], a birthday as text): a
+  /// plan made without the Person knew nothing of it, and planned again
+  /// from it, leaves it alone.
   GooglePersonUpdate googleUpdate(
     Map<String, Object?> person, {
     required ContactNormaliser normaliser,
@@ -442,6 +445,9 @@ class ContactWrite {
           throw ContactReadStale(side);
         }
       }
+    }
+    if (googleUnreadFields(person).any(fields.contains)) {
+      throw ContactReadStale(side);
     }
     return googlePersonUpdate(
       person,
@@ -726,6 +732,9 @@ class ContactLinkPlan {
     var again = s._read(
       googleUpdatedAt: google?.updatedAt,
       graphUpdatedAt: graph?.updatedAt,
+      // What Gmail holds that the sync cannot read, from the Person in
+      // hand: a plan made without it learns of it here.
+      googleKeeps: gRead == null ? null : googleUnreadFields(gRead.person),
     );
     if (googleWritten != null || graphWritten != null) {
       final bases = basesAfter(
@@ -792,6 +801,7 @@ class ContactPairSettings {
     this.copyBack = false,
     this.useSide = const {},
     this.useValues,
+    this.googleKeeps = const {},
   });
 
   /// The pair's, from its phone region.
@@ -817,6 +827,10 @@ class ContactPairSettings {
   /// Ron's Use this one.
   final SyncedContact? useValues;
 
+  /// Details Gmail holds that the sync cannot read ([googleUnreadFields]),
+  /// left as they are: known only from a Person read this run.
+  final Set<ContactField> googleKeeps;
+
   /// The same, compared with [google] and [graph] as bases.
   ContactPairSettings _based({
     required SyncedContact google,
@@ -832,12 +846,15 @@ class ContactPairSettings {
     copyBack: copyBack,
     useSide: useSide,
     useValues: useValues,
+    googleKeeps: googleKeeps,
   );
 
-  /// The same, with the edit times of the sides read again.
+  /// The same, with the edit times of the sides read again, and what the
+  /// Gmail side read again holds that the sync cannot read.
   ContactPairSettings _read({
     DateTime? googleUpdatedAt,
     DateTime? graphUpdatedAt,
+    Set<ContactField>? googleKeeps,
   }) => ContactPairSettings(
     normaliser: normaliser,
     googleBase: googleBase,
@@ -849,6 +866,7 @@ class ContactPairSettings {
     copyBack: copyBack,
     useSide: useSide,
     useValues: useValues,
+    googleKeeps: googleKeeps ?? this.googleKeeps,
   );
 }
 
@@ -1703,6 +1721,12 @@ class ContactPairPlan {
 /// replaced on one side is written back from the other. [useSide] writes
 /// each named detail from that side to the other, and [useValues] writes
 /// its details to both: Ron's answers.
+///
+/// [googleKeeps] are details Gmail holds in a form the sync cannot read
+/// ([googleUnreadFields], a birthday as text alone), read as none: left
+/// as they are on both sides, whatever else is asked, never written over
+/// in Gmail (a change in Hadco does not reach it) and never taken for a
+/// removal there.
 ContactPairPlan planPairedContact({
   required SyncedContact googleNow,
   SyncedContact? googleBase,
@@ -1716,6 +1740,7 @@ ContactPairPlan planPairedContact({
   bool copyBack = false,
   Map<ContactField, ContactSide> useSide = const {},
   SyncedContact? useValues,
+  Set<ContactField> googleKeeps = const {},
 }) {
   final norm = normaliser;
   final none = SyncedContact.empty;
@@ -1760,6 +1785,10 @@ ContactPairPlan planPairedContact({
     final gN = _copied(googleNow, f);
     final hN = _copied(graphNow, f);
 
+    if (googleKeeps.contains(f)) {
+      adopt(f);
+      continue;
+    }
     if (useValues != null && useValues.values.containsKey(f)) {
       final v = useValues[f];
       if (!norm.equivalent(f, v, gN) && canTravel(f, v)) writeGoogle(f, v);
@@ -2002,6 +2031,7 @@ _comparePair({
     copyBack: s.copyBack,
     useSide: s.useSide,
     useValues: s.useValues,
+    googleKeeps: s.googleKeeps,
   );
   final title = googleNow.title.isNotEmpty ? googleNow.title : graphNow.title;
   return (
@@ -2478,6 +2508,12 @@ class _Planner {
 
   SyncedContact _graphNow(_Row row) =>
       graphListed[row.graphId]?.details ?? row.input.graphDetails;
+
+  /// What the Gmail contact [name] holds that the sync cannot read, when
+  /// it was read this run; else nothing known (the write's own check,
+  /// [ContactWrite.googleUpdate], has the pair planned again from it).
+  Set<ContactField> _googleKeeps(String name) =>
+      googleUnreadFields(googleListed[name]?.person ?? const {});
 
   SyncedContact _detailsOf(ContactSide side, String id) {
     if (side == ContactSide.google) {
@@ -3552,6 +3588,7 @@ class _Planner {
         copyBack: copyBack,
         useSide: useSide,
         useValues: useValues,
+        googleKeeps: _googleKeeps(g),
       ),
       linkId: row.id,
       googleName: g,
@@ -3581,6 +3618,7 @@ class _Planner {
         googleUpdatedAt: gc?.updatedAt,
         graphUpdatedAt: hc?.updatedAt,
         newPair: true,
+        googleKeeps: _googleKeeps(g),
       ),
       linkId: linkId,
       alsoRemove: alsoRemove,
@@ -4944,6 +4982,7 @@ class _Planner {
               googleUpdatedAt: gc.updatedAt,
               graphUpdatedAt: hc.updatedAt,
               firstSync: input.firstSync,
+              googleKeeps: _googleKeeps(g),
             ),
             linkId: row.id,
             googleName: g,

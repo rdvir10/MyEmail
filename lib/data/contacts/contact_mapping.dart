@@ -591,8 +591,14 @@ String googlePersonField(ContactField field) => switch (field) {
 ///
 /// A rewritten name leaves out `unstructuredName` so Google rebuilds it; a
 /// rewritten address leaves out `formattedValue` for the same reason, and
-/// keeps its `poBox`. A rewritten note is plain text. A birthday Gmail
-/// holds with no date the sync can read is left as it is.
+/// keeps its `poBox`. A rewritten note is plain text.
+///
+/// A detail [person] holds that the sync cannot read
+/// ([googleUnreadFields]) is left out of the update: never written over
+/// nor cleared, nor sent back as it is (Google asks for a date on every
+/// change of a birthday). With nothing else to write, [updatePersonFields]
+/// is empty and there is nothing to send; the runner never gets that far
+/// with one (`ContactWrite.googleUpdate` has it planned again first).
 ///
 /// [seen] is Gmail's side as the plan read it. A list value in [person]
 /// that the plan never saw (neither there nor in [target]) was added
@@ -608,7 +614,7 @@ GooglePersonUpdate googlePersonUpdate(
   SyncedContact? seen,
 }) {
   final norm = normaliser;
-  final wanted = fields.toSet();
+  final wanted = fields.toSet().difference(googleUnreadFields(person));
   final personFields = wanted.map(googlePersonField).toSet();
   // Google checks the contact source's etag, so the body carries that
   // source as read; fields not named are not sent, since they are not
@@ -846,12 +852,6 @@ List<Map<String, Object?>> _rebuildGoogle(
       }
       return result;
     case ContactField.birthday:
-      // One Gmail holds with no date the sync can read (text alone, or a
-      // year with no day) reads as none, so the sync never saw what it
-      // would lose: it stays as it is, never written over nor cleared.
-      if (entries.isNotEmpty && _unreadBirthday(entries.first)) {
-        return entries;
-      }
       final birthday = value as ContactBirthday?;
       return _single(
         entries,
@@ -1458,6 +1458,16 @@ ContactBirthday? _birthdayFromGoogle(Map<String, Object?> entry) {
     day: day,
   );
 }
+
+/// The details [person] holds in a form the sync cannot read, so reads as
+/// none: a birthday with no date to read (text alone, or a year with no
+/// day). The sync never saw what they hold, so never writes over them
+/// (see [googlePersonUpdate]), and the planner leaves them as they are.
+Set<ContactField> googleUnreadFields(Map<String, Object?> person) => {
+  if (_contactEntries(person, 'birthdays').firstOrNull case final b?
+      when _unreadBirthday(b))
+    ContactField.birthday,
+};
 
 /// A birthday entry holding something, text or part of a date, but no
 /// month and day to read ([_birthdayFromGoogle]): read as none.

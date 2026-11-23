@@ -873,6 +873,66 @@ void main() {
       expect(plan.reviews, isEmpty);
     });
 
+    test('a Gmail birthday kept only as text is left as it is', () {
+      // Its Person holds the birthday as text alone, read as none.
+      final textOnly = {
+        'resourceName': 'people/c1',
+        'metadata': {
+          'sources': [
+            {'type': 'CONTACT', 'id': 'c1', 'etag': 'etag-people/c1'},
+          ],
+        },
+        'birthdays': [
+          {'text': 'Spring 1960'},
+        ],
+      };
+      GoogleContact withText(SyncedContact details) => GoogleContact(
+        resourceName: 'people/c1',
+        details: details,
+        etag: 'etag-people/c1',
+        person: textOnly,
+      );
+      const born = ContactBirthday(year: 1960, month: 3, day: 5);
+      final dated = base.withValue(ContactField.birthday, born);
+      // Hadco gains a birthday: none is written into Gmail, and Hadco's is
+      // taken in, so it is not planned again.
+      final changed = byLink(
+        run(
+          google: [withText(base)],
+          graph: [h('H1', dated, key: 'key-2')],
+          links: [link(1, 'people/c1', 'H1', base: base)],
+        ),
+        1,
+      )!;
+      expect(changed.googleWrite, isNull);
+      expect(changed.graphBase!.birthday, born);
+      expect(changed.googleBase!.birthday, isNull);
+      // Nor is one filled in for a new pair.
+      final made = run(
+        google: [withText(base)],
+        graph: [h('H1', dated)],
+      );
+      expect(byGoogle(made, 'people/c1')!.graphId, 'H1');
+      expect(byGoogle(made, 'people/c1')!.googleWrite, isNull);
+      // Planned from a base, Gmail not read this run: the Person refuses
+      // the write, and planned again from it, nothing goes to Gmail.
+      final fromBase = byLink(
+        run(
+          graph: [h('H1', dated, key: 'key-2')],
+          links: [link(1, 'people/c1', 'H1', base: base)],
+        ),
+        1,
+      )!;
+      expect(fromBase.googleWrite!.fields, {ContactField.birthday});
+      expect(
+        () => fromBase.googleWrite!.googleUpdate(textOnly, normaliser: norm),
+        throwsA(isA<ContactReadStale>()),
+      );
+      final again = fromBase.replan(google: withText(base)).plan;
+      expect(again.googleWrite, isNull);
+      expect(again.graphBase!.birthday, born);
+    });
+
     test('lists merge: an addition on each side keeps both', () {
       final plan = run(
         google: [
