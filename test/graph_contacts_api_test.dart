@@ -234,11 +234,10 @@ void main() {
       );
       expect(listed, hasLength(2));
       final expand = graph.requests.first.url.queryParameters[r'$expand']!;
+      final each = [for (final d in outlookOnlyDetails) "id eq '${d.id}'"];
       expect(
         expand,
-        'singleValueExtendedProperties(\$filter='
-        "${[for (final d in outlookOnlyDetails) "id eq '${d.id}'"].join(' or ')}"
-        ')',
+        "singleValueExtendedProperties(\$filter=${each.join(' or ')})",
       );
       expect(expand, contains("id eq 'String 0x3A24'"));
       expect(expand, contains("id eq 'SystemTime 0x3A41'"));

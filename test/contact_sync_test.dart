@@ -2064,6 +2064,48 @@ void main() {
       expect((await h.status()).firstStarted, isFalse);
     });
 
+    test("Hadco's file holds the details only Outlook keeps; refused them, "
+        'no file is made without them', () async {
+      h.graph.seed({
+        ...outlook('Cy', 'Day', email: 'cy@example.com'),
+        'singleValueExtendedProperties': [
+          {'id': 'String 0x3A24', 'value': '+1 212 555 0199'},
+          {'id': 'SystemTime 0x3A41', 'value': '2001-05-05T11:59:00Z'},
+        ],
+      });
+      await h.choose();
+      final csv = (await h.sync.backup(only: ContactSide.graph)).single;
+      expect(csv.contents, contains('"+1 212 555 0199"'));
+      expect(csv.contents, contains('"2001-05-05"'));
+
+      h.answer = (r) => r.url.queryParameters.containsKey(r'$expand')
+          ? http.Response(
+              '{"error":{"code":"ErrorInvalidRequest","message":"x"}}',
+              400,
+              headers: {'content-type': 'application/json'},
+            )
+          : null;
+      for (final only in [ContactSide.graph, null]) {
+        h.requests.clear();
+        await expectLater(
+          h.sync.backup(only: only),
+          throwsA(isA<ContactSyncRefused>()),
+        );
+        // Hadco listed whole once, with them, and not again without.
+        expect(
+          [
+            for (final r in h.requests)
+              if (r.url.host == 'graph.microsoft.com' &&
+                  r.url.path.endsWith('/contacts') &&
+                  !r.url.queryParameters.containsKey(r'$select'))
+                r.url.queryParameters.containsKey(r'$expand'),
+          ],
+          [true],
+        );
+      }
+      h.answer = null;
+    });
+
     test('needs the accounts chosen first', () async {
       expect(h.sync.backup, throwsA(isA<ContactSyncRefused>()));
       expect(h.sync.preview, throwsA(isA<ContactSyncRefused>()));

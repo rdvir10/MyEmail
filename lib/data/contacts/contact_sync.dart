@@ -904,8 +904,12 @@ class ContactSync implements ContactSyncService {
       if (only == null || only == ContactSide.graph) {
         final folder =
             pair.graphFolderId ?? await run.graph((a) => a.mainFolderId());
+        // With the details only Outlook keeps (a fax, the anniversary): the
+        // file is the way back for a copy the merge deletes. Refused them,
+        // no file is saved, rather than one without them.
         contacts = await run.graph(
-          (a) => a.listAll(folderId: folder, whole: true),
+          (a) =>
+              a.listAll(folderId: folder, whole: true, withOutlookOnly: true),
         );
       }
       final at = _now();
