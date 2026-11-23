@@ -1743,6 +1743,13 @@ void main() {
       expect(look.reason, ContactReviewReason.notInStep);
       expect(look.losingSide, ContactSide.graph);
       expect(look.losing, 'Prefers email after 5');
+      // Each side as the sync left it.
+      expect(look.googleValues, {
+        ContactField.notes: 'Met at the fair\nCall in May',
+      });
+      expect(look.graphValues, {
+        ContactField.notes: 'Met at the fair\nCall in May',
+      });
 
       await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
       await h.sync.syncNow();
@@ -1860,6 +1867,31 @@ void main() {
       expect(look.kind, ContactReviewKind.clash);
       expect(look.reason, ContactReviewReason.notInStep);
       expect(look.losing, 'Prefers email after 5');
+    });
+
+    test('a clash item shows each side as the sync left it, beside the '
+        'value that lost', () async {
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      h.google.editFromGmail(pairs[0].google, {
+        'organizations': [
+          {'name': 'Acme'},
+        ],
+      });
+      h.pass(const Duration(minutes: 5));
+      h.graph.editFromOutlook(pairs[0].graph, {'companyName': 'Acme Ltd'});
+      final status = await h.later();
+      expect(status.halt, isNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.clash);
+      expect(look.reason, isNull, reason: 'changed on both sides');
+      expect(look.fields, [ContactField.company]);
+      // Outlook's is the newer edit: on both sides now, Gmail's the one
+      // that lost.
+      expect(look.googleValues, {ContactField.company: 'Acme Ltd'});
+      expect(look.graphValues, {ContactField.company: 'Acme Ltd'});
+      expect(look.losing, 'Acme');
+      expect(look.losingSide, ContactSide.google);
     });
   });
 

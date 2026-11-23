@@ -2117,6 +2117,14 @@ _comparePair({
           googleName: googleName,
           graphId: graphId,
           fields: [clash.field],
+          // Each side as the plan leaves it, shown under the item beside
+          // the value that lost.
+          googleValues: SyncedContact({
+            clash.field: pair.googleTarget[clash.field],
+          }),
+          graphValues: SyncedContact({
+            clash.field: pair.graphTarget[clash.field],
+          }),
           losing: SyncedContact({clash.field: clash.losing}),
           losingSide: clash.losingSide,
           title: title,
