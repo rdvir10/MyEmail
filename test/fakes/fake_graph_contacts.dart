@@ -83,6 +83,13 @@ class FakeGraphContacts {
   /// The folder will not take the device claim.
   bool claimRefused = false;
 
+  /// A DELETE moves the contact to Deleted Items, as Outlook's own delete
+  /// does ([deleteFromOutlook]), where a GET by its id still finds it; one
+  /// already there goes for good. Where Graph's DELETE puts a contact is
+  /// not documented: without this, it is gone at once, and a GET answers
+  /// 404.
+  bool deletesToDeletedItems = false;
+
   final Map<String, _Contact> _contacts = {};
   final Set<String> _folders = {mainFolderId};
   final Map<String, Map<String, String>> _folderProperties = {};
@@ -556,6 +563,11 @@ class FakeGraphContacts {
   }
 
   http.Response _delete(String id) {
+    if (_contacts[id] case final there?
+        when deletesToDeletedItems && there.folder != deletedItemsId) {
+      moveFromOutlook(id, deletedItemsId);
+      return http.Response('', 204);
+    }
     final c = _contacts.remove(id);
     if (c == null) return _notFound();
     _record(id, c.folder, null, null);

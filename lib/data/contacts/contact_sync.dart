@@ -2814,6 +2814,14 @@ class _Run {
   /// longer in Contacts, it is kept instead; otherwise the full copy goes
   /// into the bin, pending, before the delete is sent, and is marked done
   /// when the server answers.
+  ///
+  /// An Outlook contact out of Contacts that the bin holds as the sync's
+  /// own delete (pending: a delete whose answer was lost; or done) is not
+  /// one Ron moved: it is where Microsoft keeps what it deleted (Deleted
+  /// Items, as for Outlook's own deletes, where a read by its id still
+  /// finds it), and is gone, as a 404 would say. Kept instead, its item
+  /// would come back at every Delete it here too, and a Restore would pair
+  /// Gmail with it.
   Future<void> _delete(ContactLinkPlan p) async {
     final d = p.delete!;
     final onGoogle = d.side == ContactSide.google;
@@ -2821,7 +2829,13 @@ class _Run {
         ? await google((a) => a.get(d.contactId, everyField: true))
         : await graph((a) => a.get(d.contactId, whole: true));
     final already = await store.binEntry(pairId, d.side, d.contactId);
-    if (full == null) {
+    final deletedBefore =
+        full != null &&
+        !onGoogle &&
+        !_inContacts(full) &&
+        already != null &&
+        already.state != ContactBinState.back;
+    if (full == null || deletedBefore) {
       // Gone already: the delete before a crash, or by someone else.
       await store.transaction(() async {
         if (already != null && already.state == ContactBinState.pending) {
@@ -3018,7 +3032,10 @@ class _Run {
       googleNow = await google((a) => a.get(g!));
     }
     if (graphNow == null && h != null) {
-      graphNow = await graph((a) => a.get(h!));
+      // Only one in Contacts is paired: one read in Deleted Items, or in
+      // another folder, is not back, and a pair with it would never sync.
+      final read = await graph((a) => a.get(h!));
+      graphNow = read != null && _inContacts(read) ? read : null;
     }
     final googleName = g;
     final graphId = h;
