@@ -161,15 +161,40 @@ class Harness {
 
   List<http.Request> writesTo(String host) => [
     for (final r in requests)
-      if (r.url.host == host && r.method != 'GET') r,
+      if (r.url.host == host && !readsOnly(r)) r,
   ];
 
   /// Requests that change contacts, either side (the claim's PATCH on the
   /// folder left out).
   List<http.Request> get contactWrites => [
     for (final r in requests)
-      if (r.method != 'GET' && !r.url.path.contains('contactFolders')) r,
+      if (!readsOnly(r) && !r.url.path.contains('contactFolders')) r,
   ];
+
+  /// The parts of a Graph `$batch`, or none.
+  static List<Map<Object?, Object?>> partsOf(http.Request r) {
+    if (!r.url.path.endsWith(r'$batch')) return const [];
+    return [
+      for (final p in (jsonDecode(r.body) as Map)['requests'] as List)
+        if (p is Map) p,
+    ];
+  }
+
+  /// Whether [r] only reads: a GET, or a Graph `$batch` of GETs (Hadco's
+  /// contacts read by id twenty at a time, or their photos checked).
+  static bool readsOnly(http.Request r) =>
+      r.method == 'GET' ||
+      (partsOf(r).isNotEmpty && partsOf(r).every((p) => p['method'] == 'GET'));
+
+  /// Whether [r] reads the Outlook contact [id] by its id: alone, or as a
+  /// part of a `$batch`.
+  static bool readsContact(http.Request r, String id) =>
+      (r.method == 'GET' && r.url.path.endsWith('/me/contacts/$id')) ||
+      partsOf(r).any(
+        (p) =>
+            p['method'] == 'GET' &&
+            Uri.parse('${p['url']}').path == '/me/contacts/$id',
+      );
 }
 
 Map<String, Object?> person(
@@ -440,6 +465,67 @@ void main() {
         greaterThanOrEqualTo(2),
       );
     });
+
+    test('the Hadco contacts a run reads by id go twenty to a batch: tags, '
+        'candidates, a contact a listing says was removed', () async {
+      // Twenty-five people in both books under other addresses: each Gmail
+      // one waits under Needs a look, its Hadco namesake held as its
+      // candidate, read again at every run.
+      for (var i = 0; i < 25; i++) {
+        h.google.seed(person('Jo$i', 'Smith', email: 'g$i@example.com'));
+        h.graph.seed(outlook('Jo$i', 'Smith', email: 'h$i@example.com'));
+      }
+      final pairs = seedPairs(h, 2);
+      bool alone(http.Request r) =>
+          r.method == 'GET' &&
+          r.url.host == 'graph.microsoft.com' &&
+          RegExp(r'/me/contacts/[^/]+$').hasMatch(r.url.path);
+      bool batch(http.Request r) =>
+          r.url.host == 'graph.microsoft.com' &&
+          r.url.path.endsWith(r'$batch');
+      await h.firstSync();
+      var status = await h.status();
+      expect(status.halt, isNull);
+      final looks = status.needsALook.length;
+      expect(looks, greaterThanOrEqualTo(25));
+      // Each of the 27 contacts read with its tag: two batches.
+      expect(h.requests.where(alone), isEmpty);
+      expect(h.requests.where(batch), hasLength(2));
+
+      // A contact deleted in Outlook is confirmed in a batch of its own,
+      // the candidates in two. A part throttled past the wait and a part
+      // that failed are each read alone, as every read was.
+      h.graph
+        ..deleteFromOutlook(pairs[1].graph)
+        ..throttleInBatch(1, retryAfter: 60)
+        ..throttleInBatch(1, status: 500);
+      h.requests.clear();
+      status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.requests.where(batch), hasLength(3));
+      expect(h.requests.where(alone), hasLength(2));
+      expect(status.needsALook, hasLength(looks));
+      expect(h.google.person(pairs[1].google), isNull);
+      expect(h.google.person(pairs[0].google), isNotNull);
+
+      // A batch refused as a whole: each contact in it is read alone.
+      var refused = false;
+      h.answer = (r) {
+        if (refused || !batch(r)) return null;
+        refused = true;
+        return http.Response(
+          '{"error":{"code":"BadRequest","message":"x"}}',
+          400,
+          headers: {'content-type': 'application/json'},
+        );
+      };
+      h.requests.clear();
+      status = await h.later();
+      h.answer = null;
+      expect(status.halt, isNull);
+      expect(h.requests.where(alone), hasLength(20));
+      expect(status.needsALook, hasLength(looks));
+    });
   });
 
   group('interrupted writes', () {
@@ -601,6 +687,30 @@ void main() {
       expect(h.graph.count, 1);
     });
 
+    test('...and so is one Microsoft keeps in Deleted Items, where a read '
+        'by its id still finds it: not taken for moved by Ron', () async {
+      h.graph.deletesToDeletedItems = true;
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      h.google.deleteFromGmail(pairs[0].google);
+      h.after = (r) {
+        if (r.method == 'DELETE') throw http.ClientException('lost');
+      };
+      await h.later();
+      h.after = null;
+      expect(
+        h.graph.contact(pairs[0].graph)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+      final status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect(status.needsALook, isEmpty);
+      expect(await h.links(), hasLength(1));
+      expect(h.graph.count, 1);
+    });
+
     test('a contact the sync just deleted, still in a lagging Google '
         'listing, is not copied back', () async {
       h = Harness(lagWrites: true);
@@ -670,6 +780,103 @@ void main() {
       expect(h.google.count, 1);
       expect(h.graph.count, 2);
       expect(status.needsALook, hasLength(1));
+    });
+
+    /// Ann's company differs between the two (Acme in Gmail, Acme Corp in
+    /// Hadco), listed under Needs a look by the first sync, beside a pair
+    /// whose Gmail contact Ron deletes: the next run's delete of its
+    /// partner fails, after that run's other writes.
+    Future<({String ann, String annH, ContactSyncLook look})>
+    differingThenFailedDelete() async {
+      final ann = h.google.seed(
+        person('Ann', 'Lee', email: 'ann@example.com', company: 'Acme'),
+      );
+      final annH = h.graph.seed(
+        outlook('Ann', 'Lee', email: 'ann@example.com', company: 'Acme Corp'),
+      );
+      final pairs = seedPairs(h, 1);
+      await h.firstSync();
+      final look = (await h.status()).needsALook.single;
+      expect(look.kind, ContactReviewKind.differing);
+      h.google.deleteFromGmail(pairs[0].google);
+      h.before = (r) async {
+        if (r.method == 'DELETE') throw http.ClientException('lost');
+      };
+      h.pass(const Duration(hours: 2));
+      return (ann: ann, annH: annH, look: look);
+    }
+
+    /// After a run stopped by [differingThenFailedDelete]'s delete, Ron
+    /// puts his own company in Gmail: the next run copies it to Hadco.
+    Future<void> hisEditStands(String ann, String annH) async {
+      var status = await h.status();
+      expect(status.halt!.kind, ContactSyncHaltKind.failed);
+      expect(companyOf(h.google.person(ann)), 'Acme Corp');
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Inc'},
+        ],
+      });
+      h.before = null;
+      status = await h.later(after: const Duration(minutes: 6));
+      expect(status.halt, isNull);
+      expect(companyOf(h.google.person(ann)), 'Acme Inc');
+      expect(companyOf(h.graph.contact(annH)), 'Acme Inc');
+      expect(status.needsALook, isEmpty);
+    }
+
+    test('an answer written by a run that then stops is carried out once: '
+        'an edit Ron makes before the next run stands', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      // Off the pair as soon as its write came back.
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('an answer 3.22.1 kept for a stopped run, stored as it stored it, '
+        'is carried out once too', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      // As 3.22.1 left a run that planned Use Hadco's and stopped before
+      // its write: the item gone, the answer on the pair.
+      final pairId = (await h.pair()).pairId;
+      await h.store.dropReviews([look.id]);
+      await h.store.updatePair(
+        pairId,
+        (p) => p.copyWith(
+          held: jsonEncode({
+            ...?jsonDecode(p.held ?? '{}') as Map<String, Object?>?,
+            'pending': [
+              {
+                'kind': 'useGraph',
+                'googleName': ann,
+                'graphId': annH,
+                'fields': [for (final f in look.fields) f.name],
+              },
+            ],
+          }),
+        ),
+      );
+      await h.sync.syncNow();
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
+    });
+
+    test('an answer that needs no write is done with at once, not kept for '
+        'a later run', () async {
+      final (:ann, :annH, :look) = await differingThenFailedDelete();
+      // Ron makes Gmail's company Hadco's himself before he answers Use
+      // Hadco's: nothing is left to write.
+      h.google.editFromGmail(ann, {
+        'organizations': [
+          {'name': 'Acme Corp'},
+        ],
+      });
+      await h.sync.answerLook(look.id, ContactSyncChoice.useGraph);
+      await h.sync.syncNow();
+      expect((await h.pair()).held ?? '', isNot(contains('useGraph')));
+      await hisEditStands(ann, annH);
     });
   });
 
@@ -1229,9 +1436,7 @@ void main() {
       var reads = 0;
       var edited = false;
       h.before = (r) async {
-        if (r.method == 'GET' &&
-            r.url.path.endsWith('/me/contacts/$annH') &&
-            ++reads == 2) {
+        if (Harness.readsContact(r, annH) && ++reads == 2) {
           edited = true;
           h.graph.editFromOutlook(annH, {'jobTitle': 'Boss'});
         }
@@ -1631,10 +1836,7 @@ void main() {
       expect(status.halt, isNull);
       expect(status.last!.passedOver, 1);
       expect(
-        h.requests.where(
-          (r) => r.method == 'GET' &&
-              r.url.path.endsWith('/me/contacts/${pairs[0].graph}'),
-        ),
+        h.requests.where((r) => Harness.readsContact(r, pairs[0].graph)),
         isNotEmpty,
       );
       // Nothing it left out was cleared in Gmail.
@@ -1811,6 +2013,109 @@ void main() {
       expect(h.graph.contact(pairs[0].graph), isNotNull);
       expect(status.recentlyDeleted, isEmpty);
       expect(status.needsALook.single.kind, ContactReviewKind.kept);
+    });
+
+    /// What 3.22.1 could leave when Microsoft's answer to the sync's delete
+    /// of a Hadco contact was lost and the contact lay in Deleted Items:
+    /// the next run kept it as moved out (a kept row, and its item under
+    /// Needs a look), and the one after marked its bin row done, the
+    /// contact not being in Contacts. P0's Gmail contact is the one Ron
+    /// deleted.
+    Future<({String gmail, String hadco, int binId})> keptBy3221() async {
+      final pairs = seedPairs(h, 2);
+      await h.firstSync();
+      final g = pairs[0].google;
+      final o = pairs[0].graph;
+      final pairId = (await h.pair()).pairId;
+      final row = (await h.links()).firstWhere((l) => l.graphId == o);
+      final raw = jsonEncode(h.graph.contact(o));
+      h.google.deleteFromGmail(g);
+      h.graph.deleteFromOutlook(o);
+      final entry = await h.store.addToBin(
+        ContactBinEntry(
+          pairId: pairId,
+          side: ContactSide.graph,
+          contactId: o,
+          partnerId: g,
+          raw: raw,
+          partnerBase: row.googleBase,
+          title: 'P0 Fam0',
+        ),
+      );
+      await h.store.markBinDone(entry.binId!);
+      await h.store.saveLink(
+        row.copyWith(
+          googleName: null,
+          googleEtag: null,
+          googleBase: null,
+          state: ContactLinkState.held,
+          reason: ContactHeldReason.kept,
+          partnerId: g,
+          partnerBase: row.googleBase,
+        ),
+      );
+      await h.store.saveReview(
+        ContactReview(
+          pairId: pairId,
+          kind: ContactReviewKind.kept.name,
+          graphId: o,
+          data: jsonEncode({
+            'kind': ContactReviewKind.kept.name,
+            'reason': ContactReviewReason.changedSince.name,
+            'graphId': o,
+            'samePerson': true,
+            'goneSide': ContactSide.google.name,
+            'title': 'P0 Fam0',
+          }),
+        ),
+      );
+      return (gmail: g, hadco: o, binId: entry.binId!);
+    }
+
+    test("3.22.1's kept contact lying in Deleted Items: Delete it in Hadco "
+        'too takes the item and the row away, and deletes nothing more',
+        () async {
+      final (:gmail, :hadco, binId: _) = await keptBy3221();
+      var status = await h.later();
+      expect(status.halt, isNull);
+      final look = status.needsALook.single;
+      expect(look.kind, ContactReviewKind.kept);
+      await h.sync.answerLook(look.id, ContactSyncChoice.deleteHereToo);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      expect(status.needsALook, isEmpty);
+      expect(
+        (await h.links()).where(
+          (l) => l.graphId == hadco || l.partnerId == gmail,
+        ),
+        isEmpty,
+      );
+      expect(status.recentlyDeleted.single.state,
+          ContactSyncDeletedState.deleted);
+      expect(h.graph.count, 1);
+      expect(h.google.count, 1);
+      expect(
+        h.graph.contact(hadco)!['parentFolderId'],
+        FakeGraphContacts.deletedItemsId,
+      );
+    });
+
+    test("Restore never pairs Gmail with a contact that is not in Contacts: "
+        "3.22.1's kept contact lying in Deleted Items", () async {
+      final (gmail: _, :hadco, :binId) = await keptBy3221();
+      await h.later();
+      await h.sync.restore(binId);
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.halt, isNull);
+      // Gmail's contact is made again; nothing pairs it with the contact
+      // in Deleted Items.
+      expect(h.google.nameWithEmail('p0@example.com'), isNotNull);
+      expect(
+        (await h.paired()).where((l) => l.graphId == hadco),
+        isEmpty,
+      );
     });
 
     test('an Outlook contact moved to another folder is held, not deleted, '
@@ -5969,6 +6274,44 @@ void main() {
       expect(status.copies.last!.deleted, 30);
       expect(h.graph.count, 30);
       expect(status.copies.people, 0);
+    });
+
+    test("a merge stopped part way leaves the sync's own end recorded: its "
+        'positions, its time and its counts, beside the stop', () async {
+      for (var i = 0; i < 30; i++) {
+        copiesOf('P$i', 'Fam$i');
+      }
+      await h.firstSync();
+      final first = await h.pair();
+      // A contact Ron adds in Gmail: the run that merges copies it first.
+      h.google.addFromGmail(person('Dee', 'New', email: 'dee@example.com'));
+      var stopped = false;
+      h.before = (r) async {
+        if (!stopped &&
+            r.url.path.endsWith(r'$batch') &&
+            r.body.contains('"method":"DELETE"')) {
+          stopped = true;
+          unawaited(h.sync.stop());
+        }
+      };
+      h.pass(const Duration(hours: 2));
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      h.before = null;
+      final status = await h.status();
+      final pair = await h.pair();
+      expect(status.halt!.kind, ContactSyncHaltKind.putAway);
+      expect(status.copies.asked, isTrue);
+      // Read past: the next run reads only what changes after.
+      expect(pair.lastDoneAt, h.now);
+      expect(pair.googleSyncToken, isNot(first.googleSyncToken));
+      expect(pair.graphDeltaLink, isNot(first.graphDeltaLink));
+      expect(status.last!.complete, isTrue);
+      expect(status.last!.addedToGraph, 1);
+      expect(h.graph.idWithEmail('dee@example.com'), isNotNull);
+      // Counted once: Dee's copy, and the copies the merge deleted.
+      expect(status.graphCount, h.graph.count);
+      expect(status.googleCount, h.google.count);
     });
 
     test('a write that is refused, or does not hold, fails that person: '

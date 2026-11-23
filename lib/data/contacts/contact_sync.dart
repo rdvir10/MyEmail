@@ -1364,7 +1364,8 @@ class _Run {
     deltaLink = delta.deltaLink;
   }
 
-  /// What the listings left to be read by id.
+  /// What the listings left to be read by id. Outlook's go twenty to a
+  /// `$batch` ([_readGraphs]).
   Future<void> _readMore() async {
     // Outlook: an entry that lacks a synced property is read whole, and a
     // contact with no row is read with its hidden tag (once per change),
@@ -1382,10 +1383,18 @@ class _Run {
             sync._tags[id]?.changeKey != c['changeKey'])
           id,
     };
-    for (final id in {...wanted, ...tagged}) {
-      _checkStop();
-      await _readGraphId(id, withTag: tagged.contains(id));
-    }
+    await _readGraphs(
+      [
+        for (final id in wanted)
+          if (!tagged.contains(id)) id,
+      ],
+      (id, c) => _placeWhole(id, c, withTag: false),
+    );
+    await _readGraphs(
+      [...tagged],
+      (id, c) => _placeWhole(id, c, withTag: true),
+      withTag: true,
+    );
 
     // Gmail: a listing lags behind writes by minutes, so a contact the
     // sync wrote in the last hour, listed with another version than the
@@ -1453,10 +1462,7 @@ class _Run {
       now: now,
     );
     await _confirmGoogle(confirm.google);
-    for (final id in confirm.graph) {
-      _checkStop();
-      await _confirmGraph(id);
-    }
+    await _readGraphs({...confirm.graph}.toList(), _confirmed);
 
     final toRead = contactsToRead(
       links: inputs,
@@ -1481,11 +1487,13 @@ class _Run {
     await _confirmGoogle(
       toRead.google.where((n) => !heldGoogle.contains(n) && unreadGoogle(n)),
     );
-    for (final id in toRead.graph) {
-      if (heldGraph.contains(id) || !unreadGraph(id)) continue;
-      _checkStop();
-      await _confirmGraph(id);
-    }
+    await _readGraphs(
+      {
+        for (final id in toRead.graph)
+          if (!heldGraph.contains(id) && unreadGraph(id)) id,
+      }.toList(),
+      _confirmed,
+    );
     await _readHeldPairs(
       [
         for (final n in toRead.google)
@@ -1571,14 +1579,55 @@ class _Run {
   /// An Outlook contact asked about by id: there, gone (not found, or in
   /// Deleted Items, where Outlook's own delete puts it), or moved to
   /// another folder.
-  Future<void> _confirmGraph(String id) async {
-    final c = await graph((a) => a.get(id));
+  Future<void> _confirmGraph(String id) async =>
+      _confirmed(id, await graph((a) => a.get(id)));
+
+  /// [c], the Outlook contact [id] asked about as read by id, or null when
+  /// not found: gone, or placed ([_placeGraph]).
+  Future<void> _confirmed(String id, Map<String, Object?>? c) async {
     if (c == null) {
       graphRead.remove(id);
       graphGone.add(id);
       return;
     }
     await _placeGraph(id, c);
+  }
+
+  /// The Outlook contacts [ids] read by id, each handed to [place] as read
+  /// (null when not found), [GraphContactsApi.batchLimit] to a `$batch`
+  /// ([GraphContactsApi.getBatch]) and with their tags where [withTag]:
+  /// candidates are read at every run, and a GET apiece made a hundred or
+  /// more requests one after another. A part left with no answer
+  /// (throttled past the wait, or failed on its own), and every part of a
+  /// batch refused as a whole, is read alone, as all were before: what
+  /// that read finds is placed, and its failure is the run's, as any
+  /// read's is.
+  Future<void> _readGraphs(
+    List<String> ids,
+    Future<void> Function(String id, Map<String, Object?>? c) place, {
+    bool withTag = false,
+  }) async {
+    const most = GraphContactsApi.batchLimit;
+    for (var start = 0; start < ids.length; start += most) {
+      final asking = ids.sublist(start, min(start + most, ids.length));
+      _checkStop();
+      GraphBatchRead? read;
+      try {
+        read = await graph((a) => a.getBatch(asking, withTag: withTag));
+      } on ContactRefused {
+        read = null;
+      }
+      for (final id in asking) {
+        if (read?.found[id] case final c?) {
+          await place(id, c);
+        } else if (read != null && read.notFound.contains(id)) {
+          await place(id, null);
+        } else {
+          _checkStop();
+          await place(id, await graph((a) => a.get(id, withTag: withTag)));
+        }
+      }
+    }
   }
 
   /// Why the answer given to [item], a held change, waits: its Outlook
@@ -1688,9 +1737,13 @@ class _Run {
   static bool _failsAlone(Exception e) =>
       e is ConnectionFailed || e is ContactRefused || e is ContactGone;
 
-  /// An Outlook contact read whole by id, with its tag where asked.
-  Future<void> _readGraphId(String id, {required bool withTag}) async {
-    final c = await graph((a) => a.get(id, withTag: withTag));
+  /// [c], an Outlook contact read whole by [id], with its tag where asked,
+  /// or null when not found.
+  Future<void> _placeWhole(
+    String id,
+    Map<String, Object?>? c, {
+    required bool withTag,
+  }) async {
     if (c == null || !_inContacts(c)) {
       // Gone or moved since the listing: left to the next listing, which
       // says so.
@@ -1990,6 +2043,12 @@ class _Run {
   /// can replace its own.
   final savedReviews = <(String, String?, String?), int>{};
 
+  /// The answers kept on the pair for their writes ([_saveFirst]), by the
+  /// plan whose writes carry each out, and for each answer ([_Held.writing])
+  /// those of its plans whose results are not saved yet.
+  final _answersOf = Map<ContactLinkPlan, Set<int>>.identity();
+  final _writesLeft = <int, Set<ContactLinkPlan>>{};
+
   /// True when the run completed.
   Future<bool> go() async {
     watch.start();
@@ -2031,8 +2090,13 @@ class _Run {
         ..heldChanges = plan.counts.heldChanges;
       await _saveFirst();
       await _write();
-      await _copies();
+      // The sync's own end is recorded before the merge of Hadco's copies,
+      // which can take minutes: a merge cut short (MyEmail put away, a
+      // sign-in) leaves the feeds' positions, the counts and the answers
+      // carried out as they are, not read and planned again next time.
       await _finish();
+      await _copies();
+      await _countCopies();
       return true;
     } catch (e) {
       await _halted(e);
@@ -2061,11 +2125,38 @@ class _Run {
     ];
     final outcomes = plan.answers;
 
-    // Answers planned: their items go, and the answers are kept on the
-    // pair until the run is done, so a run stopped before their writes
-    // plans them again.
+    // Answers planned: their items go, and each answer whose plan writes
+    // is kept on the pair, marked, until those writes come back
+    // ([_carriedOut]): a run stopped before them plans it again, and one
+    // stopped after them does not, for planned again it would write the
+    // side Ron chose over an edit he made since. Its plans are those that
+    // write a contact it names. One with nothing to write is carried out
+    // by this transaction, and not kept.
     final pending = <Map<String, Object?>>[];
     final dropReviews = <int>{};
+    final writing = [
+      for (final p in plan.links)
+        if (p.writes) p,
+    ];
+    void keep(Map<String, Object?> answer) {
+      final g = answer['googleName'];
+      final h = answer['graphId'];
+      final name = g is String ? plan.reKeys[g] ?? g : null;
+      final by = [
+        for (final p in writing)
+          if ((name != null && p.googleName == name) ||
+              (h is String && p.graphId == h))
+            p,
+      ];
+      if (by.isEmpty) return;
+      final mark = _writesLeft.length;
+      _writesLeft[mark] = Set.identity()..addAll(by);
+      for (final p in by) {
+        (_answersOf[p] ??= {}).add(mark);
+      }
+      pending.add({...answer, _Held.writing: mark});
+    }
+
     for (final (i, source) in answerSources.indexed) {
       final outcome = i < outcomes.length ? outcomes[i] : null;
       if (outcome == null) continue;
@@ -2074,13 +2165,21 @@ class _Run {
         dropReviews.add(id);
         if (outcome == ContactAnswerOutcome.applied) {
           final r = reviews.firstWhereOrNull((r) => r.reviewId == id);
-          if (_decode(r?.answer) case final answer?) pending.add(answer);
+          if (_decode(r?.answer) case final answer?) keep(answer);
         }
       }
-      if (source.pendingIndex case final at?
-          when outcome != ContactAnswerOutcome.dropped &&
-              at < held.pending.length) {
-        pending.add(held.pending[at]);
+      if (source.pendingIndex case final at? when at < held.pending.length) {
+        final answer = held.pending[at];
+        switch (outcome) {
+          case ContactAnswerOutcome.applied:
+            keep(answer);
+          case ContactAnswerOutcome.waiting:
+            // Kept for a run that reads its contacts, with no mark: a mark
+            // is the run's that made it.
+            pending.add({...answer}..remove(_Held.writing));
+          case ContactAnswerOutcome.dropped:
+            break;
+        }
       }
     }
     // Items about contacts gone this run go too, and those of rows a merge
@@ -2170,6 +2269,26 @@ class _Run {
     });
     final rekeyed = reKeys.length;
     if (rekeyed > 0) debugPrint('[myemail] contacts: $rekeyed Gmail re-keys');
+  }
+
+  /// The answers kept on the pair for [p]'s writes ([_saveFirst]) are
+  /// done once [p]'s result is saved: taken off the pair in the same
+  /// transaction, so that a run stopped later never plans them again. One
+  /// that waits on another plan's writes as well stays until those are
+  /// saved too.
+  Future<void> _carriedOut(ContactLinkPlan p) async {
+    final marks = _answersOf.remove(p);
+    if (marks == null) return;
+    final done = {
+      for (final mark in marks)
+        if ((_writesLeft[mark]?..remove(p))?.isEmpty ?? false) mark,
+    };
+    if (done.isEmpty) return;
+    await store.updatePair(pairId, (pair) {
+      final h = _Held.parse(pair.held);
+      h.pending.removeWhere((a) => done.contains(a[_Held.writing]));
+      return pair.copyWith(held: h.encode());
+    });
   }
 
   /// [item] saved, replacing one of the same kind about the same contacts.
@@ -2432,7 +2551,8 @@ class _Run {
     }
   }
 
-  /// A create landed: its row saved and its journal entry cleared in one.
+  /// A create landed: its row saved, its journal entry cleared and the
+  /// answers it carries out done with, in one.
   Future<void> _created(
     ContactLinkPlan p,
     ContactSyncOp op,
@@ -2460,7 +2580,10 @@ class _Run {
           ? now
           : (p.linkId == null ? null : linkById[p.linkId]?.googleWrittenAt),
     );
-    await store.completeCreates({op.opId: link});
+    await store.transaction(() async {
+      await store.completeCreates({op.opId: link});
+      await _carriedOut(p);
+    });
     copiedFrom.add((create.side.other, create.sourceId));
     if (onGoogle) {
       googleMade++;
@@ -2516,6 +2639,7 @@ class _Run {
           title: p.title,
         ),
       );
+      await _carriedOut(p);
     });
     tally.refused++;
     debugPrint('[myemail] contacts: a new contact was refused by '
@@ -2567,7 +2691,12 @@ class _Run {
         // was written to the other side is kept.
         break;
       } on ContactRefused {
-        await _refusedPair(p, gAnswer: gAnswer, hAnswer: hAnswer);
+        await _refusedPair(
+          p,
+          gAnswer: gAnswer,
+          hAnswer: hAnswer,
+          planned: planned,
+        );
         return;
       }
       if (attempt > 0) break;
@@ -2602,6 +2731,7 @@ class _Run {
             ? link
             : link.copyWith(googleName: googleName),
       );
+      await _carriedOut(planned);
     });
     if (googleWritten) tally.changedGoogle++;
     if (graphWritten) tally.changedGraph++;
@@ -2683,10 +2813,13 @@ class _Run {
 
   /// A server would not take a pair's change: the pair is held as refused
   /// with both ids, under Needs a look, and is tried again when it changes.
+  /// [planned] is the pair's plan as the run made it, before any plan made
+  /// again ([_update]): the answers it carries out are done with.
   Future<void> _refusedPair(
     ContactLinkPlan p, {
     Map<String, Object?>? gAnswer,
     Map<String, Object?>? hAnswer,
+    required ContactLinkPlan planned,
   }) async {
     final bases = p.basesAfter(
       googleAnswer: gAnswer == null ? null : syncedFromPerson(gAnswer),
@@ -2721,6 +2854,7 @@ class _Run {
           title: p.title,
         ),
       );
+      await _carriedOut(planned);
     });
     tally.refused++;
     debugPrint('[myemail] contacts: a change was refused by '
@@ -2733,6 +2867,14 @@ class _Run {
   /// longer in Contacts, it is kept instead; otherwise the full copy goes
   /// into the bin, pending, before the delete is sent, and is marked done
   /// when the server answers.
+  ///
+  /// An Outlook contact out of Contacts that the bin holds as the sync's
+  /// own delete (pending: a delete whose answer was lost; or done) is not
+  /// one Ron moved: it is where Microsoft keeps what it deleted (Deleted
+  /// Items, as for Outlook's own deletes, where a read by its id still
+  /// finds it), and is gone, as a 404 would say. Kept instead, its item
+  /// would come back at every Delete it here too, and a Restore would pair
+  /// Gmail with it.
   Future<void> _delete(ContactLinkPlan p) async {
     final d = p.delete!;
     final onGoogle = d.side == ContactSide.google;
@@ -2740,7 +2882,13 @@ class _Run {
         ? await google((a) => a.get(d.contactId, everyField: true))
         : await graph((a) => a.get(d.contactId, whole: true));
     final already = await store.binEntry(pairId, d.side, d.contactId);
-    if (full == null) {
+    final deletedBefore =
+        full != null &&
+        !onGoogle &&
+        !_inContacts(full) &&
+        already != null &&
+        already.state != ContactBinState.back;
+    if (full == null || deletedBefore) {
       // Gone already: the delete before a crash, or by someone else.
       await store.transaction(() async {
         if (already != null && already.state == ContactBinState.pending) {
@@ -2752,6 +2900,7 @@ class _Run {
           await store.deleteLinks([p.linkId!]);
         }
         await store.deleteLinks(p.alsoRemove);
+        await _carriedOut(p);
       });
       return;
     }
@@ -2780,6 +2929,7 @@ class _Run {
           ),
         );
         await _saveReview(p.keptReview());
+        await _carriedOut(p);
       });
       debugPrint('[myemail] contacts: a contact due to be deleted had '
           'changed and was kept');
@@ -2814,6 +2964,7 @@ class _Run {
         dropLinkId: p.removeRow ? p.linkId : null,
       );
       await store.deleteLinks(p.alsoRemove);
+      await _carriedOut(p);
     });
   }
 
@@ -2934,7 +3085,10 @@ class _Run {
       googleNow = await google((a) => a.get(g!));
     }
     if (graphNow == null && h != null) {
-      graphNow = await graph((a) => a.get(h!));
+      // Only one in Contacts is paired: one read in Deleted Items, or in
+      // another folder, is not back, and a pair with it would never sync.
+      final read = await graph((a) => a.get(h!));
+      graphNow = read != null && _inContacts(read) ? read : null;
     }
     final googleName = g;
     final graphId = h;
@@ -3250,20 +3404,15 @@ class _Run {
   // --- the end ---------------------------------------------------------------
 
   /// Everything read was applied: the feeds' positions move on, with the
-  /// counts, the result and the claim.
+  /// counts, the result and the claim. Recorded before the merge of
+  /// Hadco's copies ([_copies]), which keeps its own progress as it goes
+  /// and lowers the Microsoft count itself; a stop in the merge then keeps
+  /// all this ([_halted]), and the people left to merge are counted after
+  /// it ([_countCopies]).
   Future<void> _finish() async {
     final firstSync = pair.firstDoneAt == null;
     final at = sync._now();
     final outcomes = plan.answers;
-    // Answers a stopped run had planned and this one could not: kept.
-    final waitingPending = <Map<String, Object?>>[
-      for (final (i, source) in answerSources.indexed)
-        if (source.pendingIndex case final at?
-            when i < outcomes.length &&
-                outcomes[i] == ContactAnswerOutcome.waiting &&
-                at < held.pending.length)
-          held.pending[at],
-    ];
     // Brake answers this run carried out (or found nothing left to act
     // on), by question and choice: their answers are cleared. Which items
     // stay is the rows' to say (prune): one still held under its brake is
@@ -3317,10 +3466,12 @@ class _Run {
       final rows = await store.links(pairId);
       await store.updatePair(pairId, (p) {
         final h = _Held.parse(p.held);
-        h.pending
-          ..clear()
-          ..addAll(waitingPending)
-          ..addAll(copiesAnswers);
+        // The answers this run planned came off the pair as their writes
+        // came back ([_carriedOut]); one still marked (none should be) goes
+        // with the run done. Those kept for a run that reads their
+        // contacts stay as they are kept, re-keys and all, and so do the
+        // merge's, kept as it wrote them.
+        h.pending.removeWhere((a) => a.containsKey(_Held.writing));
         h.questions.removeWhere(
           (q) => q.kind == ContactSyncQuestionKind.emptyAnswer,
         );
@@ -3359,7 +3510,6 @@ class _Run {
           ..addAll(
             plan.duplicates.map((d) => _Duplicates.of(d, made: copiedFrom)),
           );
-        h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
         return p.copyWith(
           googleSyncToken: googleToken ?? p.googleSyncToken,
           googleMask: googleContactFieldsVersion,
@@ -3369,7 +3519,7 @@ class _Run {
           graphFolderId: p.graphFolderId ?? folderId,
           normaliser: contactNormaliserVersion,
           googleCount: plan.googleCount + googleMade - googleDeleted,
-          graphCount: plan.graphCount + graphMade - graphDeleted - copiesGone,
+          graphCount: plan.graphCount + graphMade - graphDeleted,
           firstDoneAt: p.firstDoneAt ?? (firstSync ? at : null),
           lastDoneAt: at,
           lastResult: _LastResult(tally: tallyNow).encode(),
@@ -3377,6 +3527,7 @@ class _Run {
         );
       });
     });
+    _ended = true;
     await _writeClaim(at);
     debugPrint(
       '[myemail] contacts: read ${googleRead.length}+${graphRead.length}'
@@ -3389,6 +3540,23 @@ class _Run {
       '${tally.passedOver} passed over, '
       '${(watch.elapsedMilliseconds / 1000).toStringAsFixed(1)} s',
     );
+  }
+
+  /// The sync's own end is recorded ([_finish]): a stop after it is the
+  /// merge's.
+  bool _ended = false;
+
+  /// The people left to merge ([_Copies.count]), counted once the merge of
+  /// Hadco's copies is done with this run ([_copies]): from the rows as it
+  /// left them, without the people it merged. A merge cut short is counted
+  /// by the next run.
+  Future<void> _countCopies() async {
+    final rows = await store.links(pairId);
+    await store.updatePair(pairId, (p) {
+      final h = _Held.parse(p.held);
+      h.copies.count(plan.duplicates, rows, norm, merged: copiesMerged);
+      return p.copyWith(held: h.encode());
+    });
   }
 
   Future<void> _writeClaim(DateTime at) async {
@@ -3429,6 +3597,9 @@ class _Run {
 
   /// The run stopped short: why, kept for the screen; the counts moved on
   /// by what was made and deleted; the feeds' positions left as they were.
+  /// Stopped in the merge of Hadco's copies, after the sync's own end was
+  /// recorded ([_ended]): that stands, its counts and its result (the
+  /// merge keeps its own as it goes), with why the run stopped.
   Future<void> _halted(Object e) async {
     final at = sync._now();
     final halt = haltFor(e, at);
@@ -3438,6 +3609,12 @@ class _Run {
         final h = _Held.parse(p.held);
         if (halt.kind == ContactSyncHaltKind.quota) h.quotaUntil = halt.until;
         final before = _LastResult.parse(p.lastResult);
+        if (_ended) {
+          return p.copyWith(
+            held: h.encode(),
+            lastResult: _LastResult(tally: before.tally, halt: halt).encode(),
+          );
+        }
         return p.copyWith(
           googleCount: p.googleCount == null
               ? null
@@ -3710,6 +3887,14 @@ class _Held {
   /// `movedOut` (its Outlook contact is out of Contacts). Set and cleared
   /// at the end of each run.
   static const waits = 'waits';
+
+  /// Under this key in a pending answer, a number the run that planned it
+  /// gives it while its writes are out: the run takes it off by that
+  /// number as soon as they come back ([_Run._carriedOut]). Only that run
+  /// marks answers; the next one, should this stop first, plans the
+  /// answer again and marks it anew. An answer 3.22.1 kept has none, and
+  /// is planned as any.
+  static const writing = 'writing';
 
   /// A brake raised this run: added to its kind's open question, or asked
   /// anew where that one already has an answer queued. An item already
