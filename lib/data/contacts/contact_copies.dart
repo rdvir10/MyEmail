@@ -205,11 +205,14 @@ class CopiesMerge {
 ///   An answer does not touch the photo, but where [keepsPhoto] says the
 ///   photo was among the differences Ron saw.
 /// - The details only Outlook keeps ([outlookOnlyDetails]: the faxes, the
-///   pager and the other phones, the anniversary), which a whole read
-///   brings among its extended properties: each a single value, as
-///   above, a number by its number, a text by its words, the anniversary
-///   by its day and as a birthday is taken. One the synced copy takes is
-///   written as Graph takes it, an extended property by its id.
+///   pager and the other phones, the PO boxes, the ID and user fields, the
+///   anniversary), which a whole read brings among its extended
+///   properties: each a single value, as above, a number by its number, a
+///   text by its words, the anniversary by its day and as a birthday is
+///   taken. One the synced copy takes is written as Graph takes it, an
+///   extended property by its id. What no read brings (files attached to
+///   a contact, gender, billing, mileage) the rules cannot see: a copy
+///   holding only such goes as the same.
 /// - Any other property with a value on another copy that the synced copy
 ///   lacks or holds differently (another extended property among them): a
 ///   difference, "Other details", never merged without Ron.

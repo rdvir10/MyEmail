@@ -218,8 +218,9 @@ void main() {
         'singleValueExtendedProperties': [
           {'id': 'String 0x3A24', 'value': '212 555 0101'},
           {'id': 'SystemTime 0x3A41', 'value': '2001-05-05T11:59:00Z'},
+          // Billing information: not asked for.
           {
-            'id': 'String {00062004-0000-0000-C000-000000000046} Id 0x804F',
+            'id': 'String {00062008-0000-0000-C000-000000000046} Id 0x8535',
             'value': 'not asked for',
           },
         ],
@@ -288,6 +289,56 @@ void main() {
       ]);
       // A read that does not ask for them is as it was.
       expect(await client.listAll(folderId: main, whole: true), hasLength(2));
+    });
+
+    test('every read with the details only Outlook keeps stays under 2,000 '
+        'characters, as sent and as Graph may write it in a next link',
+        () async {
+      // Ids as long as Exchange's run, and longer.
+      final long = '${'AAMkAGI2T-_x' * 13}AAA=';
+      expect(long, hasLength(160));
+      final sent = <Uri>[];
+      final client = api(
+        client: MockClient((r) async {
+          sent.add(r.url);
+          return r.url.path.endsWith('/contacts')
+              ? http.Response(
+                  '{"value":[]}',
+                  200,
+                  headers: {'content-type': 'application/json'},
+                )
+              : http.Response('', 404);
+        }),
+      );
+      // The merge's and the backup's listing, the merge's reads by id and
+      // its read-back after a write.
+      await client.listAll(folderId: long, whole: true, withOutlookOnly: true);
+      await client.get(long, whole: true, withOutlookOnly: true);
+      expect(sent, hasLength(2));
+
+      // Every byte but letters, digits and -_.~ percent-encoded.
+      String encodedAll(String s) => [
+        for (final b in utf8.encode(s))
+          RegExp(r'[A-Za-z0-9\-_.~]').hasMatch(String.fromCharCode(b))
+              ? String.fromCharCode(b)
+              : '%${b.toRadixString(16).toUpperCase().padLeft(2, '0')}',
+      ].join();
+      // Some of Microsoft's front ends refuse a longer address.
+      const bound = 2000;
+      for (final u in sent) {
+        expect('$u'.length, lessThan(bound), reason: u.path);
+        final next = '${u.scheme}://${u.host}${u.path}?'
+            '${[
+              for (final MapEntry(:key, :value) in u.queryParameters.entries)
+                '${encodedAll(key)}=${encodedAll(value)}',
+            ].join('&')}&%24skip=3000';
+        expect(next.length, lessThan(bound), reason: u.path);
+      }
+      // With every detail in it.
+      final expand = sent.first.queryParameters[r'$expand']!;
+      for (final d in outlookOnlyDetails) {
+        expect(expand, contains("id eq '${d.id}'"));
+      }
     });
 
     test('a later page Graph answers without them throws too', () async {

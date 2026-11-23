@@ -5529,6 +5529,38 @@ void main() {
       expect(h.graph.contact(a.others.single), isNull);
     });
 
+    test('a work PO box only the other copy has is written and read back '
+        'before that copy goes; user fields that differ are listed', () async {
+      final ann = copiesOf('Ann', 'Cole');
+      final bob = copiesOf('Bob', 'Ray');
+      await h.firstSync();
+      final a = await hadcoOf(ann);
+      final b = await hadcoOf(bob);
+      // Named properties of Outlook's own, in its contact property set.
+      const box = 'String {00062004-0000-0000-C000-000000000046} Id 0x804A';
+      const user1 = 'String {00062004-0000-0000-C000-000000000046} Id 0x804F';
+      outlookOnly(a.others.single, {box: 'PO Box 77'});
+      outlookOnly(b.synced, {user1: 'Gold'});
+      outlookOnly(b.others.single, {user1: 'Silver'});
+      await h.later();
+      await h.sync.mergeCopies();
+      await h.sync.syncNow();
+      final status = await h.status();
+      expect(status.copies.last!.people, 1);
+      expect(extended(a.synced, box), 'PO Box 77');
+      expect(h.graph.contact(a.others.single), isNull);
+      final listed = status.copies.differing.single;
+      expect(listed.key, b.synced);
+      expect(
+        [
+          for (final x in listed.copies)
+            for (final d in x.details) (d.label, d.value),
+        ],
+        [('User 1', 'Gold'), ('User 1', 'Silver')],
+      );
+      expect(h.graph.contact(b.others.single), isNotNull);
+    });
+
     test('copies holding different business faxes are listed, nothing '
         'deleted; Keep these on the other copy brings its fax', () async {
       final ann = copiesOf('Ann', 'Cole');

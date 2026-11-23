@@ -854,7 +854,11 @@ class GraphContactsApi {
   static const outlookOnlyCanary = 'String 0x001A';
 
   /// The ids a read with the details only Outlook keeps asks for: theirs,
-  /// and the message class beside them ([outlookOnlyCanary]).
+  /// and the message class beside them ([outlookOnlyCanary]). With ids as
+  /// long as Exchange's, a read naming them all stays under 2,000
+  /// characters, as sent and as Graph may write it into a next link (some
+  /// of Microsoft's front ends refuse longer addresses); a test measures
+  /// it, and a detail more must keep it so.
   static final _outlookOnlyIds = [
     for (final d in outlookOnlyDetails) d.id,
     outlookOnlyCanary,
