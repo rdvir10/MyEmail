@@ -2028,6 +2028,13 @@ void main() {
   });
 
   group('the backup', () {
+    /// What Ron reads when Hadco would not give the details only Outlook
+    /// keeps.
+    const withoutOutlookOnly =
+        'Hadco would not give the details only Outlook keeps (fax numbers, '
+        'an anniversary and the like), so the backup was not saved and '
+        'nothing was merged.';
+
     test('both address books, whole, as a vCard and an Outlook CSV',
         () async {
       h.google.seed({
@@ -2087,9 +2094,16 @@ void main() {
           : null;
       for (final only in [ContactSide.graph, null]) {
         h.requests.clear();
+        // Said plainly, with the account's own name.
         await expectLater(
           h.sync.backup(only: only),
-          throwsA(isA<ContactSyncRefused>()),
+          throwsA(
+            isA<ContactSyncRefused>().having(
+              (e) => e.message,
+              'message',
+              withoutOutlookOnly,
+            ),
+          ),
         );
         // Hadco listed whole once, with them, and not again without.
         expect(
@@ -2123,7 +2137,13 @@ void main() {
       for (final only in [ContactSide.graph, null]) {
         await expectLater(
           h.sync.backup(only: only),
-          throwsA(isA<ContactSyncRefused>()),
+          throwsA(
+            isA<ContactSyncRefused>().having(
+              (e) => e.message,
+              'message',
+              withoutOutlookOnly,
+            ),
+          ),
         );
       }
       // Kept on every page, the file holds every fax.

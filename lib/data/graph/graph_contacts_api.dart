@@ -136,19 +136,37 @@ class GraphContactsApi {
     final at = folderId == null
         ? '$base/me/contacts'
         : '$base/me/contactFolders/${_id(folderId)}/contacts';
-    final (:items, :pages) = await _allPages(
-      Uri.parse(at).replace(
-        queryParameters: {
-          r'$top': '$pageSize',
-          if (!whole) r'$select': graphContactSelect,
-          if (withOutlookOnly) r'$expand': _expandOf(_outlookOnlyIds),
-        },
+    final (:items, :pages) = await _refusedAs(
+      withOutlookOnly,
+      () => _allPages(
+        Uri.parse(at).replace(
+          queryParameters: {
+            r'$top': '$pageSize',
+            if (!whole) r'$select': graphContactSelect,
+            if (withOutlookOnly) r'$expand': _expandOf(_outlookOnlyIds),
+          },
+        ),
+        'list',
       ),
-      'list',
     );
     debugPrint('[myemail] contacts: Microsoft listed ${items.length} '
         'contacts, $pages pages, ${watch.elapsedMilliseconds} ms');
     return withOutlookOnly ? _givenOutlookOnly(items) : items;
+  }
+
+  /// [read]'s answer; with [withOutlookOnly], a refusal of it is
+  /// [OutlookOnlyRefused]: of a read that asks for the details only
+  /// Outlook keeps, that is what Graph would not give.
+  static Future<T> _refusedAs<T>(
+    bool withOutlookOnly,
+    Future<T> Function() read,
+  ) async {
+    try {
+      return await read();
+    } on ContactRefused catch (e) {
+      if (!withOutlookOnly || e is OutlookOnlyRefused) rethrow;
+      throw OutlookOnlyRefused(status: e.status, reason: e.reason);
+    }
   }
 
   /// Every page of the list [first] asks for, following Graph's links to
@@ -285,7 +303,10 @@ class GraphContactsApi {
     );
     final response = await _exchange(() => http.Request('GET', uri));
     if (response.statusCode == 404) return null;
-    final contact = _json(response, 'get');
+    final contact = await _refusedAs(
+      withOutlookOnly,
+      () async => _json(response, 'get'),
+    );
     return withOutlookOnly ? _givenOutlookOnly([contact]).single : contact;
   }
 
@@ -1175,17 +1196,19 @@ class GraphBatchDelete {
   final Set<String> failed;
 }
 
-/// Graph did not give the details only Outlook keeps to a read that asked
-/// for them ([GraphContactsApi.listAll] and [GraphContactsApi.get] with
-/// `withOutlookOnly`): it answered some contact without them, with no
+/// Graph would not give the details only Outlook keeps to a read that
+/// asked for them ([GraphContactsApi.listAll] and [GraphContactsApi.get]
+/// with `withOutlookOnly`): it refused the read ([status] its answer,
+/// [reason] its code), or answered some contact without them, with no
 /// error ([status] 200; see [GraphContactsApi.outlookOnlyCanary]). Never
 /// to be taken for a read of contacts that hold none of them: what reads
 /// with them stops, nothing deleted or saved.
 class OutlookOnlyRefused extends ContactRefused {
   const OutlookOnlyRefused({required super.status, super.reason})
     : super(
-        'Microsoft did not give the details only Outlook keeps (fax '
-        'numbers, the anniversary), so nothing was saved or merged.',
+        'Microsoft would not give the details only Outlook keeps (fax '
+        'numbers, an anniversary and the like), so nothing was saved or '
+        'merged.',
       );
 }
 

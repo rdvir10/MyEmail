@@ -329,11 +329,32 @@ void main() {
         }),
       );
 
+      // Said as what it is: the details not given, not a contact refused.
+      final refused = isA<OutlookOnlyRefused>()
+          .having((e) => e.status, 'status', 400)
+          .having((e) => e.reason, 'reason', 'ErrorInvalidRequest')
+          .having((e) => e.message, 'message', isNot(contains('take')));
       await expectLater(
         client.listAll(folderId: main, whole: true, withOutlookOnly: true),
-        throwsA(isA<ContactRefused>()),
+        throwsA(refused),
       );
       expect(asked, hasLength(1));
+      final ann = graph.idWithEmail('ann@example.com')!;
+      await expectLater(
+        client.get(ann, whole: true, withOutlookOnly: true),
+        throwsA(refused),
+      );
+      // A read that does not ask for them is refused as before.
+      await expectLater(
+        client.get(ann, withTag: true),
+        throwsA(
+          isA<ContactRefused>().having(
+            (e) => e,
+            'kind',
+            isNot(isA<OutlookOnlyRefused>()),
+          ),
+        ),
+      );
     });
   });
 

@@ -943,6 +943,20 @@ class ContactSync implements ContactSyncService {
           ),
       ];
     } catch (e) {
+      // Said as what it is, with the account's own name: not a contact
+      // Microsoft would not take.
+      if (e is OutlookOnlyRefused) {
+        final name = accounts()
+            .firstWhereOrNull((a) => a.id == pair.graphAccountId)
+            ?.displayName
+            .trim();
+        throw ContactSyncRefused(
+          '${name == null || name.isEmpty ? 'Microsoft' : name} would not '
+          'give the details only Outlook keeps (fax numbers, an anniversary '
+          'and the like), so the backup was not saved and nothing was '
+          'merged.',
+        );
+      }
       throw run.readable(e);
     } finally {
       run.close();
