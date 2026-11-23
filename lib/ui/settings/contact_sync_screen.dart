@@ -2469,8 +2469,8 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         content: Text(
           'For each of the $open people, the synced copy keeps its values '
           'and gains the details only another copy has, and the other '
-          'copies are deleted, to Deleted Items, at the next sync, which '
-          'starts at once.',
+          'copies are deleted at the next sync, which starts at once. '
+          '$_deletedCopiesKept',
         ),
         actions: [
           TextButton(
@@ -2685,10 +2685,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
           // contacts has one, and no two copies' match byte for byte.
           const Text(
             'Keeps the synced copy of each person, adds to it any detail '
-            'only another copy has, and deletes the other copies, which '
-            'Outlook keeps in Deleted Items. When both copies have a photo, '
-            'the synced copy keeps its own. Copies that differ are left for '
-            'you to choose.',
+            'only another copy has, and deletes the other copies. '
+            '$_deletedCopiesKept When both copies have a photo, the synced '
+            'copy keeps its own. Copies that differ are left for you to '
+            'choose.',
             key: ValueKey('contact-sync-copies-what'),
           ),
           const SizedBox(height: 4),
@@ -2886,10 +2886,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
           const _Para(
             "Keep these puts that copy's values in the synced copy, which "
             'always stays, and in Gmail at the next sync; then every other '
-            'copy is deleted, to Deleted Items. Values the synced copy loses '
-            'are kept only in your backup file. Leave them leaves every copy '
-            'as it is. An answer is carried out in the next sync, which '
-            'starts at once.',
+            'copy is deleted, and Outlook keeps it for a while. Values the '
+            'synced copy loses are kept only in your backup file. Leave them '
+            'leaves every copy as it is. An answer is carried out in the next '
+            'sync, which starts at once.',
             muted: true,
           ),
           if (open.length > 1)
@@ -3027,6 +3027,16 @@ String _copiesChoice(ContactSyncCopiesPerson p, String answer) {
       ? "$name's details"
       : "the ${name.toLowerCase()}'s details";
 }
+
+/// Where the merge's deleted copies can be had back. Graph's ordinary
+/// delete is used (never `permanentDelete`), but whether Exchange puts a
+/// contact deleted that way in Deleted Items or straight among the
+/// mailbox's recoverable items (kept 14 days unless the organisation
+/// says otherwise) has not been checked, and Microsoft's pages do not
+/// say: this is true either way.
+const _deletedCopiesKept = 'Outlook keeps deleted contacts for a while: in '
+    'Deleted Items, or under Recover items deleted from this folder at the '
+    'top of Deleted Items.';
 
 /// What the last merge of the Microsoft side's copies did: "Merged at
 /// 10:42: 1089 people, 1143 copies deleted, 210 details added.", or that it

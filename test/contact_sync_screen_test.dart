@@ -2966,11 +2966,14 @@ void main() {
       final panel = button('contact-sync-copies');
       inOrder(tester, panel, [
         "Merge Hadco's copies",
+        // Where Graph's delete puts a contact is not yet known: true
+        // either way.
         'Keeps the synced copy of each person, adds to it any detail only '
-            'another copy has, and deletes the other copies, which Outlook '
-            'keeps in Deleted Items. When both copies have a photo, the '
-            'synced copy keeps its own. Copies that differ are left for you '
-            'to choose.',
+            'another copy has, and deletes the other copies. Outlook keeps '
+            'deleted contacts for a while: in Deleted Items, or under Recover '
+            'items deleted from this folder at the top of Deleted Items. When '
+            'both copies have a photo, the synced copy keeps its own. Copies '
+            'that differ are left for you to choose.',
         'Nothing is deleted in Gmail; it gets the added details at the next '
             'sync.',
         '1336 people have 1515 other copies in Hadco.',
@@ -4126,10 +4129,10 @@ void main() {
       expect(
         find.text("Keep these puts that copy's values in the synced copy, "
             'which always stays, and in Gmail at the next sync; then every '
-            'other copy is deleted, to Deleted Items. Values the synced copy '
-            'loses are kept only in your backup file. Leave them leaves every '
-            'copy as it is. An answer is carried out in the next sync, which '
-            'starts at once.'),
+            'other copy is deleted, and Outlook keeps it for a while. Values '
+            'the synced copy loses are kept only in your backup file. Leave '
+            'them leaves every copy as it is. An answer is carried out in the '
+            'next sync, which starts at once.'),
         findsOneWidget,
       );
       final ann = button('contact-sync-copies-person:p1');
@@ -4261,8 +4264,10 @@ void main() {
       expect(
         find.text('For each of the 2 people, the synced copy keeps its values '
             'and gains the details only another copy has, and the other '
-            'copies are deleted, to Deleted Items, at the next sync, which '
-            'starts at once.'),
+            'copies are deleted at the next sync, which starts at once. '
+            'Outlook keeps deleted contacts for a while: in Deleted Items, or '
+            'under Recover items deleted from this folder at the top of '
+            'Deleted Items.'),
         findsOneWidget,
       );
       await tester.tap(find.text('Cancel'));

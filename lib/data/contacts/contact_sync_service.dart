@@ -176,12 +176,13 @@ abstract interface class ContactSyncService {
   /// ([ContactSyncStatus.copies]), queued for a run that starts at once:
   /// for each person whose synced Microsoft copy is paired and has held
   /// copies beside it, the synced copy stays, takes any detail only
-  /// another copy has, and the other copies are deleted (Outlook keeps
-  /// them in Deleted Items). People whose copies differ are listed
-  /// ([ContactSyncCopies.differing]) and touched only on Ron's answer.
-  /// Gmail's copies are not touched. The screen calls this only once
-  /// Hadco's backup file is saved. Before the first sync is done, or with
-  /// nothing to merge, it does nothing.
+  /// another copy has, and the other copies are deleted (Graph's ordinary
+  /// delete: Outlook keeps them for a while, in Deleted Items or among the
+  /// mailbox's recoverable items; which of the two is not yet checked).
+  /// People whose copies differ are listed ([ContactSyncCopies.differing])
+  /// and touched only on Ron's answer. Gmail's copies are not touched.
+  /// The screen calls this only once Hadco's backup file is saved. Before
+  /// the first sync is done, or with nothing to merge, it does nothing.
   Future<void> mergeCopies();
 
   /// Ron's answer for a person whose copies differ
