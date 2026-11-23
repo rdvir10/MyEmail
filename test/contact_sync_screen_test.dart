@@ -3340,11 +3340,14 @@ void main() {
         // Where Graph's delete puts a contact is not yet known: true
         // either way.
         'Keeps the synced copy of each person, adds to it any detail only '
-            'another copy has, and deletes the other copies. Outlook keeps '
-            'deleted contacts for a while: in Deleted Items, or under Recover '
-            'items deleted from this folder at the top of Deleted Items. When '
-            'both copies have a photo, the synced copy keeps its own. Copies '
-            'that differ are left for you to choose.',
+            "another copy has (Outlook's own faxes, PO boxes, user fields "
+            'and the like among them), and deletes the other copies. Outlook '
+            'keeps deleted contacts for a while: in Deleted Items, or under '
+            'Recover items deleted from this folder at the top of Deleted '
+            'Items. Files attached to a copy, and its gender, billing and '
+            'mileage, are not compared and go with the copy. When both '
+            'copies have a photo, the synced copy keeps its own. Copies that '
+            'differ are left for you to choose.',
         'Nothing is deleted in Gmail; it gets the added details at the next '
             'sync.',
         '1336 people have 1515 other copies in Hadco.',

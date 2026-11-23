@@ -978,6 +978,20 @@ class ContactSync implements ContactSyncService {
           ),
       ];
     } catch (e) {
+      // Said as what it is, with the account's own name: not a contact
+      // Microsoft would not take.
+      if (e is OutlookOnlyRefused) {
+        final name = accounts()
+            .firstWhereOrNull((a) => a.id == pair.graphAccountId)
+            ?.displayName
+            .trim();
+        throw ContactSyncRefused(
+          '${name == null || name.isEmpty ? 'Microsoft' : name} would not '
+          'give the details only Outlook keeps (fax numbers, an anniversary '
+          'and the like), so the backup was not saved and nothing was '
+          'merged.',
+        );
+      }
       throw run.readable(e);
     } finally {
       run.close();
@@ -4682,11 +4696,15 @@ class _CopiesStep {
     _progress();
     if (groups.isEmpty) return;
 
-    // Each copy whole, with the details only Outlook keeps (a fax, the
-    // anniversary), which Graph gives only to a read that names them: read
-    // without them, a copy holding one would seem the same and be deleted.
-    // A refusal of them stops the pass short, nothing deleted; it is never
-    // answered by a read without them.
+    // Each copy whole, with the details only Outlook keeps (the faxes and
+    // other numbers, the PO boxes, the ID and user fields, the
+    // anniversary: outlookOnlyDetails), which Graph gives only to a read
+    // that names them: read without them, a copy holding one would seem
+    // the same and be deleted. A refusal of them, or an answer without
+    // them, stops the pass short, nothing deleted; it is never taken for a
+    // read of copies holding none. Not read, and so gone with a copy that
+    // holds them (a known gap): files attached to a contact, gender,
+    // billing and mileage, and Outlook's rarer fields.
     final read = <String, Map<String, Object?>>{};
     if (whole) {
       final folder = run.folderId;
@@ -5049,10 +5067,13 @@ class _CopiesStep {
   /// The synced copy [key] read again with the details only Outlook
   /// keeps, which Graph's answer to a write never shows: each of
   /// [written] must hold there, by the rule that compared it (a date by
-  /// its day, anything else as written), before any copy goes. Its
-  /// `changeKey` as read.
+  /// its day, anything else as written), before any copy goes. Read whole,
+  /// with no `$select`, so the read's address stays as short as the
+  /// listing's. Its `changeKey` as read.
   Future<String> _readBack(String key, List<Object?> written) async {
-    final now = await run.graph((a) => a.get(key, withOutlookOnly: true));
+    final now = await run.graph(
+      (a) => a.get(key, whole: true, withOutlookOnly: true),
+    );
     if (now == null || !run._inContacts(now)) throw const _CopyNotHeld();
     final held = outlookOnlyValuesOf(now);
     for (final w in written) {

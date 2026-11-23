@@ -65,17 +65,19 @@ abstract final class ContactBackup {
   /// The header is Outlook on the web's own export's, followed by the
   /// columns of Outlook's desktop export that hold the rest of what Graph
   /// reads (initials, profession, children and categories, the last two
-  /// separated by semicolons, the ISDN number, and each email's name), then
-  /// two of this file's own, Display Name and File As, so that neither is
-  /// lost even where Outlook's import has no place for it. The details
-  /// only Outlook keeps (a fax, the anniversary) fill their columns where
-  /// the contact was read with them. A contact with no name parts at all
-  /// (one saved from a sender, or a company) has its display name as its
-  /// first name too, or its row would carry no name. Every field is
-  /// quoted, as Outlook quotes them; rows end in CRLF; the text
-  /// starts with a byte order mark, without which Outlook and Excel read
-  /// UTF-8 as the PC's own code page and every accent and Hebrew letter
-  /// comes out wrong.
+  /// separated by semicolons, the ISDN number, the PO boxes, the ID fields,
+  /// the user fields, and each email's name), then this file's own, so
+  /// that none is lost even where Outlook's import has no place for it:
+  /// Display Name, File As, and the customer ID, computer network name and
+  /// FTP site Outlook's form shows. The details only Outlook keeps (a fax,
+  /// a PO box, the anniversary: `outlookOnlyDetails`) fill their columns
+  /// where the contact was read with them. A contact with no name parts
+  /// at all (one saved from a sender, or a company) has its display name
+  /// as its first name too, or its row would carry no name. Every field is
+  /// quoted, as Outlook quotes them; rows end in CRLF; the text starts
+  /// with a byte order mark, without which Outlook and Excel read UTF-8 as
+  /// the PC's own code page and every accent and Hebrew letter comes out
+  /// wrong.
   static String outlookCsv(Iterable<Map<String, Object?>> contacts) {
     final out = StringBuffer('\u{FEFF}');
     out
@@ -160,11 +162,26 @@ abstract final class ContactBackup {
     'Children',
     'Categories',
     'ISDN',
+    'Business Address PO Box',
+    'Home Address PO Box',
+    'Other Address PO Box',
+    'Account',
+    'Government ID Number',
+    'Organizational ID Number',
+    'Referred By',
+    'Language',
+    'User 1',
+    'User 2',
+    'User 3',
+    'User 4',
     'E-mail Display Name',
     'E-mail 2 Display Name',
     'E-mail 3 Display Name',
     'Display Name',
     'File As',
+    'Customer ID',
+    'Computer Network Name',
+    'FTP Site',
   ];
 
   // --- vCard ----------------------------------------------------------------

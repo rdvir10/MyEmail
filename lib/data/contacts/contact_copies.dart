@@ -205,11 +205,14 @@ class CopiesMerge {
 ///   An answer does not touch the photo, but where [keepsPhoto] says the
 ///   photo was among the differences Ron saw.
 /// - The details only Outlook keeps ([outlookOnlyDetails]: the faxes, the
-///   pager and the other phones, the anniversary), which a whole read
-///   brings among its extended properties: each a single value, as
-///   above, a number by its number, a text by its words, the anniversary
-///   by its day and as a birthday is taken. One the synced copy takes is
-///   written as Graph takes it, an extended property by its id.
+///   pager and the other phones, the PO boxes, the ID and user fields, the
+///   anniversary), which a whole read brings among its extended
+///   properties: each a single value, as above, a number by its number, a
+///   text by its words, the anniversary by its day and as a birthday is
+///   taken. One the synced copy takes is written as Graph takes it, an
+///   extended property by its id. What no read brings (files attached to
+///   a contact, gender, billing, mileage) the rules cannot see: a copy
+///   holding only such goes as the same.
 /// - Any other property with a value on another copy that the synced copy
 ///   lacks or holds differently (another extended property among them): a
 ///   difference, "Other details", never merged without Ron.
@@ -609,9 +612,12 @@ class _Merger {
       photoFrom = chosen.id;
     }
     // The details only Outlook keeps go as Graph takes them: extended
-    // properties, by their ids.
+    // properties, by their ids, after any other extended property Ron's
+    // answer took (Other details), never in its place: written together,
+    // the runner then reads back what it can check and fails the person
+    // on what it cannot.
     final body = <String, Object?>{};
-    final extended = <Map<String, Object?>>[];
+    final extended = <Object?>[];
     for (final MapEntry(:key, :value) in patch.entries) {
       if (_outlookOnly.contains(key)) {
         extended.add({'id': key, 'value': value});
@@ -619,7 +625,13 @@ class _Merger {
         body[key] = value;
       }
     }
-    if (extended.isNotEmpty) body['singleValueExtendedProperties'] = extended;
+    if (extended.isNotEmpty) {
+      final other = body['singleValueExtendedProperties'];
+      body['singleValueExtendedProperties'] = [
+        if (other is List) ...other else ?other,
+        ...extended,
+      ];
+    }
     return CopiesMerge(
       outcome: differences.isNotEmpty
           ? CopiesOutcome.differs

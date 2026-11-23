@@ -962,6 +962,77 @@ void main() {
       }
     });
 
+    test('PO boxes, user fields and ID fields, by their words', () {
+      const address = '{00062004-0000-0000-C000-000000000046}';
+      for (final (id, label) in [
+        ('String $address Id 0x804A', 'Work PO box'),
+        ('String 0x3A5E', 'Home PO box'),
+        ('String 0x3A64', 'Other PO box'),
+        ('String 0x3A00', 'Account'),
+        ('String 0x3A4A', 'Customer ID'),
+        ('String 0x3A07', 'Government ID'),
+        ('String 0x3A10', 'Organizational ID'),
+        ('String 0x3A47', 'Referred by'),
+        ('String 0x3A0C', 'Language'),
+        ('String 0x3A49', 'Computer network name'),
+        ('String 0x3A4C', 'FTP site'),
+        ('String $address Id 0x804F', 'User 1'),
+        ('String $address Id 0x8050', 'User 2'),
+        ('String $address Id 0x8051', 'User 3'),
+        ('String $address Id 0x8052', 'User 4'),
+      ]) {
+        final same = merge(copy('A', kept({id: 'Box  12'})), [
+          copy('B', kept({id: ' box 12 '})),
+        ]);
+        expect(same.outcome, CopiesOutcome.same, reason: label);
+        final taken = merge(copy('A'), [
+          copy('B', kept({id: 'Box 12'})),
+        ]);
+        expect(taken.patch, {
+          'singleValueExtendedProperties': [
+            {'id': id, 'value': 'Box 12'},
+          ],
+        }, reason: label);
+        expect(taken.adds, [CopiesDetail(label: label, value: 'Box 12')]);
+        final differs = merge(copy('A', kept({id: 'Box 12'})), [
+          copy('B', kept({id: 'Box 99'})),
+        ]);
+        expect(differs.differences, [
+          CopiesDifference(label: label, kept: 'Box 12', others: const {
+            'B': 'Box 99',
+          }),
+        ], reason: label);
+      }
+    });
+
+    test('a named id as Exchange writes it back, the set and the number in '
+        'small letters, is the same detail', () {
+      final merged = merge(
+        copy('A', kept({
+          'String {00062004-0000-0000-C000-000000000046} Id 0x804F': 'Gold',
+        })),
+        [
+          copy('B', kept({
+            'String {00062004-0000-0000-c000-000000000046} Id 0x804f': 'gold',
+          })),
+        ],
+      );
+      expect(merged.outcome, CopiesOutcome.same);
+      final taken = merge(copy('A'), [
+        copy('B', kept({
+          'string {00062004-0000-0000-c000-000000000046} id 0x804a': 'PO 7',
+        })),
+      ]);
+      expect(taken.patch, {
+        'singleValueExtendedProperties': [
+          {
+            'id': 'String {00062004-0000-0000-C000-000000000046} Id 0x804A',
+            'value': 'PO 7',
+          },
+        ],
+      });
+    });
+
     test('the anniversary, by its day', () {
       const id = 'SystemTime 0x3A41';
       final same = merge(copy('A', kept({id: '2001-05-05T00:00:00Z'})), [
@@ -1043,6 +1114,27 @@ void main() {
         'singleValueExtendedProperties': [
           {'id': 'String 0x3A24', 'value': '212 555 0101'},
           {'id': 'SystemTime 0x3A41', 'value': '2001-05-05T11:59:00Z'},
+        ],
+      });
+    });
+
+    test("Keep these on a copy with another extended property (Other "
+        'details) and a detail only Outlook keeps writes both, one never in '
+        "the other's place", () {
+      final merged = merge(copy('A'), [
+        copy(
+          'B',
+          kept({
+            'String {x} Name Colour': 'Red',
+            'String 0x3A24': '212 555 0101',
+          }),
+        ),
+      ], keep: 'B');
+      expect(merged.outcome, CopiesOutcome.adds);
+      expect(merged.patch, {
+        'singleValueExtendedProperties': [
+          {'id': 'String {x} Name Colour', 'value': 'Red'},
+          {'id': 'String 0x3A24', 'value': '212 555 0101'},
         ],
       });
     });

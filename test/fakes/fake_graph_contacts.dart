@@ -18,9 +18,11 @@ import 'package:myemail/data/contacts/contact_mapping.dart'
 /// that does not send it; single-value extended properties on contacts and
 /// on the folder, given only to a read whose `$expand` names them (several
 /// joined by `or`), under their ids as Exchange writes them back (a tag in
-/// small letters without leading zeros: "String 0x3a24"); `$batch` of up
-/// to twenty, answered in any order; and throttling, outside a batch and
-/// inside one.
+/// small letters without leading zeros: "String 0x3a24"), every contact's
+/// message class among them ("IPM.Contact"), and an `$expand` Graph may
+/// drop with no error, for some contacts or a listing's later pages
+/// ([expandDropped], [expandOnFirstPageOnly]); `$batch` of up to twenty,
+/// answered in any order; and throttling, outside a batch and inside one.
 ///
 /// It is stricter than Graph where a mistake would otherwise pass
 /// silently: a request without `Prefer: IdType="ImmutableId"`, outside a
@@ -74,6 +76,16 @@ class FakeGraphContacts {
   /// not to: an entry it left a property out of is not read whole, and
   /// the sync passes it over rather than read the property as cleared.
   bool leaveOutEmpty = false;
+
+  /// Contacts answered without the extended properties an `$expand` asks
+  /// for, on any read, with no error: as a Microsoft Q&A thread of 2024
+  /// reports Graph doing.
+  final Set<String> expandDropped = {};
+
+  /// A listing's pages after the first answered without the extended
+  /// properties its `$expand` asks for, as though Graph's next link had
+  /// lost it.
+  bool expandOnFirstPageOnly = false;
 
   /// Every request answered 403, as Graph does for a token without
   /// Contacts.ReadWrite.
@@ -442,15 +454,23 @@ class FakeGraphContacts {
         email = f[1]!.replaceAll("''", "'");
       }
       final expand = _expandOf(q);
-      final items = [
+      Map<String, Object?> entry(_Contact c, {bool expanded = true}) => {
+        ..._json(c, select, leaveOutEmpty: leaveOutEmpty),
+        if (expand != null && expanded && !expandDropped.contains(c.id))
+          ..._expanded(c.properties, expand, contact: true),
+      };
+      final listed = [
         for (final c in _contacts.values)
-          if (c.folder == folder && (email == null || _hasEmail(c, email)))
-            {
-              ..._json(c, select, leaveOutEmpty: leaveOutEmpty),
-              if (expand != null) ..._expanded(c.properties, expand),
-            },
+          if (c.folder == folder && (email == null || _hasEmail(c, email))) c,
       ];
-      pages = _Pages(items, path: 'me/contacts', size: page);
+      pages = _Pages(
+        [for (final c in listed) entry(c)],
+        path: 'me/contacts',
+        size: page,
+        later: expand != null && expandOnFirstPageOnly
+            ? [for (final c in listed) entry(c, expanded: false)]
+            : null,
+      );
     }
     return _ok(_pageOf(pages, page, 'value'));
   }
@@ -548,7 +568,8 @@ class FakeGraphContacts {
     final expand = _expandOf(q);
     return _ok({
       ..._json(c, _selectOf(q), leaveOutEmpty: leaveOutEmpty),
-      if (expand != null) ..._expanded(c.properties, expand),
+      if (expand != null && !expandDropped.contains(id))
+        ..._expanded(c.properties, expand, contact: true),
     });
   }
 
@@ -972,18 +993,25 @@ class FakeGraphContacts {
 
   /// [properties] as an `$expand` of [ids] puts them on the answer: only
   /// those asked for, matched whatever the case of an id's letters, each
-  /// under its id as Exchange writes it; none asked for there, no list.
+  /// under its id as Exchange writes it; none asked for there, no list. A
+  /// [contact], as every Outlook item, has its message class too.
   static Map<String, Object?> _expanded(
     Map<String, String> properties,
-    Set<String> ids,
-  ) {
+    Set<String> ids, {
+    bool contact = false,
+  }) {
     final asked = {for (final id in ids) id.toLowerCase()};
     final found = [
+      if (contact && asked.contains(_messageClass.toLowerCase()))
+        {'id': _messageClass, 'value': 'IPM.Contact'},
       for (final MapEntry(:key, :value) in properties.entries)
         if (asked.contains(key.toLowerCase())) {'id': key, 'value': value},
     ];
     return found.isEmpty ? const {} : {'singleValueExtendedProperties': found};
   }
+
+  /// MAPI's message class (PidTagMessageClass), as Exchange writes its id.
+  static const _messageClass = 'String 0x1a';
 
   /// The single-value extended properties [json] writes, by their ids as
   /// Exchange keeps them ([_propertyId]). Graph documents an id in one of
@@ -1134,6 +1162,7 @@ class _Pages {
     this.number = 0,
     this.offset = 0,
     this.size,
+    this.later,
   });
 
   final List<Map<String, Object?>> items;
@@ -1147,13 +1176,18 @@ class _Pages {
   final int number;
   final int offset;
 
+  /// The same entries as the pages after the first give them, where those
+  /// differ ([FakeGraphContacts.expandOnFirstPageOnly]).
+  final List<Map<String, Object?>>? later;
+
   _Pages from(int offset) => _Pages(
-    items,
+    later ?? items,
     path: path,
     deltaToken: deltaToken,
     number: number,
     offset: offset,
     size: size,
+    later: later,
   );
 }
 
