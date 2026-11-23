@@ -13,12 +13,14 @@ import 'package:myemail/data/sample/sample_mail_engine.dart';
 import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/display_settings.dart';
+import 'package:myemail/domain/draft.dart';
 import 'package:myemail/state/backup_providers.dart';
 import 'package:myemail/state/contact_providers.dart';
 import 'package:myemail/state/providers.dart';
 import 'package:myemail/state/put_away_providers.dart';
 import 'package:myemail/ui/accounts/microsoft_sign_in_screen.dart';
 import 'package:myemail/ui/common/text_size.dart';
+import 'package:myemail/ui/compose/compose_screen.dart';
 import 'package:myemail/ui/messages/date_format.dart' show formatClock;
 import 'package:myemail/ui/settings/backup_screen.dart';
 import 'package:myemail/ui/settings/contact_sync_screen.dart';
@@ -6044,6 +6046,150 @@ void main() {
       expect(ContactSyncScreen.isOpen, isTrue);
       expect(find.text('The last sync stopped at '
           '${formatClock(at, use24h: false)}.'), findsOneWidget);
+    });
+
+    testWidgets("a stop's Open, said over a sign-in pushed from Duplicates "
+        'to merge, goes back to the Contact sync screen under both',
+        (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const duplicates = [
+        ContactSyncDuplicates(
+          title: 'Ann Cole',
+          googleCopies: 1,
+          graphCopies: 2,
+          googleSynced: true,
+          graphSynced: true,
+        ),
+      ];
+      const copies = ContactSyncCopies(people: 1, extras: 1, asked: true);
+      ContactSyncHalt signIn(DateTime at) => ContactSyncHalt(
+            kind: ContactSyncHaltKind.notAllowed,
+            at: at,
+            side: ContactSide.graph,
+            error: const ContactSyncNeedsSignIn(
+              side: ContactSide.graph,
+              accountId: 'acct-h',
+              message: 'Hadco has not allowed contact sync.',
+            ),
+          );
+      final at = DateTime(today.year, today.month, today.day, 9);
+      sync = FakeContactSync(status: synced(
+        halt: signIn(at),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      unawaited(tester.state<NavigatorState>(find.byType(Navigator).first)
+          .push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byKey(const ValueKey('contact-sync-copies')),
+        matching: find.text('Sign in again'),
+      ));
+      // Not pumpAndSettle: the sign-in page never says it has loaded here.
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+
+      // A later run stops the same way, and says so over the sign-in.
+      final later = at.add(const Duration(hours: 1));
+      sync.set(synced(
+        halt: signIn(later),
+        notice: ContactSyncNotice(at: later, halt: signIn(later)),
+        duplicates: duplicates,
+        copies: copies,
+      ));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.text('Contact sync has stopped: not allowed yet for Hadco'),
+          findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen, skipOffstage: false),
+          findsNothing);
+      expect(find.text('Duplicates to merge', skipOffstage: false),
+          findsNothing);
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsOneWidget, reason: 'the one open, not a second');
+      expect(ContactSyncScreen.isOpen, isTrue);
+    });
+
+    testWidgets("a stop's Open, said over a screen from elsewhere, closes "
+        'nothing: a message being written stays as it was', (tester) async {
+      tester.view.physicalSize = const Size(800, 3000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      sync = FakeContactSync(status: synced());
+      await pumpApp(tester, engine: _Engine(sync, const [gmail, hadco]));
+      final navigator =
+          tester.state<NavigatorState>(find.byType(Navigator).first);
+      unawaited(navigator.push(MaterialPageRoute<void>(
+        builder: (_) => const ContactSyncScreen(),
+      )));
+      await tester.pumpAndSettle();
+      // A notification tapped in the shade opens a message over it, and
+      // its Reply a message to write: here, the writing at once.
+      unawaited(navigator.push(MaterialPageRoute<bool>(
+        builder: (_) => const ComposeScreen(
+          draft: Draft(
+            accountId: 'acct-g',
+            kind: ComposeKind.newMessage,
+            subject: 'Numbers',
+            htmlBody: '<p>The figures for Thursday.</p>',
+          ),
+        ),
+      )));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Numbers'),
+        'Numbers for Thursday',
+      );
+      await tester.pumpAndSettle();
+
+      final at = DateTime(today.year, today.month, today.day, 9);
+      final halt = ContactSyncHalt(
+        kind: ContactSyncHaltKind.failed,
+        at: at,
+        error: const ContactSyncFailed('Hadco could not be reached.'),
+      );
+      sync.set(synced(
+        halt: halt,
+        notice: ContactSyncNotice(at: at, halt: halt),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Contact sync could not finish'), findsOneWidget);
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing, reason: 'nothing asked');
+      expect(ContactSyncScreen.isOpen, isTrue);
+      expect(find.text('The last sync stopped at '
+          '${formatClock(at, use24h: false)}.'), findsOneWidget);
+      expect(find.byType(ComposeScreen, skipOffstage: false), findsOneWidget,
+          reason: 'still open, under it');
+      expect(find.byType(ContactSyncScreen, skipOffstage: false),
+          findsNWidgets(2), reason: 'one under the message, one over it');
+
+      // Back from it: the message as Ron left it.
+      Navigator.of(tester.element(find.byType(ContactSyncScreen))).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposeScreen), findsOneWidget);
+      expect(find.text('Numbers for Thursday'), findsOneWidget);
     });
   });
 

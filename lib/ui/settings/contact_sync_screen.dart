@@ -40,10 +40,14 @@ class ContactSyncScreen extends ConsumerStatefulWidget {
   static final Set<_ContactSyncScreenState> _open = {};
 
   /// Back to the Contact sync screen already open, the nearest if there
-  /// were ever two, closing whatever is over it (Duplicates to merge, Needs
-  /// a look, a sign-in, a question): true when there was one, so that the
-  /// one-line message's Open never piles a second one on top; false when
-  /// none is open, for the caller to open one.
+  /// were ever two, closing what contact sync itself put over it (Needs a
+  /// look, Duplicates to merge, Recently deleted, and a sign-in pushed from
+  /// it or from them): true when it went back, so that the one-line
+  /// message's Open never piles a second one on top. False when none is
+  /// open, or when anything else is over it, for the caller to open one
+  /// over everything: a message or a meeting opened from a notification,
+  /// and a reply or an edit begun there, which Navigator.pop would close
+  /// without its question, losing what Ron had written.
   static bool showOpen() {
     final open = _open.lastWhereOrNull(
       (s) => s.mounted && (s._route?.isActive ?? false),
@@ -51,8 +55,50 @@ class ContactSyncScreen extends ConsumerStatefulWidget {
     final route = open?._route;
     final navigator = route?.navigator;
     if (route == null || navigator == null) return false;
+    // Down from the top, each screen one that contact sync put over the
+    // next, as far as this one.
+    Route<dynamic>? top;
+    navigator.popUntil((r) {
+      top = r;
+      return true;
+    });
+    var over = top;
+    while (!identical(over, route)) {
+      if (over == null || !over.isActive) return false;
+      over = _putOverBy[over];
+    }
     navigator.popUntil((r) => identical(r, route));
     return true;
+  }
+
+  /// Each screen contact sync put over one of its own, with that one: the
+  /// way down that [showOpen] may close.
+  static final _putOverBy = Expando<Route<dynamic>>('contact sync put over');
+
+  /// [push] a screen over the one [context] is in, noted as contact sync's
+  /// own for [showOpen] when that one is in front, so that the new one is
+  /// right over it. One pushed while something else was in front is not
+  /// noted: Open then closes nothing to reach it.
+  static Future<T?> _putOver<T>(
+    BuildContext context,
+    Future<T?> Function() push,
+  ) {
+    final under = ModalRoute.of(context);
+    final navigator = Navigator.of(context);
+    final inFront = under?.isCurrent ?? false;
+    final pushed = push();
+    if (under != null && inFront) {
+      // Pushed at once: the new screen is the top one now.
+      Route<dynamic>? top;
+      navigator.popUntil((r) {
+        top = r;
+        return true;
+      });
+      if (top case final top? when !identical(top, under)) {
+        _putOverBy[top] = under;
+      }
+    }
+    return pushed;
   }
 
   @override
@@ -744,8 +790,11 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
         forStart: forStart,
       );
 
-  void _push(Widget screen) => Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => screen),
+  void _push(Widget screen) => ContactSyncScreen._putOver(
+        context,
+        () => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => screen),
+        ),
       );
 
   /// The brakes' questions as shown: each where it was first shown during
@@ -3904,7 +3953,8 @@ Future<void> _act(
 /// sign-in it has. A Gmail account on an app password moves to Google
 /// sign-in by it. The account keeps everything cached. True once signed
 /// in again; false when backed out of, or when it failed, which is said
-/// along the bottom.
+/// along the bottom. The sign-in counts among contact sync's own screens,
+/// which a stop's Open closes on its way back to the Contact sync screen.
 Future<bool> _signInForContacts(
   BuildContext context,
   WidgetRef ref,
@@ -3915,13 +3965,16 @@ Future<bool> _signInForContacts(
   try {
     switch (account.provider) {
       case MailProvider.outlook:
-        final token = await MicrosoftSignInScreen.show(
+        final token = await ContactSyncScreen._putOver(
           context,
-          loginHint: account.emailAddress,
-          scopes: [
-            ...MicrosoftOAuth.scopes,
-            ...MicrosoftOAuth.contactSyncScopes,
-          ],
+          () => MicrosoftSignInScreen.show(
+            context,
+            loginHint: account.emailAddress,
+            scopes: [
+              ...MicrosoftOAuth.scopes,
+              ...MicrosoftOAuth.contactSyncScopes,
+            ],
+          ),
         );
         if (token == null) return false;
         await accountsNotifier.signInAgain(
@@ -3929,9 +3982,12 @@ Future<bool> _signInForContacts(
           token: token,
         );
       case MailProvider.gmail:
-        final result = await GoogleSignInScreen.show(
+        final result = await ContactSyncScreen._putOver(
           context,
-          loginHint: account.emailAddress,
+          () => GoogleSignInScreen.show(
+            context,
+            loginHint: account.emailAddress,
+          ),
         );
         if (result == null) return false;
         await accountsNotifier.signInAgain(
