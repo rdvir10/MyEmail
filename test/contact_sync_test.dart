@@ -1751,6 +1751,61 @@ void main() {
       expect((notes.single as Map)['value'], 'Prefers email after 5');
       expect((await h.status()).needsALook, isEmpty);
     });
+
+    test("Use Hadco's instead on a pair held as refused is carried out at "
+        'once, ending the refusal', () async {
+      final g = h.google.seed({
+        ...person('Ann', 'Lee', email: 'a@example.com'),
+        'biographies': [
+          {'value': 'Met at the fair', 'contentType': 'TEXT_PLAIN'},
+        ],
+      });
+      final o = h.graph.seed({
+        ...outlook('Ann', 'Lee', email: 'a@example.com'),
+        'personalNotes': 'Prefers email after 5',
+      });
+      await h.firstSync();
+      var look = (await h.status()).needsALook.single;
+      await h.sync.answerLook(look.id, ContactSyncChoice.leaveAsTheyAre);
+
+      // Ron edits the Gmail note into one Outlook will not take.
+      h.graph.refuse = (c) => '${c['personalNotes']}'.length > 40;
+      h.google.editFromGmail(g, {
+        'biographies': [
+          {
+            'value': 'Met at the fair, and again at the trade show in May',
+            'contentType': 'TEXT_PLAIN',
+          },
+        ],
+      });
+      var status = await h.later();
+      expect(status.halt, isNull);
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      expect(
+        status.needsALook.map((l) => l.kind),
+        unorderedEquals([ContactReviewKind.clash, ContactReviewKind.refused]),
+      );
+      look = status.needsALook.firstWhere(
+        (l) => l.kind == ContactReviewKind.clash,
+      );
+
+      await h.sync.answerLook(look.id, ContactSyncChoice.useOther);
+      await h.sync.syncNow();
+      status = await h.status();
+      expect(status.halt, isNull);
+      final notes = h.google.person(g)!['biographies']! as List;
+      expect((notes.single as Map)['value'], 'Prefers email after 5');
+      expect(h.graph.contact(o)!['personalNotes'], 'Prefers email after 5');
+      expect(
+        status.needsALook.where((l) => l.kind == ContactReviewKind.clash),
+        isEmpty,
+      );
+      expect(
+        (await h.links()).single.state,
+        ContactLinkState.paired,
+        reason: 'no longer held as refused',
+      );
+    });
   });
 
   group('Outlook entries read short', () {

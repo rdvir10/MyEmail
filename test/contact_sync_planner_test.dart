@@ -4949,8 +4949,8 @@ void main() {
       expect(away.writes, isFalse);
     });
 
-    test("Use Hadco's on a pair a brake holds waits for the brake's answer",
-        () {
+    test("Use Hadco's on a pair a brake holds waits for the brake's answer; "
+        'on one held as refused it is tried at once', () {
       // Bob's job titles were left differing, and a later run's change
       // brake holds the pair for another change (Gmail's company) before
       // Ron answers the item.
@@ -4994,19 +4994,31 @@ void main() {
         answers: answers,
       );
 
-      // Held by the change brake, or held as refused, it is still a pair:
-      // each answer waits, and nothing is written.
-      for (final reason in [
-        ContactHeldReason.changeBrake,
-        ContactHeldReason.refused,
-      ]) {
-        final plan = answered(held(reason), [useHadcos, useOther]);
+      // Held by the change brake, it is still a pair: each answer waits,
+      // and nothing is written.
+      final braked = answered(held(ContactHeldReason.changeBrake), [
+        useHadcos,
+        useOther,
+      ]);
+      expect(braked.answers, [
+        ContactAnswerOutcome.waiting,
+        ContactAnswerOutcome.waiting,
+      ]);
+      expect(braked.links.where((l) => l.writes), isEmpty);
+      // Held as refused, nothing but an answer would end it (Retry sends
+      // the change refused again): carried out at once, as a Retry with
+      // Ron's choice. Refused again, the refusal's item says so.
+      for (final answer in [useHadcos, useOther]) {
+        final refused = answered(held(ContactHeldReason.refused), [answer]);
+        expect(refused.answers, [ContactAnswerOutcome.applied]);
+        final retried = byLink(refused, 1)!;
+        expect(retried.state, ContactLinkState.paired);
+        expect(retried.fromAnswer, isTrue);
         expect(
-          plan.answers,
-          [ContactAnswerOutcome.waiting, ContactAnswerOutcome.waiting],
-          reason: '$reason',
+          retried.googleWrite?.target.text(ContactField.jobTitle) ??
+              retried.graphWrite?.target.text(ContactField.jobTitle),
+          answer == useHadcos ? 'Manager' : 'Clerk',
         );
-        expect(plan.links.where((l) => l.writes), isEmpty);
       }
       // Ron answers Apply them: the held change is made, and Use Hadco's
       // waits on, its pair planned already this run.

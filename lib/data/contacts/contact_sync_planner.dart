@@ -275,8 +275,8 @@ enum ContactAnswerOutcome {
 
   /// A contact it acts on was not read this run (see [contactsToRead]),
   /// or is not ready for it: the copy it asked for was cut short and is
-  /// not found yet, or its pair is held by the change brake or as
-  /// refused. It stays queued.
+  /// not found yet, or its pair is held by the change brake. It stays
+  /// queued.
   waiting,
 
   /// Its contact has gone, or it no longer applies: the item is dropped.
@@ -2931,19 +2931,24 @@ class _Planner {
           ContactAnswerKind.useValue:
         final row = g != null ? googleRow[g] : graphRow[h];
         if (row == null || row.done) return dropped;
-        if (row.state != ContactLinkState.paired) {
-          // Held by the change brake, or held as refused, it is a pair
-          // still, both its contacts read every run (contactsToRead): the
-          // answer waits, and is carried out once the brake is answered
-          // or the pair goes through again. Any other held row is no pair
-          // now (moved out of Contacts, which no run reads while it is
-          // away, or down to one contact): dropped.
-          final heldPair =
-              row.googleName != null &&
-              row.graphId != null &&
-              (row.reason == ContactHeldReason.changeBrake ||
-                  row.reason == ContactHeldReason.refused);
-          if (!heldPair) return dropped;
+        final bothIds = row.googleName != null && row.graphId != null;
+        // Held as refused, with both its contacts: only an answer can end
+        // it (Retry sends the change refused again), so it is carried out
+        // now, as a Retry with Ron's choice; refused again, the refusal's
+        // own item says so.
+        final refused =
+            bothIds &&
+            row.state == ContactLinkState.held &&
+            row.reason == ContactHeldReason.refused;
+        if (row.state != ContactLinkState.paired && !refused) {
+          // Held by the change brake, it is a pair still, both its
+          // contacts read every run (contactsToRead): the answer waits,
+          // and is carried out the run after the brake is answered. Any
+          // other held row is no pair now (moved out of Contacts, which no
+          // run reads while it is away, or down to one contact): dropped.
+          if (!bothIds || row.reason != ContactHeldReason.changeBrake) {
+            return dropped;
+          }
           return unread([
                 (ContactSide.google, row.googleName),
                 (ContactSide.graph, row.graphId),
