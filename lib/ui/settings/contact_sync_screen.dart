@@ -268,51 +268,15 @@ class _ContactSyncScreenState extends ConsumerState<ContactSyncScreen> {
     return sure ?? false;
   }
 
-  /// A sign-in that asks for the contacts beside the mail, as View's
-  /// address books do: Microsoft's with the contacts permission added, so
-  /// that where the organisation decides, the sign-in sends it the request;
-  /// Google's whole, since an installed app cannot add a permission to a
-  /// sign-in it has. A Gmail account on an app password moves to Google
-  /// sign-in by it. The account keeps everything cached.
+  /// Allow: [account] signed in again asking for its contacts
+  /// ([_signInForContacts]), its row busy meanwhile and asked again after.
   Future<void> _allow(Account account) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final accountsNotifier = ref.read(accountsProvider.notifier);
     setState(() => _allowing.add(account.id));
     try {
-      switch (account.provider) {
-        case MailProvider.outlook:
-          final token = await MicrosoftSignInScreen.show(
-            context,
-            loginHint: account.emailAddress,
-            scopes: [
-              ...MicrosoftOAuth.scopes,
-              ...MicrosoftOAuth.contactSyncScopes,
-            ],
-          );
-          if (token == null) return;
-          await accountsNotifier.signInAgain(
-            accountId: account.id,
-            token: token,
-          );
-        case MailProvider.gmail:
-          final result = await GoogleSignInScreen.show(
-            context,
-            loginHint: account.emailAddress,
-          );
-          if (result == null) return;
-          await accountsNotifier.signInAgain(
-            accountId: account.id,
-            token: result.token,
-            signedInAs: result.identity?.email,
-          );
-          _signedInHere.add(account.id);
+      if (await _signInForContacts(context, ref, account) &&
+          account.provider == MailProvider.gmail) {
+        _signedInHere.add(account.id);
       }
-    } catch (e) {
-      // Queued, never in place of what is there: perhaps a send's Undo.
-      messenger.showSnackBar(SnackBar(
-        duration: kBottomMessage,
-        content: Text(e is ReadableError ? e.message : '$e'),
-      ));
     } finally {
       if (mounted) {
         ref.invalidate(contactSyncAccessProvider(account.id));
@@ -2355,7 +2319,24 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   /// nothing up either.
   bool _allShown = false;
 
+  /// A sign-in asked for from the box is under way.
+  bool _allowing = false;
+
   ContactSyncService get _sync => ref.read(mailEngineProvider).contactSync;
+
+  /// The sign-in a stop needs, from the box, as the Contact sync screen
+  /// offers it: once signed in, Sync now beside it carries on.
+  Future<void> _allow(Account account) async {
+    setState(() => _allowing = true);
+    try {
+      await _signInForContacts(context, ref, account);
+    } finally {
+      if (mounted) {
+        ref.invalidate(contactSyncAccessProvider(account.id));
+        setState(() => _allowing = false);
+      }
+    }
+  }
 
   DateTime? _lastNow() =>
       ref.read(contactSyncStatusProvider).value?.copies.last?.at;
@@ -2916,9 +2897,10 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
   }
 
   /// Why the merge asked for waits: the last sync's [stop], as the Contact
-  /// sync screen says it, and the way on from here, the one that screen
-  /// offers: Sync here for another device's claim, which Sync now would
-  /// only meet again, else Sync now.
+  /// sync screen says it, and the ways on from here, the ones that screen
+  /// offers: the sign-in a stop needs (Sign in again, its Allow), then
+  /// Sync now; Sync here for another device's claim, which Sync now would
+  /// only meet again.
   List<Widget> _waitsOn(
     ContactSyncStatus s,
     ContactSyncHalt stop,
@@ -2933,6 +2915,15 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
       ContactSyncHaltKind.notAllowed => stop.error,
       _ => null,
     };
+    // A stop a sign-in clears: the account that needs it.
+    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final signIn = switch (error) {
+      ContactSyncNeedsSignIn(:final side) => _byId(
+          accounts,
+          side == ContactSide.google ? s.googleAccountId : s.graphAccountId,
+        ),
+      _ => null,
+    };
     return [
       const SizedBox(height: 4),
       Text(
@@ -2944,6 +2935,7 @@ class _DuplicatesScreenState extends ConsumerState<_DuplicatesScreen> {
         const SizedBox(height: 4),
         ProblemView(
           problem: ProblemReport(doing: 'Syncing contacts', error: error),
+          onRemedy: signIn == null || _allowing ? null : () => _allow(signIn),
         ),
       ],
       const SizedBox(height: 8),
@@ -3732,6 +3724,60 @@ Future<void> _act(
       content: Text(e is ReadableError ? e.message : '$e'),
     ));
     onFailure?.call();
+  }
+}
+
+/// A sign-in that asks for the contacts beside the mail, as View's
+/// address books do: Microsoft's with the contacts permission added, so
+/// that where the organisation decides, the sign-in sends it the request;
+/// Google's whole, since an installed app cannot add a permission to a
+/// sign-in it has. A Gmail account on an app password moves to Google
+/// sign-in by it. The account keeps everything cached. True once signed
+/// in again; false when backed out of, or when it failed, which is said
+/// along the bottom.
+Future<bool> _signInForContacts(
+  BuildContext context,
+  WidgetRef ref,
+  Account account,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final accountsNotifier = ref.read(accountsProvider.notifier);
+  try {
+    switch (account.provider) {
+      case MailProvider.outlook:
+        final token = await MicrosoftSignInScreen.show(
+          context,
+          loginHint: account.emailAddress,
+          scopes: [
+            ...MicrosoftOAuth.scopes,
+            ...MicrosoftOAuth.contactSyncScopes,
+          ],
+        );
+        if (token == null) return false;
+        await accountsNotifier.signInAgain(
+          accountId: account.id,
+          token: token,
+        );
+      case MailProvider.gmail:
+        final result = await GoogleSignInScreen.show(
+          context,
+          loginHint: account.emailAddress,
+        );
+        if (result == null) return false;
+        await accountsNotifier.signInAgain(
+          accountId: account.id,
+          token: result.token,
+          signedInAs: result.identity?.email,
+        );
+    }
+    return true;
+  } catch (e) {
+    // Queued, never in place of what is there: perhaps a send's Undo.
+    messenger.showSnackBar(SnackBar(
+      duration: kBottomMessage,
+      content: Text(e is ReadableError ? e.message : '$e'),
+    ));
+    return false;
   }
 }
 

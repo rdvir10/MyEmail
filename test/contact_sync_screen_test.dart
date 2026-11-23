@@ -4449,6 +4449,69 @@ void main() {
       expect(button('contact-sync-copies-sync-now'), findsNothing);
     });
 
+    testWidgets('a merge waiting on a stop that needs a sign-in offers the '
+        'sign-in there, as the Contact sync screen does', (tester) async {
+      final web = FakeWebViewPlatform.install();
+      sync = FakeContactSync(status: synced(
+        copies: const ContactSyncCopies(people: 3, extras: 4, asked: true),
+        halt: ContactSyncHalt(
+          kind: ContactSyncHaltKind.notAllowed,
+          at: at1042,
+          side: ContactSide.graph,
+          error: const ContactSyncNeedsSignIn(
+            side: ContactSide.graph,
+            accountId: 'acct-h',
+            message: 'Hadco has not allowed contact sync.',
+          ),
+        ),
+        duplicates: const [
+          ContactSyncDuplicates(
+            title: 'Ann Cole',
+            googleCopies: 1,
+            graphCopies: 3,
+            googleSynced: true,
+            graphSynced: true,
+          ),
+        ],
+      ));
+      engine = _Engine(sync, const [gmail, hadco]);
+      await pumpScreen(tester, oauth: _grants());
+      await tester.tap(
+        find.text('Duplicates to merge when you like (1 person)'),
+      );
+      await tester.pumpAndSettle();
+      final panel = button('contact-sync-copies');
+      final signIn = find.descendant(
+        of: panel,
+        matching: find.text('Sign in again'),
+      );
+      expect(signIn, findsOneWidget);
+      expect(button('contact-sync-copies-sync-now'), findsOneWidget,
+          reason: 'the way on once signed in');
+
+      await tester.tap(signIn);
+      // Not pumpAndSettle: the sign-in page never says it has loaded here.
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(MicrosoftSignInScreen), findsOneWidget);
+      final page = web.loadedUrls.last;
+      expect(
+        page.queryParameters['scope'],
+        contains('https://graph.microsoft.com/Contacts.ReadWrite'),
+      );
+      expect(page.queryParameters['login_hint'], 'ron@hadco.example');
+      await web.navigationHandler!(NavigationRequest(
+        url: '${MicrosoftOAuth.redirectUri}?code=the-code'
+            '&state=${page.queryParameters['state']}',
+        isMainFrame: true,
+      ));
+      await tester.pumpAndSettle();
+      expect(engine.signedInAgain, ['acct-h']);
+      expect(find.text('Duplicates to merge'), findsOneWidget,
+          reason: 'back where Ron was');
+    });
+
     testWidgets("copies that differ: each copy's values, and Keep these or "
         'Leave them', (tester) async {
       await openDuplicates(
