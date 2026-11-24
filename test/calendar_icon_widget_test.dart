@@ -233,11 +233,15 @@ void main() {
             .allMatches(kt))
           m[1]!,
       };
-      // Its start and end; all day and declined, which are not counted.
-      expect(read, {'s', 'e', 'a', 'd'});
+      // Its start and end; all day, a day or more, and declined, which are
+      // not counted.
+      expect(read, {'s', 'e', 'a', 'm', 'd'});
       expect(written, containsAll(read));
-      expect(kt,
-          contains('o.optBoolean("a", false) || o.optBoolean("d", false)'));
+      expect(
+          kt,
+          contains('o.optBoolean("a", false) ||\n'
+              '                o.optBoolean("m", false) ||\n'
+              '                o.optBoolean("d", false)'));
       expect(kt, contains('o.optLong("e", 0) > now'));
       expect(kt, contains('o.optLong("s", 0) < tomorrow'));
     });

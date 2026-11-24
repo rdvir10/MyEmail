@@ -25,6 +25,7 @@ import 'package:myemail/data/ui_state_store.dart';
 import 'package:myemail/domain/account.dart';
 import 'package:myemail/domain/account_calendars.dart' show CalendarInfo;
 import 'package:myemail/domain/calendar_event.dart';
+import 'package:myemail/domain/free_busy.dart' show defaultWorkWeek;
 import 'package:myemail/domain/calendar_prefs.dart';
 import 'package:myemail/domain/mail_message.dart';
 import 'package:myemail/state/calendar_view_providers.dart';
@@ -881,6 +882,177 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('calendar-previous')));
       await tester.pumpAndSettle();
       expect(find.byKey(ValueKey('day-head:${day(t)}')), findsOneWidget);
+    });
+
+    // Outlook's week (Ron's own, 2026-11-24): a meeting of a day or more,
+    // a vacation from Monday 8:00 to Friday 8:30, is one bar over the hours
+    // with its times at its ends, and each event of several days one bar
+    // across them; it was a block down every day that squeezed the
+    // meetings.
+    group('the All day row, as bars across the days', () {
+      List<DateTime> workWeek() => calendarPage(CalendarViewMode.week,
+              WeekSpan.workWeek, defaultWorkWeek, today(), 0)
+          .days;
+      DateTime on(List<DateTime> days, int i, [int h = 0, int m = 0]) =>
+          DateTime(days[i].year, days[i].month, days[i].day, h, m);
+
+      Future<void> showWorkWeek(WidgetTester tester) async {
+        await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('calendar-span:workWeek')));
+        await tester.pumpAndSettle();
+      }
+
+      List<CalendarEvent> week(Account hadco, List<DateTime> days) => [
+            CalendarEvent(
+              id: 'vac',
+              accountId: hadco.id,
+              title: 'Yulia & Evgeny on vacation',
+              start: on(days, 0, 8),
+              end: on(days, 4, 8, 30),
+              showAs: EventShowAs.free,
+            ),
+            CalendarEvent(
+              id: 'evan',
+              accountId: hadco.id,
+              title: 'Evan surgery',
+              start: on(days, 0),
+              end: on(days, 3),
+              allDay: true,
+              showAs: EventShowAs.free,
+            ),
+            at(hadco, 'sync', 'Sync', on(days, 1, 10)),
+          ];
+
+      testWidgets('a vacation of four days is one bar over the hours, its '
+          'times at its ends, and the meetings keep their width',
+          (tester) async {
+        final days = workWeek();
+        await pump(tester, const CalendarScreen(),
+            prepare: (engine, hadco) =>
+                engine.events[hadco.id] = week(hadco, days));
+        await showWorkWeek(tester);
+        Rect head(int i) =>
+            tester.getRect(find.byKey(ValueKey('week-day:${day(days[i])}')));
+
+        final vac = find.byKey(const ValueKey('calendar-event:vac'));
+        expect(vac, findsOneWidget,
+            reason: 'one bar, not a block down each day');
+        final bar = tester.getRect(vac);
+        expect(bar.left, closeTo(head(0).left, 3));
+        expect(bar.right, closeTo(head(4).right, 3));
+        expect(find.descendant(of: vac, matching: find.text('08:00 ')),
+            findsOneWidget);
+        expect(find.descendant(of: vac, matching: find.text(' 08:30')),
+            findsOneWidget);
+        expect(find.ancestor(of: vac, matching: find.byType(SingleChildScrollView)),
+            findsNothing,
+            reason: 'over the hours, not in them');
+
+        final evan = tester
+            .getRect(find.byKey(const ValueKey('calendar-event:evan')));
+        expect(evan.left, closeTo(head(0).left, 3));
+        expect(evan.right, closeTo(head(2).right, 3),
+            reason: 'Monday to Wednesday, one bar');
+
+        final sync = find.byKey(const ValueKey('calendar-event:sync'));
+        expect(find.ancestor(of: sync, matching: find.byType(SingleChildScrollView)),
+            findsOneWidget);
+        expect(tester.getRect(sync).width, greaterThan(head(1).width - 6),
+            reason: "Tuesday's meeting as wide as its day");
+      });
+
+      testWidgets('folded, the first row of bars, and under it how many more '
+          'each day has', (tester) async {
+        final days = workWeek();
+        final (c, _) = await pump(tester, const CalendarScreen(),
+            prepare: (engine, hadco) => engine.events[hadco.id] = [
+                  ...week(hadco, days),
+                  CalendarEvent(
+                    id: 'birthday',
+                    accountId: hadco.id,
+                    title: "Dana's birthday",
+                    start: on(days, 1),
+                    end: on(days, 2),
+                    allDay: true,
+                    showAs: EventShowAs.free,
+                  ),
+                ]);
+        await showWorkWeek(tester);
+        await tester.tap(find.byKey(const ValueKey('all-day-fold')));
+        await tester.pumpAndSettle();
+        expect(c.read(calendarAllDayFoldedProvider), isTrue);
+        expect(find.byKey(const ValueKey('calendar-event:evan')),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('calendar-event:vac')), findsNothing);
+        expect(find.byKey(const ValueKey('calendar-event:birthday')),
+            findsNothing);
+        Finder more(int i) =>
+            find.byKey(ValueKey('all-day-more:${day(days[i])}'));
+        expect(find.descendant(of: more(0), matching: find.text('+1')),
+            findsOneWidget);
+        expect(find.descendant(of: more(1), matching: find.text('+2')),
+            findsOneWidget);
+        expect(find.descendant(of: more(4), matching: find.text('+1')),
+            findsOneWidget);
+
+        await tester.tap(more(1));
+        await tester.pumpAndSettle();
+        expect(c.read(calendarAllDayFoldedProvider), isFalse);
+        expect(find.byKey(const ValueKey('calendar-event:vac')),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('calendar-event:birthday')),
+            findsOneWidget);
+      });
+
+      testWidgets("Month says a vacation's time on its first day alone",
+          (tester) async {
+        final days = workWeek();
+        await pump(tester, const CalendarScreen(),
+            prepare: (engine, hadco) =>
+                engine.events[hadco.id] = week(hadco, days));
+        await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
+        await tester.pumpAndSettle();
+        Finder said(int i, String text) => find.descendant(
+            of: find.byKey(ValueKey('month-day:${day(days[i])}')).first,
+            matching: find.text(text));
+        expect(said(0, '08:00 Yulia & Evgeny on vacation'), findsOneWidget);
+        expect(said(2, 'Yulia & Evgeny on vacation'), findsOneWidget);
+        expect(said(2, '08:00 Yulia & Evgeny on vacation'), findsNothing);
+      });
+
+      testWidgets('the Agenda says All day on a day between, and its sheet '
+          'has no Running late', (tester) async {
+        final t = today();
+        await pump(tester, const CalendarScreen(), prepare: (engine, hadco) {
+          engine.events[hadco.id] = [
+            CalendarEvent(
+              id: 'vac',
+              accountId: hadco.id,
+              title: 'Offsite',
+              start: DateTime(t.year, t.month, t.day - 1, 8),
+              end: DateTime(t.year, t.month, t.day + 1, 18),
+              organizer: const MailAddress(email: 'dana@hadco.example'),
+              attendees: const [
+                EventAttendee(MailAddress(email: 'dana@hadco.example'),
+                    response: EventResponse.organizer),
+                EventAttendee(MailAddress(email: 'ron@hadco.example'),
+                    response: EventResponse.accepted),
+              ],
+              response: EventResponse.accepted,
+            ),
+          ];
+        });
+        final row = find.descendant(
+            of: find.byKey(ValueKey('agenda-day:${day(t)}')),
+            matching: find.byKey(const ValueKey('agenda-event:vac')));
+        expect(find.descendant(of: row, matching: find.text('All day')),
+            findsOneWidget);
+        await tester.tap(row);
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('event-late')), findsNothing,
+            reason: 'not late for a meeting all of the day');
+      });
     });
 
     testWidgets('a birthday on three calendars is one line, in the month, '

@@ -176,6 +176,19 @@ class CalendarEvent {
   /// Google's does; Outlook takes a declined meeting off itself.
   bool get declined => response == EventResponse.declined;
 
+  /// A meeting with times that lasts a day or more: a week's vacation from
+  /// Monday 8:00 to Friday 8:30. Drawn and told of as a whole day is, as
+  /// Outlook and Google Calendar put one of 24 hours or more in the
+  /// all-day row: a bar over the hours, not a block down every day, and
+  /// not a meeting under way all week (no bar over the mail, no Running
+  /// late). Its own reminder still goes before it begins.
+  bool get lastsADay =>
+      !allDay && !end.isBefore(start.add(const Duration(hours: 24)));
+
+  /// Whether it goes in the All day row over the hours of Day and Week: a
+  /// whole day, or one that [lastsADay].
+  bool get inAllDayRow => allDay || lastsADay;
+
   /// Whether any of it falls on [day], a date at midnight.
   bool fallsOn(DateTime day) {
     final from = DateTime(day.year, day.month, day.day);
@@ -368,13 +381,14 @@ class CalendarEvent {
   String toString() => 'CalendarEvent($title, $start)';
 }
 
-/// [events] on [day]: the whole-day ones first, then by when they start.
+/// [events] on [day]: the whole-day ones first, with those that last a
+/// day or more ([CalendarEvent.inAllDayRow]), then by when they start.
 List<CalendarEvent> eventsOn(DateTime day, Iterable<CalendarEvent> events) =>
     [
       for (final e in events)
         if (e.fallsOn(day)) e,
     ]..sort((a, b) {
-        if (a.allDay != b.allDay) return a.allDay ? -1 : 1;
+        if (a.inAllDayRow != b.inAllDayRow) return a.inAllDayRow ? -1 : 1;
         final byStart = a.start.compareTo(b.start);
         return byStart != 0 ? byStart : a.end.compareTo(b.end);
       });
@@ -459,6 +473,60 @@ String? _wholeDayKey(CalendarEvent e, Set<String> own) {
           : by;
   String date(DateTime t) => '${t.year}-${t.month}-${t.day}';
   return '$name|${date(e.start)}|${date(e.end)}|$person';
+}
+
+/// A bar in the All day row over the hours of Day and Week: [event], from
+/// the column of `days[first]` to that of `days[last]`, in [lane], the row
+/// of bars it is in, counted from the top.
+typedef DayBar = ({CalendarEvent event, int first, int last, int lane});
+
+/// [events]' whole days, and those that last a day or more, laid out as
+/// Outlook lays out its all-day area: each one bar across the days among
+/// [days] it falls on (in order, though the work week alone may leave days
+/// out), in the first row of bars with room for it. The one beginning in
+/// an earlier column first, then the earlier to start, the longer, and by
+/// title and id, so the same events lie the same way whatever order they
+/// come in.
+List<DayBar> layOutDayBars(
+  List<DateTime> days,
+  Iterable<CalendarEvent> events,
+) {
+  final spans = <({CalendarEvent event, int first, int last})>[];
+  for (final e in events) {
+    if (!e.inAllDayRow) continue;
+    var first = -1, last = -1;
+    for (var i = 0; i < days.length; i++) {
+      if (!e.fallsOn(days[i])) continue;
+      if (first < 0) first = i;
+      last = i;
+    }
+    if (first >= 0) spans.add((event: e, first: first, last: last));
+  }
+  spans.sort((a, b) {
+    if (a.first != b.first) return a.first - b.first;
+    final byStart = a.event.start.compareTo(b.event.start);
+    if (byStart != 0) return byStart;
+    final longer = b.event.end.compareTo(a.event.end);
+    if (longer != 0) return longer;
+    final byTitle = a.event.title.compareTo(b.event.title);
+    if (byTitle != 0) return byTitle;
+    return '${a.event.accountId}|${a.event.calendarId}|${a.event.id}'
+        .compareTo('${b.event.accountId}|${b.event.calendarId}|${b.event.id}');
+  });
+  // Each row's last column taken so far.
+  final rows = <int>[];
+  final bars = <DayBar>[];
+  for (final s in spans) {
+    var lane = rows.indexWhere((last) => last < s.first);
+    if (lane < 0) {
+      lane = rows.length;
+      rows.add(s.last);
+    } else {
+      rows[lane] = s.last;
+    }
+    bars.add((event: s.event, first: s.first, last: s.last, lane: lane));
+  }
+  return bars;
 }
 
 /// Where a timed event sits across a day's width: its column among those

@@ -1426,7 +1426,10 @@ class _AgendaRow extends StatelessWidget {
     final startsToday = !e.start.isBefore(day);
     final endsToday = e.end.isBefore(_plus(day, 1)) ||
         e.end == _plus(day, 1) && !e.allDay;
-    final (String first, String? second) = e.allDay
+    // A meeting of a day or more on a day between its first and its last
+    // takes all of it.
+    final (String first, String? second) = e.allDay ||
+            (!startsToday && !endsToday)
         ? ('All day', null)
         : (
             startsToday ? clock(e.start) : 'Until',
@@ -1450,9 +1453,9 @@ class _AgendaRow extends StatelessWidget {
     // As wide as the times need at this text size and clock (#90).
     final times = agendaTimesWidth(context);
     final now = this.now;
-    final over = now != null && !e.allDay && !e.end.isAfter(now);
+    final over = now != null && !e.inAllDayRow && !e.end.isAfter(now);
     final on = now != null &&
-        !e.allDay &&
+        !e.inAllDayRow &&
         !e.start.isAfter(now) &&
         e.end.isAfter(now);
     final row = InkWell(
@@ -1808,6 +1811,7 @@ class _MonthDay extends StatelessWidget {
                   padding: EdgeInsets.only(right: inset),
                   child: _MonthEvent(
                     event: e,
+                    day: day,
                     colour: colourOf(e),
                     onTap: onEvent == null ? null : () => onEvent!(e),
                   ),
@@ -1846,9 +1850,18 @@ class _MonthDay extends StatelessWidget {
 
 /// An event's line in a month box on a tablet.
 class _MonthEvent extends StatelessWidget {
-  const _MonthEvent({required this.event, required this.colour, this.onTap});
+  const _MonthEvent({
+    required this.event,
+    required this.day,
+    required this.colour,
+    this.onTap,
+  });
 
   final CalendarEvent event;
+
+  /// The box it is in: a meeting of a day or more says its time only on
+  /// the day it begins.
+  final DateTime day;
   final Color colour;
   final VoidCallback? onTap;
 
@@ -1871,7 +1884,7 @@ class _MonthEvent extends StatelessWidget {
     // time kept whole in its own order (an isolate), at the right.
     final direction = firstStrongDirection(e.title);
     final time = formatClock(e.start, use24h: use24h);
-    final text = e.allDay
+    final text = e.allDay || (e.lastsADay && !_sameDay(e.start, day))
         ? e.title
         : direction == TextDirection.rtl
             ? '\u2066$time\u2069 ${e.title}'
@@ -2389,29 +2402,58 @@ class _TimelineState extends ConsumerState<_Timeline> {
       use24h,
     );
     final button = plusButtonCorner(context);
-    final allDay = {
-      for (final d in widget.days)
-        d: [
-          for (final e in eventsOn(d, widget.events))
-            if (e.allDay) e,
-        ],
-    };
-    final anyAllDay = allDay.values.any((l) => l.isNotEmpty);
+    // Whole days, and meetings of a day or more, as Outlook's all-day area
+    // has them: each one bar across its days, in rows of bars.
+    final bars = layOutDayBars(widget.days, widget.events);
+    final lanes = bars.fold(0, (n, b) => math.max(n, b.lane + 1));
+    final anyAllDay = bars.isNotEmpty;
     final folded = ref.watch(calendarAllDayFoldedProvider);
     final fold = ref.read(calendarAllDayFoldedProvider.notifier).toggle;
+    // Folded, how many each day has under the first row.
+    final under = [
+      for (var i = 0; i < widget.days.length; i++)
+        bars.where((b) => b.lane > 0 && b.first <= i && i <= b.last).length,
+    ];
     Widget words() => Text(
           HourScale.allDay,
           style: muted,
           maxLines: 1,
           softWrap: false,
         );
-    Widget block(CalendarEvent e) => _Block(
-          event: e,
-          colour: widget.colours[e] ?? theme.colorScheme.primary,
-          edge: widget.colours.edgeOf(e),
-          onTap: () => widget.onTap(e),
-          compact: true,
-        );
+    // A meeting of a day or more says when it begins on the bar's first
+    // day and when it ends on its last, as Outlook's bar does.
+    Widget bar(DayBar b) {
+      final e = b.event;
+      final begins =
+          e.lastsADay && !e.start.isBefore(widget.days[b.first]);
+      final ends =
+          e.lastsADay && !e.end.isAfter(_plus(widget.days[b.last], 1));
+      return _Block(
+        event: e,
+        colour: widget.colours[e] ?? theme.colorScheme.primary,
+        edge: widget.colours.edgeOf(e),
+        onTap: () => widget.onTap(e),
+        compact: true,
+        before: begins ? formatClock(e.start, use24h: use24h) : null,
+        after: ends ? formatClock(e.end, use24h: use24h) : null,
+      );
+    }
+
+    // One row of bars, each as wide as the days it is on.
+    Widget lane(int row) {
+      final cells = <Widget>[];
+      var at = 0;
+      for (final b in bars.where((b) => b.lane == row)) {
+        if (b.first > at) cells.add(Spacer(flex: b.first - at));
+        cells.add(Expanded(flex: b.last - b.first + 1, child: bar(b)));
+        at = b.last + 1;
+      }
+      if (at < widget.days.length) {
+        cells.add(Spacer(flex: widget.days.length - at));
+      }
+      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: cells);
+    }
+
     return Column(
       children: [
         Row(
@@ -2509,41 +2551,47 @@ class _TimelineState extends ConsumerState<_Timeline> {
                     ),
                   ),
                 ),
-                for (final d in widget.days)
-                  Expanded(
-                    child: !folded
-                        ? Column(
-                            children: [for (final e in allDay[d]!) block(e)],
-                          )
-                        // Folded, a day's first, and how many more: a tap
-                        // on the count opens them all.
-                        : allDay[d]!.isEmpty
-                            ? const SizedBox.shrink()
-                            : Row(
-                                children: [
-                                  Expanded(child: block(allDay[d]!.first)),
-                                  if (allDay[d]!.length > 1)
-                                    InkWell(
-                                      key: ValueKey(
-                                        'all-day-more:${_dayKey(d)}',
-                                      ),
-                                      onTap: fold,
-                                      child: Padding(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          3,
-                                          0,
-                                          3,
-                                          2,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (!folded)
+                        for (var row = 0; row < lanes; row++) lane(row)
+                      else ...[
+                        // Folded, the first row, and under it how many
+                        // more each day has: a tap on a count opens them
+                        // all.
+                        lane(0),
+                        if (under.any((n) => n > 0))
+                          Row(
+                            children: [
+                              for (var i = 0; i < widget.days.length; i++)
+                                Expanded(
+                                  child: under[i] == 0
+                                      ? const SizedBox.shrink()
+                                      : Align(
+                                          alignment:
+                                              AlignmentDirectional.centerStart,
+                                          child: InkWell(
+                                            key: ValueKey('all-day-more:'
+                                                '${_dayKey(widget.days[i])}'),
+                                            onTap: fold,
+                                            child: Padding(
+                                              padding:
+                                                  const EdgeInsets.fromLTRB(
+                                                      3, 0, 3, 2),
+                                              child: Text('+${under[i]}',
+                                                  style: muted),
+                                            ),
+                                          ),
                                         ),
-                                        child: Text(
-                                          '+${allDay[d]!.length - 1}',
-                                          style: muted,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
+                                ),
+                            ],
+                          ),
+                      ],
+                    ],
                   ),
+                ),
               ],
             ),
           ),
@@ -2614,8 +2662,11 @@ class _TimelineState extends ConsumerState<_Timeline> {
                               child: _DayColumn(
                                 day: d,
                                 events: [
+                                  // A meeting of a day or more is a bar
+                                  // over the hours, not a block down
+                                  // every day.
                                   for (final e in eventsOn(d, widget.events))
-                                    if (!e.allDay) e,
+                                    if (!e.inAllDayRow) e,
                                 ],
                                 colours: widget.colours,
                                 hourHeight: hourHeight,
@@ -2865,12 +2916,20 @@ class _Block extends StatelessWidget {
     required this.onTap,
     this.compact = false,
     this.edge,
+    this.before,
+    this.after,
   });
 
   final CalendarEvent event;
   final Color colour;
   final VoidCallback onTap;
   final bool compact;
+
+  /// On a bar in the All day row, a meeting of a day or more's time where
+  /// it begins, before its title, and where it ends, after it: "8:00 AM"
+  /// and "8:30 AM", as Outlook's bar says them.
+  final String? before;
+  final String? after;
 
   /// The account's colour, down the left, for an event drawn in a colour
   /// of its own: an Outlook category, a colour picked in Google Calendar,
@@ -2920,12 +2979,29 @@ class _Block extends StatelessWidget {
                 child: compact || event.allDay
                     ? SizedBox(
                         width: double.infinity,
-                        child: Text(
-                          event.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: style,
-                          textDirection: firstStrongDirection(event.title),
+                        child: Row(
+                          children: [
+                            if (before case final at?)
+                              Text('$at ',
+                                  key: const ValueKey('bar-from'),
+                                  maxLines: 1,
+                                  style: style),
+                            Expanded(
+                              child: Text(
+                                event.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: style,
+                                textDirection:
+                                    firstStrongDirection(event.title),
+                              ),
+                            ),
+                            if (after case final at?)
+                              Text(' $at',
+                                  key: const ValueKey('bar-until'),
+                                  maxLines: 1,
+                                  style: style),
+                          ],
                         ),
                       )
                     : BlockText(
@@ -3117,7 +3193,7 @@ class _EventDetails extends StatelessWidget {
     final answerable =
         invited && reachable && e.calendarId == CalendarEvent.mainCalendar;
     final now = DateTime.now();
-    final soon = !e.allDay &&
+    final soon = !e.inAllDayRow &&
         others &&
         now.isAfter(e.start.subtract(const Duration(hours: 1))) &&
         now.isBefore(e.end);

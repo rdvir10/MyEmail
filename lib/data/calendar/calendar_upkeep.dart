@@ -396,6 +396,9 @@ class CalendarUpkeep {
             's': e.start.millisecondsSinceEpoch,
             'e': e.end.millisecondsSinceEpoch,
             if (e.allDay) 'a': true,
+            // A meeting of a day or more: "From", "All day" or "Until" on
+            // each day, not counted among the day's meetings.
+            if (e.lastsADay) 'm': true,
             if (e.declined) 'd': true,
             // Shown as free, a holiday or a birthday: drawn pale.
             if (e.showAs == EventShowAs.free) 'f': true,

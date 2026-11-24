@@ -130,8 +130,8 @@ class CalendarDayWidgetProvider : HomeWidgetProvider() {
     }
 
     /**
-     * How many of the meetings CalendarUpkeep wrote are today's, timed, not
-     * declined, and not over by [now]. Nought where it wrote nothing yet.
+     * How many of the meetings CalendarUpkeep wrote are today's, timed (not
+     * lasting a day or more), not declined, and not over by [now]. Nought where it wrote nothing yet.
      * What it wrote runs to the end of tomorrow, so after midnight the new
      * day's are there before the app has run.
      */
@@ -146,7 +146,14 @@ class CalendarDayWidgetProvider : HomeWidgetProvider() {
         var left = 0
         for (i in 0 until array.length()) {
             val o = array.optJSONObject(i) ?: continue
-            if (o.optBoolean("a", false) || o.optBoolean("d", false)) continue
+            // Whole days, meetings of a day or more, and those declined are
+            // not meetings still to come.
+            if (o.optBoolean("a", false) ||
+                o.optBoolean("m", false) ||
+                o.optBoolean("d", false)
+            ) {
+                continue
+            }
             if (o.optLong("e", 0) > now && o.optLong("s", 0) < tomorrow) left++
         }
         return left

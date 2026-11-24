@@ -227,6 +227,40 @@ void main() {
     expect(bar('b').a, 1.0, reason: 'a meeting full strength, as before');
   });
 
+  // A vacation from Monday 8:00 to Wednesday 8:30 is not a meeting from
+  // 08:00 to 08:30: it says when it begins, and is all day after.
+  testWidgets('a meeting of a day or more says From, then All day, and is '
+      'not the next meeting', (tester) async {
+    await pump(tester,
+        events: (hadco) => [
+              ...day(hadco),
+              CalendarEvent(
+                id: 'vac',
+                accountId: hadco.id,
+                title: 'Vacation',
+                start: DateTime(2026, 10, 26, 8),
+                end: DateTime(2026, 10, 28, 8, 30),
+                showAs: EventShowAs.free,
+              ),
+            ]);
+    await hold(tester);
+    expect(
+        inSheet(find.descendant(
+            of: find.byKey(const ValueKey('my-day-event:vac')),
+            matching: find.text('From 08:00'))),
+        findsOneWidget);
+    expect(
+        inSheet(find.descendant(
+            of: find.byKey(const ValueKey('my-day-tomorrow:vac')),
+            matching: find.text('All day'))),
+        findsOneWidget);
+    expect(
+        find.descendant(
+            of: inSheet(find.byKey(const ValueKey('my-day-join'))),
+            matching: find.text('Join Weekly sync')),
+        findsOneWidget);
+  });
+
   testWidgets('turned on its side with My Day up, its taps still open what '
       'they open', (tester) async {
     await pump(tester);

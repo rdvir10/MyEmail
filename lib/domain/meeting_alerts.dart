@@ -27,6 +27,11 @@ String meetingKey(CalendarEvent event) =>
 /// declined, not cancelled.
 bool _timedAndOn(CalendarEvent e) => !e.allDay && !e.cancelled && !e.declined;
 
+/// [_timedAndOn], and not one that lasts a day or more, which is told of
+/// as a whole day is: a week's vacation is not a meeting under way all
+/// week. Its own reminder still goes ([meetingRemindersFor]).
+bool _meetingOn(CalendarEvent e) => _timedAndOn(e) && !e.lastsADay;
+
 String _titleOf(CalendarEvent e) =>
     e.title.trim().isEmpty ? '(No title)' : e.title.trim();
 
@@ -46,7 +51,7 @@ CalendarEvent? nextMeeting(
   CalendarEvent? coming;
   CalendarEvent? going;
   for (final e in events) {
-    if (!_timedAndOn(e) || !e.end.isAfter(now)) continue;
+    if (!_meetingOn(e) || !e.end.isAfter(now)) continue;
     if (dismissed.contains(meetingKey(e))) continue;
     if (e.start.isAfter(now)) {
       if (e.start.difference(now) > nextMeetingLead) continue;
@@ -62,7 +67,8 @@ CalendarEvent? nextMeeting(
 /// in Do Not Disturb (calendar idea #70): one under way, with a time of its
 /// own, still on, that you made or accepted ([_yours]), and that shows you
 /// busy or out of office. Not one free, tentative or working elsewhere,
-/// not one declined, cancelled or not answered, and not a whole day.
+/// not one declined, cancelled or not answered, and not a whole day or one
+/// that lasts a day or more.
 ///
 /// [ownEmails] is each account's address, by account id: see [_yours].
 bool inMeetingAt(
@@ -71,7 +77,7 @@ bool inMeetingAt(
   Map<String, String> ownEmails = const {},
 }) =>
     events.any((e) =>
-        _timedAndOn(e) &&
+        _meetingOn(e) &&
         _yours(e, ownEmails[e.accountId] ?? '') &&
         (e.showAs == EventShowAs.busy ||
             e.showAs == EventShowAs.outOfOffice) &&
@@ -511,7 +517,9 @@ DateTime nextAgendaTime(DateTime now, int minutes, Set<int> workWeek) {
 /// midnight: how many meetings that day, and when the first begins. Null
 /// for a day with nothing on, which stays quiet. A day with all-day events
 /// and no meeting at a time says those: it stayed quiet too until calendar
-/// idea #68. An all-day name on two calendars is said once.
+/// idea #68. An all-day name on two calendars is said once. One that lasts
+/// a day or more is with the whole days, said with its time that day
+/// ([timesOnDay]): "From 08:00", "All day", "Until 08:30".
 MorningAgenda? morningAgendaFor(
   Iterable<CalendarEvent> events, {
   required DateTime now,
@@ -525,7 +533,7 @@ MorningAgenda? morningAgendaFor(
   final seen = <String>{};
   final timed = [
     for (final e in events)
-      if (_timedAndOn(e) &&
+      if (_meetingOn(e) &&
           !e.start.isBefore(day) &&
           e.start.isBefore(next) &&
           seen.add(meetingKey(e)))
@@ -534,7 +542,7 @@ MorningAgenda? morningAgendaFor(
   final said = <String>{};
   final wholeDays = [
     for (final e in events)
-      if (e.allDay &&
+      if (e.inAllDayRow &&
           !e.cancelled &&
           !e.declined &&
           e.start.isBefore(next) &&
@@ -552,7 +560,10 @@ MorningAgenda? morningAgendaFor(
       title: 'No meetings today',
       body: 'All day: ${_titleOf(wholeDays.first)}'
           '${more > 0 ? ' and $more more' : ''}',
-      lines: [for (final e in wholeDays) 'All day  ${_titleOf(e)}'],
+      lines: [
+        for (final e in wholeDays)
+          '${timesOnDay(e, day, use24h: use24h)}  ${_titleOf(e)}',
+      ],
     );
   }
   String clock(DateTime t) => formatClock(t, use24h: use24h);
@@ -566,9 +577,28 @@ MorningAgenda? morningAgendaFor(
     body: 'The first at ${clock(first.start)}: ${_titleOf(first)}',
     lines: [
       for (final e in timed) '${clock(e.start)}  ${_titleOf(e)}',
-      for (final e in wholeDays) 'All day  ${_titleOf(e)}',
+      for (final e in wholeDays)
+        '${timesOnDay(e, day, use24h: use24h)}  ${_titleOf(e)}',
     ],
   );
+}
+
+/// When [e] is on [day], a date at midnight, in a list of that day's
+/// events (My Day, the morning agenda): "All day" for a whole day; for one
+/// that lasts a day or more, "From 08:00" on the day it begins, "Until
+/// 08:30" on the day it ends and "All day" between; otherwise its times,
+/// "09:00–10:00".
+String timesOnDay(CalendarEvent e, DateTime day, {required bool use24h}) {
+  String clock(DateTime t) => formatClock(t, use24h: use24h);
+  if (e.allDay) return 'All day';
+  if (!e.lastsADay) return '${clock(e.start)}–${clock(e.end)}';
+  final from = DateTime(day.year, day.month, day.day);
+  final to = DateTime(day.year, day.month, day.day + 1);
+  final begins = !e.start.isBefore(from);
+  final ends = !e.end.isAfter(to);
+  if (begins && !ends) return 'From ${clock(e.start)}';
+  if (ends && !begins) return 'Until ${clock(e.end)}';
+  return 'All day';
 }
 
 /// What the calendar widget lists at [now]: today's and tomorrow's
@@ -594,9 +624,10 @@ List<CalendarEvent> widgetMeetings(
           seen.add(meetingKey(e)))
         e,
   ]..sort((a, b) {
-      // A whole day first on its day, as the calendar lists it.
-      if (a.allDay != b.allDay && _sameDay(a.start, b.start)) {
-        return a.allDay ? -1 : 1;
+      // A whole day first on its day, as the calendar lists it, with one
+      // that lasts a day or more.
+      if (a.inAllDayRow != b.inAllDayRow && _sameDay(a.start, b.start)) {
+        return a.inAllDayRow ? -1 : 1;
       }
       return a.start.compareTo(b.start);
     }), own: own);

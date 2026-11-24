@@ -351,6 +351,28 @@ void main() {
     expect([for (final r in rows) r['t']], ["Dana's birthday"]);
   });
 
+  test('the widget is told which meetings last a day or more', () async {
+    now = DateTime(2026, 10, 26, 9);
+    engine.events[hadco.id] = [
+      meeting('a', DateTime(2026, 10, 26, 10), title: 'Stand-up'),
+      CalendarEvent(
+        id: 'v',
+        accountId: hadco.id,
+        title: 'Vacation',
+        start: DateTime(2026, 10, 26, 8),
+        end: DateTime(2026, 10, 30, 8, 30),
+        showAs: EventShowAs.free,
+      ),
+    ];
+    await run();
+    final rows =
+        jsonDecode(surface.values[CalendarUpkeep.widgetKey]! as String) as List;
+    final byTitle = {for (final r in rows) r['t']: r as Map};
+    expect(byTitle['Vacation']!['m'], isTrue);
+    expect(byTitle['Vacation']!.containsKey('a'), isFalse);
+    expect(byTitle['Stand-up']!.containsKey('m'), isFalse);
+  });
+
   test('a calendar that cannot be read keeps what the device kept', () async {
     engine.events[hadco.id] = [meeting('a', DateTime(2026, 10, 26, 10))];
     await run();

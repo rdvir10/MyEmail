@@ -12,6 +12,10 @@
     <string name="calendar_widget_tomorrow">Tomorrow</string>
     <string name="calendar_widget_join">Join</string>
     <string name="calendar_widget_all_day">All day</string>
+    <!-- A meeting of a day or more, on the day it begins and the day it
+         ends: "From 8:00 AM", "Until 8:30 AM". -->
+    <string name="calendar_widget_from">From %1$s</string>
+    <string name="calendar_widget_until">Until %1$s</string>
     <string name="calendar_widget_declined">Declined</string>
     <string name="calendar_widget_nothing_more">Nothing more today</string>
     <string name="calendar_widget_nothing">Nothing today or tomorrow</string>

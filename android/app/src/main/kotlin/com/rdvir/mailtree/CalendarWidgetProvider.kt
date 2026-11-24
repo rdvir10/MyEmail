@@ -85,6 +85,8 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
         val start: Long,
         val end: Long,
         val allDay: Boolean,
+        /** A meeting with times that lasts a day or more: a vacation. */
+        val lastsADay: Boolean,
         val declined: Boolean,
         val free: Boolean,
         val colour: Int,
@@ -110,6 +112,7 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
                     start = o.optLong("s", 0),
                     end = o.optLong("e", 0),
                     allDay = o.optBoolean("a", false),
+                    lastsADay = o.optBoolean("m", false),
                     declined = o.optBoolean("d", false),
                     free = o.optBoolean("f", false),
                     colour = o.optLong("c", DEFAULT_COLOUR.toLong()).toInt(),
@@ -170,7 +173,7 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
                 day = its
             }
             if (room < ROW_DP) break
-            views.addView(R.id.calendar_widget_list, row(context, m, now, its == today))
+            views.addView(R.id.calendar_widget_list, row(context, m, now, its, its == today))
             room -= ROW_DP
         }
         appWidgetManager.updateAppWidget(widgetId, views)
@@ -181,7 +184,13 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
             setTextViewText(R.id.calendar_day_text, context.getString(text))
         }
 
-    private fun row(context: Context, m: Meeting, now: Long, today: Boolean): RemoteViews =
+    private fun row(
+        context: Context,
+        m: Meeting,
+        now: Long,
+        day: Long,
+        today: Boolean,
+    ): RemoteViews =
         RemoteViews(context.packageName, R.layout.calendar_widget_row).apply {
             setInt(R.id.calendar_row_colour, "setColorFilter", m.colour)
             // Pale where it takes none of the day (a holiday, a birthday)
@@ -193,10 +202,17 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
             )
             setTextViewText(R.id.calendar_row_title, m.title)
             val clock = DateFormat.getTimeFormat(context)
-            val time = if (m.allDay) {
-                context.getString(R.string.calendar_widget_all_day)
-            } else {
-                "${clock.format(Date(m.start))}–${clock.format(Date(m.end))}"
+            val dayAfter = dayStart(day, 1)
+            val time = when {
+                m.allDay -> context.getString(R.string.calendar_widget_all_day)
+                // A meeting of a day or more, on [day]: when it begins on
+                // its first day, when it ends on its last, all day between.
+                m.lastsADay && m.start >= day && m.end > dayAfter ->
+                    context.getString(R.string.calendar_widget_from, clock.format(Date(m.start)))
+                m.lastsADay && m.start < day && m.end <= dayAfter ->
+                    context.getString(R.string.calendar_widget_until, clock.format(Date(m.end)))
+                m.lastsADay -> context.getString(R.string.calendar_widget_all_day)
+                else -> "${clock.format(Date(m.start))}–${clock.format(Date(m.end))}"
             }
             setTextViewText(
                 R.id.calendar_row_when,
@@ -214,7 +230,7 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
             }
             // Join on today's, from the app the link belongs to.
             val join = m.join
-            if (join != null && today && !m.allDay && m.end > now) {
+            if (join != null && today && !m.allDay && !m.lastsADay && m.end > now) {
                 setViewVisibility(R.id.calendar_row_join, View.VISIBLE)
                 setOnClickPendingIntent(R.id.calendar_row_join, openLink(context, join))
             } else {

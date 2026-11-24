@@ -4,11 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/calendar_event.dart';
-import '../../domain/meeting_alerts.dart' show nextMeeting;
+import '../../domain/meeting_alerts.dart' show nextMeeting, timesOnDay;
 import '../../domain/text_direction.dart' show firstStrongDirection;
 import '../../state/calendar_view_providers.dart';
 import '../../state/meeting_alert_providers.dart';
-import '../messages/date_format.dart';
 import 'agenda_row_parts.dart' show agendaFaintBar, paleInLists;
 import 'calendar_screen.dart';
 import 'event_colours.dart';
@@ -136,6 +135,7 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
     List<Widget> meetings(
       AsyncValue<CalendarLoad> load,
       List<CalendarEvent> events, {
+      required DateTime day,
       required String name,
       required String none,
     }) =>
@@ -159,6 +159,7 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
               tapKey: ValueKey('$name:${e.id}'),
               barKey: ValueKey('my-day-bar:$name:${e.id}'),
               event: e,
+              day: day,
               colour: colours[e] ?? theme.colorScheme.primary,
               over: !e.end.isAfter(now),
               next: identical(e, next),
@@ -232,7 +233,7 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
             padding: const EdgeInsets.symmetric(vertical: 6),
             children: [
               ...meetings(load, events,
-                  name: 'my-day-event', none: 'Nothing on today'),
+                  day: today, name: 'my-day-event', none: 'Nothing on today'),
               const Divider(height: 25, indent: 16, endIndent: 16),
               InkWell(
                 key: const ValueKey('my-day-tomorrow-date'),
@@ -252,7 +253,9 @@ class _MyDayPaneState extends ConsumerState<MyDayPane> {
                 ),
               ),
               ...meetings(nextLoad, nextEvents,
-                  name: 'my-day-tomorrow', none: 'Nothing on tomorrow'),
+                  day: tomorrow,
+                  name: 'my-day-tomorrow',
+                  none: 'Nothing on tomorrow'),
             ],
           ),
         ),
@@ -273,6 +276,7 @@ class _MyDayEvent extends StatelessWidget {
     required this.tapKey,
     required this.barKey,
     required this.event,
+    required this.day,
     required this.colour,
     required this.over,
     required this.next,
@@ -284,6 +288,10 @@ class _MyDayEvent extends StatelessWidget {
   final Key tapKey;
   final Key barKey;
   final CalendarEvent event;
+
+  /// The day it is listed under: one of a day or more says "From 08:00",
+  /// "All day" or "Until 08:30" on it ([timesOnDay]).
+  final DateTime day;
   final Color colour;
   final bool over;
   final bool next;
@@ -294,10 +302,7 @@ class _MyDayEvent extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final e = event;
-    final when = e.allDay
-        ? 'All day'
-        : '${formatClock(e.start, use24h: use24h)}–'
-            '${formatClock(e.end, use24h: use24h)}';
+    final when = timesOnDay(e, day, use24h: use24h);
     final place = e.location.trim().isNotEmpty
         ? e.location.trim()
         : e.joinUrl != null

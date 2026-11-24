@@ -8,9 +8,10 @@ import 'meeting_alerts.dart' show nextMeetingLead;
 /// Whether [event] is near at [now]: from [nextMeetingLead] before it
 /// begins until it ends, the window in which the bar over the mail shows
 /// it with its Join. A meeting with a time of its own that is still on, as
-/// the bar has it: not a whole day, not cancelled, not declined.
+/// the bar has it: not a whole day or one that lasts a day or more, not
+/// cancelled, not declined.
 bool meetingIsNear(CalendarEvent event, DateTime now) =>
-    !event.allDay &&
+    !event.inAllDayRow &&
     !event.cancelled &&
     !event.declined &&
     !now.isBefore(event.start.subtract(nextMeetingLead)) &&
@@ -23,13 +24,13 @@ bool meetingIsNear(CalendarEvent event, DateTime now) =>
 /// Agenda's row says it; and as a screen reader says it, in words: "Starts
 /// in 2 hours 10 minutes", "On now".
 ///
-/// Null for a meeting starting on another day than [now]'s, a whole day,
-/// one cancelled, and once it is over.
+/// Null for a meeting starting on another day than [now]'s, a whole day or
+/// one that lasts a day or more, one cancelled, and once it is over.
 ({String shown, String spoken})? timeToStart(
   CalendarEvent event,
   DateTime now,
 ) {
-  if (event.allDay || event.cancelled || !event.end.isAfter(now)) {
+  if (event.inAllDayRow || event.cancelled || !event.end.isAfter(now)) {
     return null;
   }
   if (!event.start.isAfter(now)) return (shown: 'Now', spoken: 'On now');
