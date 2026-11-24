@@ -368,7 +368,8 @@ class AndroidMailNotifier implements MailNotifier {
       ),
     );
     final meeting = reminder.meeting;
-    final lasts = meeting.end.difference(reminder.at).inMilliseconds;
+    // Gone as it ends; a vacation's, an hour after it begins.
+    final lasts = meeting.goneAt.difference(reminder.at).inMilliseconds;
     final colour = meeting.colour;
     final details = NotificationDetails(
       android: AndroidNotificationDetails(

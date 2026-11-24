@@ -2424,10 +2424,11 @@ class _TimelineState extends ConsumerState<_Timeline> {
     // day and when it ends on its last, as Outlook's bar does.
     Widget bar(DayBar b) {
       final e = b.event;
-      final begins =
-          e.lastsADay && !e.start.isBefore(widget.days[b.first]);
+      // Inside the day, not at its midnight: one from 00:00 to 00:00
+      // says no times.
+      final begins = e.lastsADay && e.start.isAfter(widget.days[b.first]);
       final ends =
-          e.lastsADay && !e.end.isAfter(_plus(widget.days[b.last], 1));
+          e.lastsADay && e.end.isBefore(_plus(widget.days[b.last], 1));
       return _Block(
         event: e,
         colour: widget.colours[e] ?? theme.colorScheme.primary,
@@ -2977,32 +2978,40 @@ class _Block extends StatelessWidget {
               child: Padding(
                 padding: BlockText.padding,
                 child: compact || event.allDay
-                    ? SizedBox(
-                        width: double.infinity,
-                        child: Row(
-                          children: [
-                            if (before case final at?)
-                              Text('$at ',
-                                  key: const ValueKey('bar-from'),
-                                  maxLines: 1,
-                                  style: style),
-                            Expanded(
-                              child: Text(
-                                event.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: style,
-                                textDirection:
-                                    firstStrongDirection(event.title),
-                              ),
+                    ? LayoutBuilder(
+                        builder: (context, box) {
+                          final (from, until) =
+                              _timesThatFit(context, box.maxWidth, style);
+                          return SizedBox(
+                            width: double.infinity,
+                            child: Row(
+                              children: [
+                                if (from != null)
+                                  Text(from,
+                                      key: const ValueKey('bar-from'),
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      style: style),
+                                Expanded(
+                                  child: Text(
+                                    event.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: style,
+                                    textDirection:
+                                        firstStrongDirection(event.title),
+                                  ),
+                                ),
+                                if (until != null)
+                                  Text(until,
+                                      key: const ValueKey('bar-until'),
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      style: style),
+                              ],
                             ),
-                            if (after case final at?)
-                              Text(' $at',
-                                  key: const ValueKey('bar-until'),
-                                  maxLines: 1,
-                                  style: style),
-                          ],
-                        ),
+                          );
+                        },
                       )
                     : BlockText(
                         title: event.title,
@@ -3018,6 +3027,47 @@ class _Block extends StatelessWidget {
     );
   }
 }
+
+extension on _Block {
+  /// [before] and [after] as the bar shows them in [width]: both where
+  /// they leave the title [_titleRoom], else the start alone, else the end
+  /// alone, else neither. A bar a day wide on a phone, or on a tablet held
+  /// upright, has no room for "8:00 AM" and "8:30 AM" and a title too.
+  (String?, String?) _timesThatFit(
+    BuildContext context,
+    double width,
+    TextStyle style,
+  ) {
+    final from = before == null ? null : '$before ';
+    final until = after == null ? null : ' $after';
+    if (from == null && until == null) return (null, null);
+    final base = DefaultTextStyle.of(context).style.merge(style);
+    final scaler = MediaQuery.textScalerOf(context);
+    double widthOf(String? text) {
+      if (text == null) return 0;
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: base),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+      )..layout();
+      final measured = painter.width;
+      painter.dispose();
+      return measured;
+    }
+
+    // [width] is inside the bar's padding already.
+    final room = width - _titleRoom;
+    for (final (a, b) in [(from, until), (from, null), (null, until)]) {
+      if (a == null && b == null) continue;
+      if (widthOf(a) + widthOf(b) <= room) return (a, b);
+    }
+    return (null, null);
+  }
+}
+
+/// The least a bar's title keeps beside its times: a few letters.
+const _titleRoom = 40.0;
 
 // --- an event, opened -------------------------------------------------------------
 

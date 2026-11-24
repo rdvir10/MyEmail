@@ -129,6 +129,72 @@ void main() {
       expect(last.lines, ['Until 08:30  vacation']);
     });
 
+    test('ending as a day begins, or beginning as one does, takes the day',
+        () {
+      final toMidnight = timed('t', DateTime(2026, 11, 23, 8),
+          DateTime(2026, 11, 25));
+      expect(timesOnDay(toMidnight, week[0], use24h: true), 'From 08:00');
+      expect(timesOnDay(toMidnight, week[1], use24h: true), 'All day',
+          reason: 'not "Until 00:00"');
+      final fromMidnight = timed('f', DateTime(2026, 11, 23),
+          DateTime(2026, 11, 24, 12));
+      expect(timesOnDay(fromMidnight, week[0], use24h: true), 'All day',
+          reason: 'not "From 00:00"');
+      expect(timesOnDay(fromMidnight, week[1], use24h: true), 'Until 12:00');
+    });
+
+    test('a day by the clock: 24 hours, or 23 or 25 as the clocks change',
+        () {
+      // From midnight to midnight is a day, whatever the hours between.
+      final start = DateTime(2026, 3, 8);
+      expect(timed('d', start, DateTime(2026, 3, 9)).lastsADay, isTrue,
+          reason: '23 hours where the clocks go forward that night');
+      expect(
+          timed('d', DateTime(2026, 11, 23, 9), DateTime(2026, 11, 24, 8, 59))
+              .lastsADay,
+          isFalse);
+    });
+
+    test('its reminder says from when to when, has no Running late, and goes '
+        'once it has begun', () {
+      final reminder = meetingRemindersFor([vacation],
+              now: DateTime(2026, 11, 23, 7),
+              use24h: true,
+              ownEmails: const {'hadco': 'ron@hadco.example'})
+          .single;
+      expect(reminder.meeting.body, 'Mon 08:00 – Fri 08:30');
+      expect(reminder.canTellLate, isFalse);
+      expect(reminder.meeting.lastsADay, isTrue);
+      expect(reminder.meeting.goneAt, DateTime(2026, 11, 23, 9),
+          reason: 'an hour after it begins, not four days on');
+      final sync = meetingRemindersFor([
+        timed('sync', DateTime(2026, 11, 24, 10),
+            DateTime(2026, 11, 24, 10, 30)),
+      ], now: DateTime(2026, 11, 24, 9), use24h: true)
+          .single;
+      expect(sync.meeting.goneAt, DateTime(2026, 11, 24, 10, 30));
+    });
+
+    test('two vacations of the same name are both in the morning agenda', () {
+      final dana = timed('dana', DateTime(2026, 11, 23, 8),
+          DateTime(2026, 11, 26, 8), showAs: EventShowAs.free);
+      final moshe = CalendarEvent(
+        id: 'moshe',
+        accountId: 'hadco',
+        calendarId: 'team',
+        title: 'vacation',
+        start: DateTime(2026, 11, 23, 9),
+        end: DateTime(2026, 11, 26, 9),
+        showAs: EventShowAs.free,
+      );
+      final agenda = morningAgendaFor([vacation, dana, moshe],
+          now: DateTime(2026, 11, 24, 6),
+          minutes: 7 * 60 + 30,
+          workWeek: const {1, 2, 3, 4, 5},
+          use24h: true)!;
+      expect(agenda.lines, hasLength(3));
+    });
+
     test('says when it is on each day: from, all day, until', () {
       String said(DateTime day) => timesOnDay(vacation, day, use24h: true);
       expect(said(week[0]), 'From 08:00');

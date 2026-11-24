@@ -182,8 +182,7 @@ class CalendarEvent {
   /// all-day row: a bar over the hours, not a block down every day, and
   /// not a meeting under way all week (no bar over the mail, no Running
   /// late). Its own reminder still goes before it begins.
-  bool get lastsADay =>
-      !allDay && !end.isBefore(start.add(const Duration(hours: 24)));
+  bool get lastsADay => !allDay && lastsADayFrom(start, end);
 
   /// Whether it goes in the All day row over the hours of Day and Week: a
   /// whole day, or one that [lastsADay].
@@ -379,6 +378,18 @@ class CalendarEvent {
 
   @override
   String toString() => 'CalendarEvent($title, $start)';
+}
+
+/// Whether a meeting from [start] to [end] lasts a day or more: to the same
+/// time the next day by the clock, or later. So midnight to midnight is a
+/// day on the nights the clocks change too, 23 hours or 25.
+bool lastsADayFrom(DateTime start, DateTime end) {
+  final next = start.isUtc
+      ? DateTime.utc(start.year, start.month, start.day + 1, start.hour,
+          start.minute, start.second)
+      : DateTime(start.year, start.month, start.day + 1, start.hour,
+          start.minute, start.second);
+  return !end.isBefore(next);
 }
 
 /// [events] on [day]: the whole-day ones first, with those that last a

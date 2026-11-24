@@ -176,6 +176,15 @@ class MeetingRef {
   /// again; null where nothing gave one (a tap on the widget).
   final int? colour;
 
+  /// A meeting of a day or more: a week's vacation
+  /// ([CalendarEvent.lastsADay]).
+  bool get lastsADay => lastsADayFrom(start, end);
+
+  /// When its reminder goes from the shade by itself: as the meeting ends,
+  /// or for one of a day or more an hour after it begins, not days on.
+  DateTime get goneAt =>
+      lastsADay ? start.add(const Duration(hours: 1)) : end;
+
   static const _meeting = 'myemail-meeting:';
   static const _join = 'myemail-join:';
 
@@ -285,13 +294,22 @@ DateTime? calendarDayOf(String? payload) {
 int meetingReminderId(CalendarEvent event) =>
     'meeting:${meetingKey(event)}'.hashCode & 0x7fffffff;
 
-/// What a meeting's reminder says under its title: when, and where.
+/// What a meeting's reminder says under its title: when, and where. One of
+/// a day or more from which day to which: "Mon 08:00 – Fri 08:30".
 String reminderBody(CalendarEvent e, {required bool use24h}) => [
-      '${formatClock(e.start, use24h: use24h)}–'
-          '${formatClock(e.end, use24h: use24h)}',
+      if (e.lastsADay)
+        '${_weekdayNames[e.start.weekday - 1]} '
+            '${formatClock(e.start, use24h: use24h)} – '
+            '${_weekdayNames[e.end.weekday - 1]} '
+            '${formatClock(e.end, use24h: use24h)}'
+      else
+        '${formatClock(e.start, use24h: use24h)}–'
+            '${formatClock(e.end, use24h: use24h)}',
       // A link in the place named, not written out on a locked screen.
       ?placeLine(e),
     ].join(' · ');
+
+const _weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /// A meeting's reminder, as MyEmail sets it with Android.
 @immutable
@@ -348,9 +366,11 @@ List<MeetingReminder> meetingRemindersFor(
     if (!seen.add(id)) continue;
     final own = (ownEmails[e.accountId] ?? '').trim().toLowerCase();
     final organiser = e.organizer?.email.trim().toLowerCase();
-    final anyoneToTell = isOwnEvent(e)
-        ? everyoneOn(e, own).isNotEmpty
-        : organiser != null && organiser != own;
+    // Nobody is told of running late for a vacation.
+    final anyoneToTell = !e.lastsADay &&
+        (isOwnEvent(e)
+            ? everyoneOn(e, own).isNotEmpty
+            : organiser != null && organiser != own);
     found.add(MeetingReminder(
       id: id,
       at: e.start.subtract(Duration(minutes: minutes)),
@@ -548,7 +568,9 @@ MorningAgenda? morningAgendaFor(
           e.start.isBefore(next) &&
           e.end.isAfter(day) &&
           seen.add(meetingKey(e)) &&
-          said.add(_sameName(e)))
+          // A holiday on two calendars is said once; two people's
+          // vacations of the same name are two.
+          (!e.allDay || said.add(_sameName(e))))
         e,
   ];
   if (timed.isEmpty) {
@@ -594,8 +616,10 @@ String timesOnDay(CalendarEvent e, DateTime day, {required bool use24h}) {
   if (!e.lastsADay) return '${clock(e.start)}–${clock(e.end)}';
   final from = DateTime(day.year, day.month, day.day);
   final to = DateTime(day.year, day.month, day.day + 1);
-  final begins = !e.start.isBefore(from);
-  final ends = !e.end.isAfter(to);
+  // Beginning as the day begins, or ending as it ends, takes all of it:
+  // not "From 00:00", nor "Until 00:00".
+  final begins = e.start.isAfter(from) && e.start.isBefore(to);
+  final ends = e.end.isAfter(from) && e.end.isBefore(to);
   if (begins && !ends) return 'From ${clock(e.start)}';
   if (ends && !begins) return 'Until ${clock(e.end)}';
   return 'All day';

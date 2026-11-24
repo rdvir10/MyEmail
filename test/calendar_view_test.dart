@@ -595,6 +595,8 @@ void main() {
       void Function(SampleMailEngine engine, Account hadco)? prepare,
       Size size = const Size(1000, 1400),
       SampleMailEngine? using,
+      bool use24h = true,
+      double scale = 1.0,
     }) async {
       tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1.0;
@@ -625,7 +627,10 @@ void main() {
         child: MaterialApp(
           home: home,
           builder: (context, child) => MediaQuery(
-            data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
+            data: MediaQuery.of(context).copyWith(
+              alwaysUse24HourFormat: use24h,
+              textScaler: TextScaler.linear(scale),
+            ),
             child: child!,
           ),
         ),
@@ -1003,6 +1008,83 @@ void main() {
             findsOneWidget);
         expect(find.byKey(const ValueKey('calendar-event:birthday')),
             findsOneWidget);
+      });
+
+      // The review: a bar narrower than its two times overflowed, and its
+      // title had no room (a two-day trip on a phone's week, or the
+      // tablet held upright, on a 12-hour clock).
+      for (final (width, scale) in [(412.0, 1.0), (412.0, 1.5), (800.0, 1.0)]) {
+        testWidgets('a narrow bar gives its times up before its title '
+            '($width wide, text at $scale)', (tester) async {
+          final days = calendarPage(CalendarViewMode.week, WeekSpan.sevenDays,
+                  defaultWorkWeek, today(), 0)
+              .days;
+          await pump(tester, const CalendarScreen(),
+              size: Size(width, 900),
+              use24h: false,
+              scale: scale,
+              prepare: (engine, hadco) => engine.events[hadco.id] = [
+                    CalendarEvent(
+                      id: 'trip',
+                      accountId: hadco.id,
+                      title: 'Trip',
+                      start: on(days, 0, 8),
+                      end: on(days, 1, 8, 30),
+                    ),
+                    CalendarEvent(
+                      id: 'weekend',
+                      accountId: hadco.id,
+                      title: 'Weekend',
+                      start: on(days, 6, 8),
+                      end: on(days, 6).add(const Duration(days: 2)),
+                    ),
+                  ]);
+          await tester.tap(find.byKey(const ValueKey('calendar-menu')));
+          await tester.pumpAndSettle();
+          await tester
+              .tap(find.byKey(const ValueKey('calendar-span:sevenDays')));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          for (final (id, title) in [('trip', 'Trip'), ('weekend', 'Weekend')]) {
+            final words = find.descendant(
+                of: find.byKey(ValueKey('calendar-event:$id')),
+                matching: find.text(title));
+            expect(words, findsOneWidget);
+            expect(tester.getSize(words).width, greaterThan(20),
+                reason: '$title keeps room to be read');
+          }
+        });
+      }
+
+      testWidgets('a day of 00:00 to 00:00 says no times on its bar',
+          (tester) async {
+        final days = workWeek();
+        await pump(tester, const CalendarScreen(),
+            prepare: (engine, hadco) => engine.events[hadco.id] = [
+                  CalendarEvent(
+                    id: 'day',
+                    accountId: hadco.id,
+                    title: 'Conference',
+                    start: on(days, 1),
+                    end: on(days, 2),
+                  ),
+                  CalendarEvent(
+                    id: 'two',
+                    accountId: hadco.id,
+                    title: 'Trip',
+                    start: on(days, 0, 8),
+                    end: on(days, 2),
+                  ),
+                ]);
+        await showWorkWeek(tester);
+        Finder times(String id, String key) => find.descendant(
+            of: find.byKey(ValueKey('calendar-event:$id')),
+            matching: find.byKey(ValueKey(key)));
+        expect(times('day', 'bar-from'), findsNothing);
+        expect(times('day', 'bar-until'), findsNothing);
+        expect(times('two', 'bar-from'), findsOneWidget);
+        expect(times('two', 'bar-until'), findsNothing,
+            reason: 'it ends as Wednesday begins');
       });
 
       testWidgets("Month says a vacation's time on its first day alone",

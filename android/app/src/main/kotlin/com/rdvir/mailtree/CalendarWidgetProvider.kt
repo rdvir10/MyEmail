@@ -207,9 +207,10 @@ class CalendarWidgetProvider : HomeWidgetProvider() {
                 m.allDay -> context.getString(R.string.calendar_widget_all_day)
                 // A meeting of a day or more, on [day]: when it begins on
                 // its first day, when it ends on its last, all day between.
-                m.lastsADay && m.start >= day && m.end > dayAfter ->
+                // Beginning or ending at midnight takes the whole day.
+                m.lastsADay && m.start > day && m.end > dayAfter ->
                     context.getString(R.string.calendar_widget_from, clock.format(Date(m.start)))
-                m.lastsADay && m.start < day && m.end <= dayAfter ->
+                m.lastsADay && m.start < day && m.end < dayAfter ->
                     context.getString(R.string.calendar_widget_until, clock.format(Date(m.end)))
                 m.lastsADay -> context.getString(R.string.calendar_widget_all_day)
                 else -> "${clock.format(Date(m.start))}–${clock.format(Date(m.end))}"
