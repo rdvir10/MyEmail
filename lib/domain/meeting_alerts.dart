@@ -295,13 +295,11 @@ int meetingReminderId(CalendarEvent event) =>
     'meeting:${meetingKey(event)}'.hashCode & 0x7fffffff;
 
 /// What a meeting's reminder says under its title: when, and where. One of
-/// a day or more from which day to which: "Mon 08:00 – Fri 08:30".
+/// a day or more from which day to which: "Mon 23 Nov 08:00 – Fri 27 Nov
+/// 08:30", its last day without a time where it ends at midnight.
 String reminderBody(CalendarEvent e, {required bool use24h}) => [
       if (e.lastsADay)
-        '${_weekdayNames[e.start.weekday - 1]} '
-            '${formatClock(e.start, use24h: use24h)} – '
-            '${_weekdayNames[e.end.weekday - 1]} '
-            '${formatClock(e.end, use24h: use24h)}'
+        _fromTo(e, use24h: use24h)
       else
         '${formatClock(e.start, use24h: use24h)}–'
             '${formatClock(e.end, use24h: use24h)}',
@@ -310,6 +308,22 @@ String reminderBody(CalendarEvent e, {required bool use24h}) => [
     ].join(' · ');
 
 const _weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const _monthNames = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/// "Mon 23 Nov 08:00 – Fri 27 Nov 08:30", for one of a day or more.
+String _fromTo(CalendarEvent e, {required bool use24h}) {
+  String date(DateTime d) =>
+      '${_weekdayNames[d.weekday - 1]} ${d.day} ${_monthNames[d.month - 1]}';
+  final end = e.end;
+  final atMidnight = end.hour == 0 && end.minute == 0 && end.second == 0;
+  final last = atMidnight
+      ? date(DateTime(end.year, end.month, end.day - 1))
+      : '${date(end)} ${formatClock(end, use24h: use24h)}';
+  return '${date(e.start)} ${formatClock(e.start, use24h: use24h)} – $last';
+}
 
 /// A meeting's reminder, as MyEmail sets it with Android.
 @immutable
@@ -496,7 +510,9 @@ DateTime? snoozedUntil(MeetingRef meeting, DateTime now) {
   if (meeting.start.isAfter(now) && meeting.start.isBefore(at)) {
     at = meeting.start;
   }
-  return at.isBefore(meeting.end) ? at : null;
+  // A vacation's reminder goes an hour after it begins ([goneAt]), and a
+  // snooze past that would keep it in the shade with nothing to take it.
+  return at.isBefore(meeting.goneAt) ? at : null;
 }
 
 /// The morning's agenda: when it goes, and what it says.

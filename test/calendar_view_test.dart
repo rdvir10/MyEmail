@@ -1087,6 +1087,32 @@ void main() {
             reason: 'it ends as Wednesday begins');
       });
 
+      testWidgets('one beginning at midnight says All day in the Agenda, '
+          'and no time in Month', (tester) async {
+        final t = today();
+        await pump(tester, const CalendarScreen(), prepare: (engine, hadco) {
+          engine.events[hadco.id] = [
+            CalendarEvent(
+              id: 'trip',
+              accountId: hadco.id,
+              title: 'Trip',
+              start: DateTime(t.year, t.month, t.day),
+              end: DateTime(t.year, t.month, t.day + 2, 8, 30),
+            ),
+          ];
+        });
+        final row = find.descendant(
+            of: find.byKey(ValueKey('agenda-day:${day(t)}')),
+            matching: find.byKey(const ValueKey('agenda-event:trip')));
+        expect(find.descendant(of: row, matching: find.text('All day')),
+            findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('calendar-view-month')));
+        await tester.pumpAndSettle();
+        final cell = find.byKey(ValueKey('month-day:${day(t)}')).first;
+        expect(find.descendant(of: cell, matching: find.text('Trip')),
+            findsOneWidget);
+      });
+
       testWidgets("Month says a vacation's time on its first day alone",
           (tester) async {
         final days = workWeek();

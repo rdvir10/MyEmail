@@ -162,7 +162,7 @@ void main() {
               use24h: true,
               ownEmails: const {'hadco': 'ron@hadco.example'})
           .single;
-      expect(reminder.meeting.body, 'Mon 08:00 – Fri 08:30');
+      expect(reminder.meeting.body, 'Mon 23 Nov 08:00 – Fri 27 Nov 08:30');
       expect(reminder.canTellLate, isFalse);
       expect(reminder.meeting.lastsADay, isTrue);
       expect(reminder.meeting.goneAt, DateTime(2026, 11, 23, 9),
@@ -173,6 +173,28 @@ void main() {
       ], now: DateTime(2026, 11, 24, 9), use24h: true)
           .single;
       expect(sync.meeting.goneAt, DateTime(2026, 11, 24, 10, 30));
+    });
+
+    test('its reminder says the dates, and a last day ending at midnight '
+        'without a time', () {
+      final fortnight = timed('f', DateTime(2026, 11, 23, 8),
+          DateTime(2026, 12, 7, 8, 30));
+      expect(reminderBody(fortnight, use24h: true),
+          'Mon 23 Nov 08:00 – Mon 7 Dec 08:30',
+          reason: 'not the same weekday at both ends and nothing else');
+      final toMidnight = timed('m', DateTime(2026, 11, 23, 8),
+          DateTime(2026, 11, 28));
+      expect(reminderBody(toMidnight, use24h: true),
+          'Mon 23 Nov 08:00 – Fri 27 Nov');
+    });
+
+    test('a snoozed vacation reminder goes when it would have, not days on',
+        () {
+      final ref = MeetingRef.of(vacation);
+      expect(snoozedUntil(ref, DateTime(2026, 11, 23, 8, 50)),
+          DateTime(2026, 11, 23, 8, 55));
+      expect(snoozedUntil(ref, DateTime(2026, 11, 23, 8, 56)), isNull,
+          reason: 'past an hour after it began');
     });
 
     test('two vacations of the same name are both in the morning agenda', () {

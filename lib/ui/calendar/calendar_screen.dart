@@ -1423,9 +1423,13 @@ class _AgendaRow extends StatelessWidget {
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
     final e = event;
-    final startsToday = !e.start.isBefore(day);
+    // A meeting of a day or more beginning or ending at midnight takes that
+    // day whole: not "00:00", nor "Until 00:00".
+    final long = e.lastsADay;
+    final startsToday =
+        long ? e.start.isAfter(day) : !e.start.isBefore(day);
     final endsToday = e.end.isBefore(_plus(day, 1)) ||
-        e.end == _plus(day, 1) && !e.allDay;
+        e.end == _plus(day, 1) && !e.allDay && !long;
     // A meeting of a day or more on a day between its first and its last
     // takes all of it.
     final (String first, String? second) = e.allDay ||
@@ -1884,7 +1888,9 @@ class _MonthEvent extends StatelessWidget {
     // time kept whole in its own order (an isolate), at the right.
     final direction = firstStrongDirection(e.title);
     final time = formatClock(e.start, use24h: use24h);
-    final text = e.allDay || (e.lastsADay && !_sameDay(e.start, day))
+    final text = e.allDay ||
+            (e.lastsADay &&
+                (!_sameDay(e.start, day) || !e.start.isAfter(day)))
         ? e.title
         : direction == TextDirection.rtl
             ? '\u2066$time\u2069 ${e.title}'
