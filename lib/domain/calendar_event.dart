@@ -417,8 +417,16 @@ List<CalendarEvent> eventsOn(DateTime day, Iterable<CalendarEvent> events) =>
 /// events, never copies (a team's calendar, which Google names as every
 /// event's organiser, with two people's days off), and where a calendar
 /// holds two, nothing of that name and days folds. Only what asks nothing
-/// of Ron folds: one busy or out of office, waiting for his answer, declined or
+/// of Ron folds: one busy or out of office, waiting for his answer,
+/// declined or
 /// cancelled, or with no name, is listed as often as it is on.
+///
+/// A birthday or an anniversary, one that repeats with nobody on it, is
+/// listed once even where Ron can change its copies, or where one calendar
+/// holds several: Outlook adds a birthday to the main calendar for each
+/// copy of a contact, and Hadco had three of one person's, Gmail two more
+/// (the tablet, 2026-11-24: one birthday nine times on a day). The copy
+/// listed is one he can change where there is one, the same each time.
 List<CalendarEvent> foldSameWholeDays(
   Iterable<CalendarEvent> events, {
   Set<String> own = const {},
@@ -429,6 +437,8 @@ List<CalendarEvent> foldSameWholeDays(
   // The copy of each that is listed where none can be changed, which have
   // a copy that can, and which have two on one calendar.
   final kept = <String, CalendarEvent>{};
+  // The copy each lists where its birthdays fold: one Ron can change first.
+  final keeper = <String, CalendarEvent>{};
   final changeable = <String>{};
   final onCalendar = <String>{};
   final twoOnOne = <String>{};
@@ -444,12 +454,19 @@ List<CalendarEvent> foldSameWholeDays(
     if (was == null || _copyOrder(e).compareTo(_copyOrder(was)) < 0) {
       kept[key] = e;
     }
+    final before = keeper[key];
+    if (before == null ||
+        (before.readOnly && !e.readOnly) ||
+        (before.readOnly == e.readOnly &&
+            _copyOrder(e).compareTo(_copyOrder(before)) < 0)) {
+      keeper[key] = e;
+    }
   }
   bool listed(int i) {
     final key = keys[i];
-    if (key == null || !list[i].readOnly || twoOnOne.contains(key)) {
-      return true;
-    }
+    if (key == null) return true;
+    if (_yearly(list[i])) return identical(keeper[key], list[i]);
+    if (!list[i].readOnly || twoOnOne.contains(key)) return true;
     return !changeable.contains(key) && identical(kept[key], list[i]);
   }
 
@@ -458,6 +475,10 @@ List<CalendarEvent> foldSameWholeDays(
       if (listed(i)) list[i],
   ];
 }
+
+/// A birthday or an anniversary, as [foldSameWholeDays] tells one: it
+/// repeats, and nobody is on it.
+bool _yearly(CalendarEvent e) => e.seriesId != null && e.attendees.isEmpty;
 
 String _copyOrder(CalendarEvent e) =>
     '${e.accountId}\u0000${e.calendarId}\u0000${e.id}';

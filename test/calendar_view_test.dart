@@ -217,6 +217,79 @@ void main() {
           ['f', 'm', 'busy', 'ask', 'maybe', 'no', 'off', 'two', 'n1', 'n2']);
     });
 
+    // The tablet, 2026-11-24: Neta's birthday nine times on one Thursday.
+    // Hadco's main calendar held it three times (Outlook adds a birthday
+    // for each copy of a contact, and Hadco has three of hers), Gmail's
+    // two or three, all of them Ron's to change, so none folded.
+    test('a birthday repeated on calendars Ron can change is listed once',
+        () {
+      CalendarEvent birthday(
+        String id,
+        String title, {
+        String accountId = 'hadco',
+        String calendarId = CalendarEvent.mainCalendar,
+        bool readOnly = false,
+        String? series = 'yearly',
+        List<EventAttendee> attendees = const [],
+      }) =>
+          CalendarEvent(
+            id: id,
+            accountId: accountId,
+            calendarId: calendarId,
+            title: title,
+            start: day,
+            end: DateTime(day.year, day.month, day.day + 1),
+            allDay: true,
+            showAs: EventShowAs.free,
+            readOnly: readOnly,
+            seriesId: series == null ? null : '$series-$id',
+            organizer: MailAddress(
+                email: accountId == 'gmail'
+                    ? 'ron@gmail.example'
+                    : 'ron@hadco.example'),
+            attendees: attendees,
+          );
+      const own = {'ron@hadco.example', 'ron@gmail.example'};
+      List<String> ids(List<CalendarEvent> events) =>
+          [for (final e in foldSameWholeDays(events, own: own)) e.id];
+
+      expect(
+          ids([
+            birthday('h1', "Neta Ron's Birthday"),
+            birthday('h2', "Neta Ron's Birthday"),
+            birthday('h3', "Neta Ron's birthday"),
+            birthday('g1', "Neta Ron's Birthday", accountId: 'gmail'),
+            birthday('g2', "Neta Ron's birthday", accountId: 'gmail'),
+            birthday('o', "Neta Ron's Birthday",
+                calendarId: 'gmail-in-outlook', readOnly: true),
+            birthday('b', 'Neta Ron birthday',
+                calendarId: 'birthdays', readOnly: true),
+          ]),
+          ['g1', 'b'],
+          reason: 'one copy Ron can change, the same each time; another '
+              'name is another line');
+      // One that does not repeat, or has someone on it, is not a birthday:
+      // as before, never hidden where Ron can change it.
+      expect(
+          ids([
+            birthday('a', 'Party', series: null),
+            birthday('c', 'Party', accountId: 'gmail', series: null),
+          ]),
+          ['a', 'c']);
+      expect(
+          ids([
+            birthday('a', 'Lunch',
+                attendees: const [
+                  EventAttendee(MailAddress(email: 'dana@hadco.example')),
+                ]),
+            birthday('c', 'Lunch',
+                attendees: const [
+                  EventAttendee(MailAddress(email: 'dana@hadco.example')),
+                ]),
+          ]),
+          ['a', 'c']);
+    });
+
     test('overlapping meetings side by side, others the full width', () {
       DateTime at(int h, [int m = 0]) => DateTime(2026, 10, 27, h, m);
       final slots = {
