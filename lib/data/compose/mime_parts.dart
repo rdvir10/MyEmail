@@ -29,7 +29,12 @@ import '../mail_engine.dart' show rawMessageBytes;
 /// shows in place keeps its
 /// Content-ID, so the `cid:` link in the quote still finds it. An attached
 /// message comes across whole, as the `.eml` it was.
-List<DraftAttachment> attachmentsInMime(String raw) {
+///
+/// [forward] for a forward of a message received: an email in it, said so
+/// or only named so, goes as one, by its subject where its name says
+/// nothing (see [emailFileName]). Everywhere else (a draft reopened, a
+/// message filed or saved in pieces) the files stay as they were.
+List<DraftAttachment> attachmentsInMime(String raw, {bool forward = false}) {
   final message = em.MimeMessage.parseFromData(rawMessageBytes(raw));
   final found = <DraftAttachment>[];
 
@@ -54,14 +59,19 @@ List<DraftAttachment> attachmentsInMime(String raw) {
     final given = fileNameOf(part);
     // An email, whether the sender said so or only named it one: some call
     // it "eml.eml" and a stream of bytes, which went out again as just that.
-    final email = type.text.toLowerCase() == emlMimeType ||
-            mimeTypeForFile(given ?? '', declared: type.text) == emlMimeType
+    final email = forward &&
+            (type.text.toLowerCase() == emlMimeType ||
+                mimeTypeForFile(given ?? '', declared: type.text) ==
+                    emlMimeType)
         ? emailHeadOf(bytes)
         : null;
     found.add(DraftAttachment(
       fileName: email != null
           ? emailFileName(given, email, fallback: 'message.eml')
-          : safeFileName(given ?? _nameFor(type.text)),
+          : safeFileName(given ??
+              (type.text.toLowerCase() == emlMimeType
+                  ? 'message.eml'
+                  : _nameFor(type.text))),
       mimeType: email != null && email.isEmail ? emlMimeType : type.text,
       bytes: bytes,
       contentId: attached ? null : bareContentId(part.getHeaderValue('content-id')),
@@ -282,20 +292,21 @@ String _nameFor(String mediaType) {
 /// (`filename*=utf-8''%D7%A9…`) or cut into `filename*0*=`, `filename*1*=`
 /// and on. That is how a long name, or one not in English, is often sent,
 /// this app's own included, and a forward called such a file
-/// "attachment.pdf". Content-Disposition's name first, then Content-Type's.
+/// "attachment.pdf". Content-Disposition's first, then Content-Type's; the
+/// RFC 2231 form before a plain one beside it, which a sender may give as
+/// an ASCII stand-in ("____.pdf").
 String? fileNameOf(em.MimePart part) {
-  final read = decodeHebrewWords(part.decodeFileName())?.trim();
-  if (read != null && read.isNotEmpty) return read;
-  for (final (header, parameter) in const [
-    ('content-disposition', 'filename'),
-    ('content-type', 'name'),
-  ]) {
+  String? starred(String header, String parameter) {
     final value = part.getHeaderValue(header);
     final name =
         value == null ? null : rfc2231Parameter(value, parameter)?.trim();
-    if (name != null && name.isNotEmpty) return name;
+    return name == null || name.isEmpty ? null : name;
   }
-  return null;
+
+  final read = decodeHebrewWords(part.decodeFileName())?.trim();
+  return starred('content-disposition', 'filename') ??
+      (read != null && read.isNotEmpty ? read : null) ??
+      starred('content-type', 'name');
 }
 
 /// [parameter] of the header [value] where RFC 2231 writes it, or null:
@@ -318,7 +329,11 @@ String? rfc2231Parameter(String value, String parameter) {
     if (key == '$wanted*') {
       pieces[0] = (text: text, encoded: true);
     } else if (piece.firstMatch(key) case final p?) {
-      pieces[int.parse(p[1]!)] = (text: text, encoded: p[2]!.isNotEmpty);
+      // A number too big to be a piece of any real name is no piece.
+      final n = int.tryParse(p[1]!);
+      if (n != null && n < 1000) {
+        pieces[n] = (text: text, encoded: p[2]!.isNotEmpty);
+      }
     }
   }
   String? charset;
@@ -357,13 +372,12 @@ List<int> _percentDecoded(String text) {
   final out = <int>[];
   for (var i = 0; i < text.length; i++) {
     final c = text.codeUnitAt(i);
-    if (c == 0x25 && i + 2 < text.length) {
-      final byte = int.tryParse(text.substring(i + 1, i + 3), radix: 16);
-      if (byte != null) {
-        out.add(byte);
-        i += 2;
-        continue;
-      }
+    if (c == 0x25 &&
+        i + 2 < text.length &&
+        _hexPair.hasMatch(text.substring(i + 1, i + 3))) {
+      out.add(int.parse(text.substring(i + 1, i + 3), radix: 16));
+      i += 2;
+      continue;
     }
     if (c < 0x80) {
       out.add(c);
@@ -373,6 +387,9 @@ List<int> _percentDecoded(String text) {
   }
   return out;
 }
+
+/// Two hex digits, and nothing else: not a sign or a space.
+final _hexPair = RegExp(r'^[0-9A-Fa-f]{2}$');
 
 /// What the top of an email attached to another says: its subject, and
 /// whether it is an email at all (it has a sender, a subject or a date).
@@ -398,21 +415,44 @@ EmailHead emailHeadOf(Uint8List bytes) {
   }
   final head = end < 0 ? null : Uint8List.sublistView(bytes, 0, end);
   if (head == null || head.isEmpty) return nothing;
+  // enough_mail ends a header line only at CRLF. An .eml saved on a Mac or
+  // Linux has bare LFs, and its whole header block was read as the subject.
+  final lines = <int>[];
+  for (var i = 0; i < head.length; i++) {
+    if (head[i] == 0x0A && (i == 0 || head[i - 1] != 0x0D)) lines.add(0x0D);
+    lines.add(head[i]);
+  }
   final em.MimeMessage mime;
   try {
     mime = em.MimeMessage.parseFromData(
-      Uint8List.fromList([...head, 0x0D, 0x0A, 0x0D, 0x0A]),
+      Uint8List.fromList([...lines, 0x0D, 0x0A, 0x0D, 0x0A]),
     );
   } catch (_) {
     return nothing;
   }
-  final subject = decodeHebrewWords(mime.decodeSubject())?.trim();
   return (
-    subject: subject == null || subject.isEmpty ? null : subject,
+    subject: _readableSubject(mime.decodeSubject()),
     isEmail: mime.from?.isNotEmpty == true ||
         mime.getHeaderValue('subject') != null ||
         mime.decodeDate() != null,
   );
+}
+
+/// [subject] as a name can use it, or null: one with an encoded word left
+/// undecoded says nothing readable, and one sent as raw UTF-8, which
+/// enough_mail reads a byte a letter, is read again as UTF-8.
+String? _readableSubject(String? subject) {
+  var s = decodeHebrewWords(subject)?.trim();
+  if (s == null || s.isEmpty || s.contains('=?')) return null;
+  if (s.codeUnits.any((c) => c >= 0x80) &&
+      s.codeUnits.every((c) => c < 0x100)) {
+    try {
+      s = utf8.decode(latin1.encode(s));
+    } on FormatException {
+      // Latin-1 after all.
+    }
+  }
+  return s;
 }
 
 /// The name an email attached to another goes by: [given] where it says

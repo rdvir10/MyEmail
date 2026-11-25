@@ -169,8 +169,7 @@ void main() {
         ],
       ]);
 
-      // Named nothing by its sender, so called by its subject.
-      expect(files.single.fileName, 'Quote.eml');
+      expect(files.single.fileName, 'message.eml');
       expect(files.single.bytes, older);
       final email = em.MimeMessage.parseFromData(files.single.bytes);
       expect(email.decodeSubject(), 'Quote');
@@ -238,7 +237,9 @@ void main() {
   // it as "eml.eml", a stream of bytes, went on as just that. On the
   // forward it had a plain file's icon and opened in other mail apps.
   group('an email attached to the one forwarded', () {
-    List<DraftAttachment> filesIn(String part) => attachmentsInMime(
+    List<DraftAttachment> filesIn(String part, {bool forward = true}) =>
+        attachmentsInMime(
+          forward: forward,
           'From: stephanie@example.com\r\n'
           'Subject: 55026734 - Material cut incorrectly\r\n'
           'MIME-Version: 1.0\r\n'
@@ -291,6 +292,63 @@ void main() {
 
       expect(files.single.fileName, 'Shop note.eml');
       expect(files.single.mimeType, 'message/rfc822');
+    });
+
+    test('anywhere but a forward it stays as it was', () {
+      // A draft reopened, a message filed into a Microsoft folder or saved
+      // in pieces: the message as it was, files and all.
+      final files = filesIn(
+        base64Part(
+          'Content-Type: application/octet-stream; name="eml.eml"\r\n'
+          'Content-Disposition: attachment; filename="eml.eml"',
+          inner,
+        ),
+        forward: false,
+      );
+
+      expect(files.single.fileName, 'eml.eml');
+      expect(files.single.mimeType, 'application/octet-stream');
+    });
+
+    test('one saved with bare line feeds is named by its subject alone', () {
+      // enough_mail ends header lines only at CRLF, so the whole header
+      // block was read as the subject.
+      final files = filesIn(base64Part(
+        'Content-Type: application/octet-stream; name="eml.eml"',
+        ascii.encode(
+          'Subject: Grain report\n'
+          'From: Shop <shop@example.com>\n'
+          'Date: Mon, 23 Nov 2026 07:10:00 -0500\n'
+          '\n'
+          'Across.\n',
+        ),
+      ));
+
+      expect(files.single.fileName, 'Grain report.eml');
+    });
+
+    test('a subject in raw UTF-8 is read as UTF-8, and one left encoded '
+        'is not used', () {
+      final hebrew = filesIn(base64Part(
+        'Content-Type: application/octet-stream; name="eml.eml"',
+        [
+          ...ascii.encode('From: shop@example.com\r\nSubject: '),
+          ...utf8.encode('שלום'),
+          ...ascii.encode('\r\n\r\nBody\r\n'),
+        ],
+      ));
+      expect(hebrew.single.fileName, 'שלום.eml');
+
+      final unknown = filesIn(base64Part(
+        'Content-Type: application/octet-stream; name="eml.eml"',
+        ascii.encode(
+          'From: shop@example.com\r\n'
+          'Subject: =?x-unknown?B?YWJj?=\r\n'
+          '\r\n'
+          'Body\r\n',
+        ),
+      ));
+      expect(unknown.single.fileName, 'eml.eml');
     });
 
     test('a file called .eml that is no email keeps its name and type', () {
@@ -352,6 +410,25 @@ void main() {
     test('nothing named: as before, called by its type', () {
       final files = filesIn('Content-Disposition: attachment');
       expect(files.single.fileName, 'attachment.pdf');
+    });
+
+    test('the RFC 2231 name wins over a plain stand-in beside it', () {
+      final files = filesIn(
+        'Content-Disposition: attachment; filename="____.pdf";\r\n'
+        " filename*=utf-8''%D7%A9%D7%9C%D7%95%D7%9D.pdf",
+      );
+      expect(files.single.fileName, 'שלום.pdf');
+    });
+
+    test('a number too big for a piece, or a bad escape, breaks nothing', () {
+      final files = filesIn(
+        'Content-Disposition: attachment; filename*99999999999999999999=x',
+      );
+      expect(files.single.fileName, 'attachment.pdf');
+      expect(
+        rfc2231Parameter("x; name*=utf-8''a%-1b%+Fc% 1.pdf", 'name'),
+        'a%-1b%+Fc% 1.pdf',
+      );
     });
 
     test('a piece missing stops the name there', () {

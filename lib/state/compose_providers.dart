@@ -126,7 +126,7 @@ Future<Draft> buildDraft({
     final named = contentIdsNamedIn(quoted);
     final stillLinked = contentIdsNamedIn(draft.htmlBody);
     return draft.copyWith(attachments: [
-      for (final a in attachmentsInMime(raw))
+      for (final a in attachmentsInMime(raw, forward: true))
         if (_forwarded(a.contentId, named: named, stillLinked: stillLinked)
             case (goes: true, :final contentId))
           DraftAttachment(
