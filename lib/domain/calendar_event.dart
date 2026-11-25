@@ -465,7 +465,7 @@ List<CalendarEvent> foldSameWholeDays(
   bool listed(int i) {
     final key = keys[i];
     if (key == null) return true;
-    if (_yearly(list[i])) return identical(keeper[key], list[i]);
+    if (_yearly(list[i], mine)) return identical(keeper[key], list[i]);
     if (!list[i].readOnly || twoOnOne.contains(key)) return true;
     return !changeable.contains(key) && identical(kept[key], list[i]);
   }
@@ -477,8 +477,14 @@ List<CalendarEvent> foldSameWholeDays(
 }
 
 /// A birthday or an anniversary, as [foldSameWholeDays] tells one: it
-/// repeats, and nobody is on it.
-bool _yearly(CalendarEvent e) => e.seriesId != null && e.attendees.isEmpty;
+/// repeats, nobody is on it, and it is Ron's own or nobody's (one of his
+/// addresses, none, or Google's birthdays of contacts). One a team's
+/// calendar organises, two people's weekly day at home, is not.
+bool _yearly(CalendarEvent e, Set<String> own) {
+  if (e.seriesId == null || e.attendees.isNotEmpty) return false;
+  final by = e.organizer?.email.trim().toLowerCase() ?? '';
+  return by.isEmpty || own.contains(by) || by.contains('#contacts@');
+}
 
 String _copyOrder(CalendarEvent e) =>
     '${e.accountId}\u0000${e.calendarId}\u0000${e.id}';

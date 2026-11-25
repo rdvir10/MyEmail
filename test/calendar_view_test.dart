@@ -268,6 +268,47 @@ void main() {
           ['g1', 'b'],
           reason: 'one copy Ron can change, the same each time; another '
               'name is another line');
+      // A team's calendar, which Google names as every event's organiser:
+      // Dana's and Moshe's weekly day at home are two people's, and stay.
+      expect(
+          ids([
+            for (final id in ['dana', 'moshe'])
+              CalendarEvent(
+                id: id,
+                accountId: 'gmail',
+                calendarId: 'team',
+                title: 'WFH',
+                start: day,
+                end: DateTime(day.year, day.month, day.day + 1),
+                allDay: true,
+                showAs: EventShowAs.free,
+                readOnly: true,
+                seriesId: 'weekly-$id',
+                organizer:
+                    const MailAddress(email: 'team@group.calendar.google.com'),
+              ),
+          ]),
+          ['dana', 'moshe']);
+      // Google's birthdays of contacts fold, made for each copy of one.
+      expect(
+          ids([
+            for (final id in ['c1', 'c2'])
+              CalendarEvent(
+                id: id,
+                accountId: 'gmail',
+                calendarId: 'contacts',
+                title: "Neta Ron's birthday",
+                start: day,
+                end: DateTime(day.year, day.month, day.day + 1),
+                allDay: true,
+                showAs: EventShowAs.free,
+                readOnly: true,
+                seriesId: 'yearly-$id',
+                organizer: const MailAddress(
+                    email: 'addressbook#contacts@group.v.calendar.google.com'),
+              ),
+          ]),
+          ['c1']);
       // One that does not repeat, or has someone on it, is not a birthday:
       // as before, never hidden where Ron can change it.
       expect(
