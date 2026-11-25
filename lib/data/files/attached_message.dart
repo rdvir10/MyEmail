@@ -6,7 +6,9 @@ import 'package:enough_mail/enough_mail.dart' as em;
 import '../../domain/html_safety.dart';
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
-import '../compose/mime_parts.dart' show bareContentId, partBytes;
+import '../../domain/file_types.dart' show mimeTypeForFile;
+import '../compose/mime_parts.dart'
+    show bareContentId, emailFileName, emailHeadOf, fileNameOf, partBytes;
 import '../imap/hebrew_charsets.dart' show decodeHebrewWords;
 import '../imap/imap_mapping.dart';
 
@@ -67,15 +69,22 @@ class AttachedMessage {
         final part = mime.getPart(info.fetchId);
         final data = part == null ? null : _bytesOf(part);
         if (data == null) continue;
-        final isMessage = type.toLowerCase() == 'message/rfc822';
-        final named =
-            decodeHebrewWords(info.fileName ?? part?.decodeFileName());
+        final named = decodeHebrewWords(info.fileName) ??
+            (part == null ? null : fileNameOf(part));
+        // An email in it, said so or only named so, goes by its subject
+        // where its name says nothing.
+        final isMessage = type.toLowerCase() == 'message/rfc822' ||
+            mimeTypeForFile(named ?? '', declared: type) == 'message/rfc822';
         files.add(
           MailAttachment(
             id: info.fetchId,
-            name: safeFileName(
-              named ?? (isMessage ? 'Attached message.eml' : 'attachment'),
-            ),
+            name: isMessage
+                ? emailFileName(
+                    named,
+                    emailHeadOf(data),
+                    fallback: 'Attached message.eml',
+                  )
+                : safeFileName(named ?? 'attachment'),
             mimeType: type,
             sizeBytes: data.length,
             isInline: disposition == em.ContentDisposition.inline,

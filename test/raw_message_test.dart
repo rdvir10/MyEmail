@@ -169,7 +169,8 @@ void main() {
         ],
       ]);
 
-      expect(files.single.fileName, 'message.eml');
+      // Named nothing by its sender, so called by its subject.
+      expect(files.single.fileName, 'Quote.eml');
       expect(files.single.bytes, older);
       final email = em.MimeMessage.parseFromData(files.single.bytes);
       expect(email.decodeSubject(), 'Quote');
@@ -230,6 +231,137 @@ void main() {
       ]);
 
       expect(files.single.bytes, pdf);
+    });
+  });
+
+  // Ron's forward of a customer's email (2026-11-23): an email attached to
+  // it as "eml.eml", a stream of bytes, went on as just that. On the
+  // forward it had a plain file's icon and opened in other mail apps.
+  group('an email attached to the one forwarded', () {
+    List<DraftAttachment> filesIn(String part) => attachmentsInMime(
+          'From: stephanie@example.com\r\n'
+          'Subject: 55026734 - Material cut incorrectly\r\n'
+          'MIME-Version: 1.0\r\n'
+          'Content-Type: multipart/mixed; boundary="b"\r\n'
+          '\r\n'
+          '--b\r\n'
+          'Content-Type: text/plain; charset=utf-8\r\n'
+          '\r\n'
+          'Please see the attached.\r\n'
+          '--b\r\n'
+          '$part\r\n'
+          '--b--\r\n',
+        );
+
+    final inner = ascii.encode(
+      'From: Precision Machine <shop@example.com>\r\n'
+      'Subject: RE: Grain direction on 55026734\r\n'
+      'Date: Mon, 23 Nov 2026 07:10:00 -0500\r\n'
+      'MIME-Version: 1.0\r\n'
+      'Content-Type: text/plain\r\n'
+      '\r\n'
+      'Cut across the grain.\r\n',
+    );
+
+    String base64Part(String headers, List<int> body) =>
+        '$headers\r\nContent-Transfer-Encoding: base64\r\n\r\n'
+        '${base64Encode(body)}';
+
+    test('called eml.eml as a stream of bytes, it goes as an email, '
+        'by its subject', () {
+      final files = filesIn(base64Part(
+        'Content-Type: application/octet-stream; name="eml.eml"\r\n'
+        'Content-Disposition: attachment; filename="eml.eml"',
+        inner,
+      ));
+
+      expect(files.single.fileName, 'RE_ Grain direction on 55026734.eml');
+      expect(files.single.mimeType, 'message/rfc822');
+      expect(files.single.openAs, 'message/rfc822');
+      expect(files.single.bytes, inner);
+    });
+
+    test('a name that says which message it is stays', () {
+      final files = filesIn(
+        'Content-Type: message/rfc822\r\n'
+        'Content-Disposition: attachment; filename="Shop note.eml"\r\n'
+        '\r\n'
+        '${ascii.decode(inner)}',
+      );
+
+      expect(files.single.fileName, 'Shop note.eml');
+      expect(files.single.mimeType, 'message/rfc822');
+    });
+
+    test('a file called .eml that is no email keeps its name and type', () {
+      final files = filesIn(base64Part(
+        'Content-Type: application/octet-stream; name="eml.eml"\r\n'
+        'Content-Disposition: attachment; filename="eml.eml"',
+        [0, 1, 2, 3, 0xFF, 0xFE],
+      ));
+
+      expect(files.single.fileName, 'eml.eml');
+      expect(files.single.mimeType, 'application/octet-stream');
+    });
+  });
+
+  // RFC 2231 names, which enough_mail does not read: a forward called such
+  // a file "attachment.pdf".
+  group('a file named the RFC 2231 way keeps its name on a forward', () {
+    List<DraftAttachment> filesIn(String headers) => attachmentsInMime(
+          'From: dana@example.com\r\n'
+          'Subject: Files\r\n'
+          'MIME-Version: 1.0\r\n'
+          'Content-Type: multipart/mixed; boundary="b"\r\n'
+          '\r\n'
+          '--b\r\n'
+          'Content-Type: application/pdf\r\n'
+          'Content-Transfer-Encoding: base64\r\n'
+          '$headers\r\n'
+          '\r\n'
+          'JVBERi0xLjQ=\r\n'
+          '--b--\r\n',
+        );
+
+    test('whole, in Hebrew', () {
+      final files = filesIn(
+        "Content-Disposition: attachment; filename*=utf-8''%D7%A9%D7%9C%D7%95%D7%9D.pdf",
+      );
+      expect(files.single.fileName, 'שלום.pdf');
+    });
+
+    test('cut into pieces, encoded and not', () {
+      final files = filesIn(
+        'Content-Disposition: attachment;\r\n'
+        " filename*0*=UTF-8''Grain%20direction%20report;\r\n"
+        ' filename*1=" for 55026734.pdf"',
+      );
+      expect(files.single.fileName, 'Grain direction report for 55026734.pdf');
+    });
+
+    test("Content-Type's name, in pieces and folded", () {
+      expect(
+        rfc2231Parameter(
+          'application/pdf;\r\n name*0="Long ";\r\n name*1="name.pdf"',
+          'name',
+        ),
+        'Long name.pdf',
+      );
+    });
+
+    test('nothing named: as before, called by its type', () {
+      final files = filesIn('Content-Disposition: attachment');
+      expect(files.single.fileName, 'attachment.pdf');
+    });
+
+    test('a piece missing stops the name there', () {
+      expect(
+        rfc2231Parameter(
+          "attachment; filename*0=\"Part one\"; filename*2=\" three.pdf\"",
+          'filename',
+        ),
+        'Part one',
+      );
     });
   });
 

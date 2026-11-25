@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myemail/data/files/attached_message.dart';
 import 'package:myemail/data/files/attachment_files.dart';
+import 'package:myemail/data/files/file_bridge.dart';
 import 'package:myemail/data/graph/graph_mail_api.dart';
 import 'package:myemail/data/graph/graph_transport.dart';
 import 'package:myemail/data/sample/sample_mail_engine.dart';
@@ -148,6 +149,47 @@ void main() {
         AttachedMessage.parse(Uint8List.fromList(utf8.encode('%PDF-1.4'))),
         isNull,
       );
+    });
+
+    test('an email in it called eml.eml goes by its subject, and a file '
+        'named the RFC 2231 way keeps its name', () {
+      final inner = base64Encode(utf8.encode([
+        'From: shop@example.com',
+        'Subject: Grain direction',
+        'Date: Mon, 23 Nov 2026 07:10:00 -0500',
+        '',
+        'Across.',
+        '',
+      ].join('\r\n')));
+      final outer = AttachedMessage.parse(Uint8List.fromList(utf8.encode([
+        'From: a@example.com',
+        'Subject: Files',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="b"',
+        '',
+        '--b',
+        'Content-Type: text/plain',
+        '',
+        'See attached.',
+        '--b',
+        'Content-Type: application/octet-stream; name="eml.eml"',
+        'Content-Disposition: attachment; filename="eml.eml"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        inner,
+        '--b',
+        'Content-Type: application/pdf',
+        "Content-Disposition: attachment; filename*=utf-8''%D7%A9%D7%9C%D7%95%D7%9D.pdf",
+        'Content-Transfer-Encoding: base64',
+        '',
+        'JVBERi0xLjQ=',
+        '--b--',
+        '',
+      ].join('\r\n'))))!;
+
+      expect(outer.listed.map((f) => f.name),
+          ['Grain direction.eml', 'שלום.pdf']);
+      expect(outer.listed.first.openAs, 'message/rfc822');
     });
   });
 
@@ -465,6 +507,58 @@ void main() {
       expect(find.byType(AttachedMessageScreen), findsOneWidget);
       expect(find.byKey(const ValueKey('attached-reply')), findsNothing);
       expect(find.byKey(const ValueKey('attached-forward')), findsNothing);
+    });
+
+    // Ron's forward (2026-11-23): a customer's "eml.eml", sent as a stream
+    // of bytes, had a plain file's icon on the forward, and a tap offered
+    // Aqua Mail, Chrome, Edge and Nine.
+    testWidgets('one a sender called a stream of bytes opens here too, '
+        'by its name', (tester) async {
+      final bridge = FakeFileBridge();
+      final c = ProviderContainer(overrides: [
+        mailEngineProvider.overrideWithValue(SampleMailEngine()),
+        fileBridgeProvider.overrideWithValue(bridge),
+      ]);
+      addTearDown(c.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: c,
+        child: MaterialApp(
+          home: ComposeScreen(
+            draft: Draft(
+              accountId: 'acct-personal',
+              kind: ComposeKind.forward,
+              to: const [],
+              cc: const [],
+              bcc: const [],
+              subject: 'Fwd: 55026734 - Material cut incorrectly',
+              htmlBody: '<p></p>',
+              attachments: [
+                DraftAttachment(
+                  fileName: 'eml.eml',
+                  mimeType: 'application/octet-stream',
+                  bytes: eml,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      final chip = find.ancestor(
+        of: find.textContaining('eml.eml'),
+        matching: find.byType(InputChip),
+      );
+      expect(
+        find.descendant(of: chip, matching: find.byIcon(Icons.mail_outline)),
+        findsOneWidget,
+      );
+      await tester.tap(chip);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AttachedMessageScreen), findsOneWidget);
+      expect(find.text('Extrusion shape pictures'), findsWidgets);
+      expect(bridge.opened, isEmpty);
     });
   });
 }

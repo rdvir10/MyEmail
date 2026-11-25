@@ -2,6 +2,7 @@ import 'error_report.dart';
 import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html_parser;
 
+import 'file_types.dart' show mimeTypeForFile;
 import 'mail_message.dart';
 
 export 'importance.dart';
@@ -40,6 +41,13 @@ class DraftAttachment {
   final String? forwardedMessageId;
 
   int get size => bytes.length;
+
+  /// The type to show, open and hand to other apps this file as: by its
+  /// name first, as [MailAttachment.openAs] decides for a file on a message
+  /// read. A sender's "eml.eml" said only "a stream of bytes", so on a
+  /// forward it had a plain file's icon and opened in other mail apps,
+  /// while on the message it came on it opened here as an email.
+  String get openAs => mimeTypeForFile(fileName, declared: mimeType);
 
   /// "12 KB", "3.4 MB": what a person needs to judge whether to send it.
   String get readableSize => readableBytes(size);

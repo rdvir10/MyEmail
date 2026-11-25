@@ -572,7 +572,8 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
   /// opens that sort of thing, or here, as an email, a message forwarded
   /// as a file.
   Future<void> _openAttachment(DraftAttachment a) async {
-    if (a.mimeType == emlMimeType &&
+    final type = a.openAs;
+    if (type == emlMimeType &&
         await openAttachedMessage(
           context,
           a.bytes,
@@ -584,7 +585,7 @@ class _ComposeScreenState extends ConsumerState<ComposeScreen>
     if (!mounted) return;
     try {
       final path = await ref.read(draftFilesProvider).write(a);
-      await ref.read(fileBridgeProvider).open(path, mimeType: a.mimeType);
+      await ref.read(fileBridgeProvider).open(path, mimeType: type);
     } catch (e) {
       if (mounted) _say('Nothing here opens that sort of file.');
     }
@@ -1674,7 +1675,7 @@ class _AttachmentStrip extends StatelessWidget {
           for (final a in attachments)
             InputChip(
               key: ValueKey('attached:${identityHashCode(a)}'),
-              avatar: Icon(attachmentIcon(a.mimeType), size: 18),
+              avatar: Icon(attachmentIcon(a.openAs), size: 18),
               label: Text('${a.fileName}  ${a.readableSize}'),
               onPressed: () => onOpen(a),
               onDeleted: onRemove == null ? null : () => onRemove!(a),

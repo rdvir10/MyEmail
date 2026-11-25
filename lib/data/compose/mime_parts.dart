@@ -1,10 +1,14 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:enough_mail/enough_mail.dart' as em;
 
 import '../../domain/draft.dart';
+import '../../domain/file_types.dart' show mimeTypeForFile;
 import '../../domain/mail_attachment.dart';
 import '../../domain/mail_message.dart';
+import '../files/message_files.dart' show emlMimeType;
+import '../imap/hebrew_charsets.dart' show decodeCharset, decodeHebrewWords;
 import '../imap/imap_mapping.dart' show decodePart;
 import '../mail_engine.dart' show rawMessageBytes;
 
@@ -47,12 +51,18 @@ List<DraftAttachment> attachmentsInMime(String raw) {
     final bytes = partBytes(part, inMultipart: !identical(part, message));
     if (bytes == null || bytes.isEmpty) return;
 
-    final isMessage = type.text.toLowerCase() == 'message/rfc822';
-    final name = part.decodeFileName() ??
-        (isMessage ? 'message.eml' : _nameFor(type.text));
+    final given = fileNameOf(part);
+    // An email, whether the sender said so or only named it one: some call
+    // it "eml.eml" and a stream of bytes, which went out again as just that.
+    final email = type.text.toLowerCase() == emlMimeType ||
+            mimeTypeForFile(given ?? '', declared: type.text) == emlMimeType
+        ? emailHeadOf(bytes)
+        : null;
     found.add(DraftAttachment(
-      fileName: safeFileName(name),
-      mimeType: type.text,
+      fileName: email != null
+          ? emailFileName(given, email, fallback: 'message.eml')
+          : safeFileName(given ?? _nameFor(type.text)),
+      mimeType: email != null && email.isEmail ? emlMimeType : type.text,
       bytes: bytes,
       contentId: attached ? null : bareContentId(part.getHeaderValue('content-id')),
     ));
@@ -266,3 +276,191 @@ String _nameFor(String mediaType) {
   final sub = mediaType.split('/').last.split(RegExp(r'[+;]')).first.trim();
   return sub.isEmpty || sub == 'octet-stream' ? 'attachment' : 'attachment.$sub';
 }
+
+/// What [part] is called: its file name as enough_mail reads it, or as
+/// RFC 2231 writes one, which enough_mail does not read: whole
+/// (`filename*=utf-8''%D7%A9…`) or cut into `filename*0*=`, `filename*1*=`
+/// and on. That is how a long name, or one not in English, is often sent,
+/// this app's own included, and a forward called such a file
+/// "attachment.pdf". Content-Disposition's name first, then Content-Type's.
+String? fileNameOf(em.MimePart part) {
+  final read = decodeHebrewWords(part.decodeFileName())?.trim();
+  if (read != null && read.isNotEmpty) return read;
+  for (final (header, parameter) in const [
+    ('content-disposition', 'filename'),
+    ('content-type', 'name'),
+  ]) {
+    final value = part.getHeaderValue(header);
+    final name =
+        value == null ? null : rfc2231Parameter(value, parameter)?.trim();
+    if (name != null && name.isNotEmpty) return name;
+  }
+  return null;
+}
+
+/// [parameter] of the header [value] where RFC 2231 writes it, or null:
+/// `name*=charset'language'%XX…` whole, or `name*0*=`, `name*1=` … in
+/// pieces, each percent-encoded where its name ends in `*` and as it is
+/// where not. The pieces are read in order and stop at a gap.
+String? rfc2231Parameter(String value, String parameter) {
+  final unfolded = value.replaceAll(RegExp(r'\r?\n[ \t]'), ' ');
+  final wanted = parameter.toLowerCase();
+  final piece = RegExp('^${RegExp.escape(wanted)}\\*(\\d+)(\\*?)\$');
+  final pieces = <int, ({String text, bool encoded})>{};
+  for (final m in _parameter.allMatches(unfolded)) {
+    final key = m[1]!.toLowerCase();
+    var text = m[2]!.trim();
+    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+      text = text
+          .substring(1, text.length - 1)
+          .replaceAllMapped(RegExp(r'\\(.)'), (q) => q[1]!);
+    }
+    if (key == '$wanted*') {
+      pieces[0] = (text: text, encoded: true);
+    } else if (piece.firstMatch(key) case final p?) {
+      pieces[int.parse(p[1]!)] = (text: text, encoded: p[2]!.isNotEmpty);
+    }
+  }
+  String? charset;
+  final bytes = <int>[];
+  for (var i = 0; pieces[i] != null; i++) {
+    var (:text, :encoded) = pieces[i]!;
+    // The first encoded piece starts with the charset and the language,
+    // each ended by a quote; either may be empty.
+    if (i == 0 && encoded) {
+      final first = text.indexOf("'");
+      final second = first < 0 ? -1 : text.indexOf("'", first + 1);
+      if (second > 0) {
+        charset = text.substring(0, first);
+        text = text.substring(second + 1);
+      }
+    }
+    bytes.addAll(encoded ? _percentDecoded(text) : utf8.encode(text));
+  }
+  if (bytes.isEmpty) return null;
+  try {
+    return decodeCharset(
+      bytes,
+      charset == null || charset.isEmpty ? 'utf-8' : charset,
+    );
+  } catch (_) {
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+}
+
+/// `; name=value` or `; name="value"` in a header, the name with any `*`
+/// and number RFC 2231 gives it.
+final _parameter = RegExp(r';\s*([^\s=;]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)');
+
+/// `%XX` as the byte XX; anything else as itself.
+List<int> _percentDecoded(String text) {
+  final out = <int>[];
+  for (var i = 0; i < text.length; i++) {
+    final c = text.codeUnitAt(i);
+    if (c == 0x25 && i + 2 < text.length) {
+      final byte = int.tryParse(text.substring(i + 1, i + 3), radix: 16);
+      if (byte != null) {
+        out.add(byte);
+        i += 2;
+        continue;
+      }
+    }
+    if (c < 0x80) {
+      out.add(c);
+    } else {
+      out.addAll(utf8.encode(String.fromCharCode(c)));
+    }
+  }
+  return out;
+}
+
+/// What the top of an email attached to another says: its subject, and
+/// whether it is an email at all (it has a sender, a subject or a date).
+/// Read from its headers alone: the message can be megabytes.
+typedef EmailHead = ({String? subject, bool isEmail});
+
+/// The [EmailHead] of [bytes], an email as a file.
+EmailHead emailHeadOf(Uint8List bytes) {
+  const nothing = (subject: null, isEmail: false);
+  // Where the headers end: the first empty line, near the top.
+  final limit = bytes.length < 256 * 1024 ? bytes.length : 256 * 1024;
+  var end = -1;
+  for (var i = 0; i + 1 < limit; i++) {
+    if (bytes[i] != 0x0A) continue;
+    if (bytes[i + 1] == 0x0A) {
+      end = i + 1;
+      break;
+    }
+    if (bytes[i + 1] == 0x0D && i + 2 < limit && bytes[i + 2] == 0x0A) {
+      end = i + 2;
+      break;
+    }
+  }
+  final head = end < 0 ? null : Uint8List.sublistView(bytes, 0, end);
+  if (head == null || head.isEmpty) return nothing;
+  final em.MimeMessage mime;
+  try {
+    mime = em.MimeMessage.parseFromData(
+      Uint8List.fromList([...head, 0x0D, 0x0A, 0x0D, 0x0A]),
+    );
+  } catch (_) {
+    return nothing;
+  }
+  final subject = decodeHebrewWords(mime.decodeSubject())?.trim();
+  return (
+    subject: subject == null || subject.isEmpty ? null : subject,
+    isEmail: mime.from?.isNotEmpty == true ||
+        mime.getHeaderValue('subject') != null ||
+        mime.decodeDate() != null,
+  );
+}
+
+/// The name an email attached to another goes by: [given] where it says
+/// which message it is, and otherwise its subject, as Outlook shows one.
+/// "eml.eml", "message.eml" or no name at all say nothing to tell two
+/// apart by. [fallback] where there is neither.
+String emailFileName(
+  String? given,
+  EmailHead head, {
+  required String fallback,
+}) {
+  final subject = head.subject;
+  if (_saysNothing(given) && subject != null) {
+    return safeFileName(
+      subject.toLowerCase().endsWith('.eml') ? subject : '$subject.eml',
+    );
+  }
+  return safeFileName(
+    given == null || given.trim().isEmpty ? fallback : given,
+    fallback: fallback,
+  );
+}
+
+/// Whether [name], for an email attached to another, says nothing about
+/// which one it is.
+bool _saysNothing(String? name) {
+  var stem = (name ?? '').trim().toLowerCase();
+  while (stem.endsWith('.eml')) {
+    stem = stem.substring(0, stem.length - 4).trim();
+  }
+  return stem.isEmpty ||
+      _namesThatSayNothing.contains(stem) ||
+      RegExp(r'^(att|part)\d*$').hasMatch(stem);
+}
+
+const _namesThatSayNothing = {
+  'eml',
+  'message',
+  'noname',
+  'unnamed',
+  'untitled',
+  'unknown',
+  'attachment',
+  'attached message',
+  'attached item',
+  'forwarded message',
+  'original message',
+  'mail',
+  'email',
+  'e-mail',
+};
